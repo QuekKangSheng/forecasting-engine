@@ -6,19 +6,15 @@ run-store design.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from forecasting_engine.validation.crash import CrashDiagnostics
 from forecasting_engine.validation.gates import OOS_RANK_IC_GATE, PBO_GATE
 
 MODEL_ORDER: tuple[str, ...] = ("FF5 Benchmark", "Polynomial", "Machine Learning")
-"""a missing model still gets a row, showing "Not run" (or "N/A — not
-applicable" if the caller names it inapplicable for this target — see
-``build_metrics_rows``)."""
+"""The order rows appear in; only models that ran get one."""
 
-NOT_RUN = "Not run"
-NOT_APPLICABLE = "N/A — not applicable"
 NO_CONFIG_SEARCH = "N/A — no configuration search"
 
 _COLUMNS: tuple[str, ...] = (
@@ -29,6 +25,7 @@ _COLUMNS: tuple[str, ...] = (
     "Crash Recall",
     "Crash Precision",
     "Crash F1",
+    "Rows scored",
 )
 
 
@@ -55,6 +52,14 @@ class ScreeningSummary:
     counts: tuple[tuple[str, int], ...]
     """``(signal, folds that fit it)``, most-used first. A signal no fold used is
     listed with zero rather than left out — that is what the table exists to show."""
+    fold_ics: tuple[Mapping[str, float], ...] = ()
+    """Per fold, in order, each candidate's rank IC on that fold's train window."""
+    latest_included: tuple[str, ...] = ()
+    """The signals the most recent fold's screening kept (before any fallback)."""
+
+    @property
+    def latest_ics(self) -> Mapping[str, float]:
+        return self.fold_ics[-1] if self.fold_ics else {}
 
 
 @dataclass(frozen=True)
@@ -91,36 +96,22 @@ class ModelRunResult:
     terms: FoldTerms | None = None
     """How many folds kept any term. ``None`` only on a result built before this
     field existed (one parked in session state by an older run)."""
+    rows_scored: int | None = None
+    """Test rows with both a prediction and a realised value. Each model drops
+    rows missing a signal it uses, so this can differ between models."""
 
 
 def build_metrics_rows(
-    results: Mapping[str, ModelRunResult],
-    decimals: int = 4,
-    *,
-    inapplicable: Collection[str] = (),
+    results: Mapping[str, ModelRunResult], decimals: int = 4
 ) -> list[dict[str, Cell]]:
-    """One row per name in MODEL_ORDER, always — a model absent from
-    ``results`` renders as "Not run", unless it's named in ``inapplicable``
-    (e.g. Fama-French for a bond target — it isn't designed to predict bond
-    returns even though it would technically run), in which case it renders
-    as "N/A — not applicable" instead. A model *with* a result is always
-    shown as its result, regardless of ``inapplicable`` — that combination
-    shouldn't arise (the page shouldn't offer to run it), but this function
-    doesn't second-guess a result it's handed.
-    """
-    return [
-        _row(name, results.get(name), decimals, applicable=name not in inapplicable)
-        for name in MODEL_ORDER
+    """One row per model in ``results``, in MODEL_ORDER (then any others)."""
+    names = [n for n in MODEL_ORDER if n in results] + [
+        n for n in results if n not in MODEL_ORDER
     ]
+    return [_row(name, results[name], decimals) for name in names]
 
 
-def _row(
-    name: str, result: ModelRunResult | None, decimals: int, *, applicable: bool = True
-) -> dict[str, Cell]:
-    if result is None:
-        text = NOT_RUN if applicable else NOT_APPLICABLE
-        return {"Model": Cell(name)} | {col: Cell(text) for col in _COLUMNS}
-
+def _row(name: str, result: ModelRunResult, decimals: int) -> dict[str, Cell]:
     can_be_gated = result.pbo is not None
     oos_rank_ic_cell = (
         _gated_cell(_fmt(result.oos_rank_ic, decimals), result.oos_rank_ic > OOS_RANK_IC_GATE)
@@ -142,6 +133,7 @@ def _row(
         "Crash Recall": Cell(_fmt(result.crash.recall, decimals)),
         "Crash Precision": Cell(_fmt(result.crash.precision, decimals)),
         "Crash F1": Cell(_fmt(result.crash.f1, decimals)),
+        "Rows scored": Cell("—" if result.rows_scored is None else f"{result.rows_scored:,}"),
     }
 
 

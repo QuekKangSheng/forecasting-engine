@@ -20,8 +20,8 @@ one itself).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -51,6 +51,8 @@ class FoldScreening:
     candidates: tuple[str, ...]
     included: tuple[str, ...]
     """May be empty: every signal failed screening on this fold's train window."""
+    ics: Mapping[str, float] = field(default_factory=dict)
+    """Each candidate's rank IC on this fold's train window."""
 
     @property
     def fitted(self) -> tuple[str, ...]:
@@ -124,8 +126,12 @@ def evaluate(
         fold_panel = panel
         screening = None
         if per_fold_screen is not None:
-            included = tuple(s.signal for s in per_fold_screen[fold] if s.included)
-            screening = FoldScreening(candidates=panel.signals, included=included)
+            scores = per_fold_screen[fold]
+            screening = FoldScreening(
+                candidates=panel.signals,
+                included=tuple(s.signal for s in scores if s.included),
+                ics={s.signal: s.ic for s in scores},
+            )
             # The fold is fit on exactly what's recorded, so a display built from
             # ``screening`` can't disagree with what the model actually used.
             fold_panel = replace(panel, signals=screening.fitted)
@@ -174,6 +180,7 @@ def summarize(
         terms=FoldTerms(
             folds=len(folds), with_terms=sum(1 for f in folds if f.description.terms)
         ),
+        rows_scored=sum(int((f.predicted.notna() & f.realised.notna()).sum()) for f in folds),
     )
     # FYP-122's "deliverable artifact": the most recent fold's fitted terms
     # and coefficients — a fit can pick different terms fold to fold, so this
@@ -263,4 +270,6 @@ def _screening_summary(folds: tuple[FoldResult, ...]) -> ScreeningSummary | None
         folds=len(screened),
         fell_back=sum(s.fell_back for s in screened),
         counts=tuple(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+        fold_ics=tuple(dict(s.ics) for s in screened),
+        latest_included=screened[-1].included,
     )

@@ -386,17 +386,14 @@ def test_a_chosen_role_and_field_are_remembered_outside_the_widget(page):
 
 
 def test_clear_data_also_clears_stale_model_results(page):
-    # Model results are namespaced per target role in app_pages/3_Models.py
-    # (e.g. "polynomial_result_equity") — a result fit on data that's about
-    # to be cleared shouldn't keep showing on the Model Metrics page.
-    page.session_state["polynomial_result_equity"] = "stale"
-    page.session_state["ml_result_bond"] = "stale"
+    # A result fit on data that's about to be cleared shouldn't keep showing
+    # on the Models page.
+    page.session_state["model_runs"] = "stale"
 
     clear_button = next(b for b in page.button if b.label == "Clear Data")
     result = clear_button.click().run()
 
-    assert "polynomial_result_equity" not in result.session_state.filtered_state
-    assert "ml_result_bond" not in result.session_state.filtered_state
+    assert "model_runs" not in result.session_state.filtered_state
 
 
 def test_two_files_set_to_the_same_role_is_reported_as_an_error(page):

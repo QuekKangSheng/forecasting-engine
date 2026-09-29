@@ -25,20 +25,6 @@ TERMS: Mapping[str, str] = {
         "forecast and a bond forecast are different models, not one model with "
         "a setting changed."
     ),
-    "Model family": (
-        "Which kind of model to fit.\n\n"
-        "**Fama-French 5-Factor** is the academic benchmark: a straight-line "
-        "fit on five published factors (market, size, value, profitability, "
-        "investment) that are known to explain much of a portfolio's return. "
-        "It is the bar a new model has to beat — if it can't, the new model "
-        "isn't earning its complexity.\n\n"
-        "**Polynomial** is a formula on the signals — either one you write, or "
-        "one derived automatically — that can include squares and products, so "
-        "it captures effects that aren't a straight line.\n\n"
-        "**Machine Learning** is gradient boosting (XGBoost / LightGBM): "
-        "flexible, and the easiest to fool yourself with — which is why every "
-        "family is judged out-of-sample."
-    ),
     "Function source": (
         "**Enter a function** fits the exact formula you write, and nothing "
         "else — use it to test a view you already hold.\n\n"

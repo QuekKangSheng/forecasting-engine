@@ -43,4 +43,4 @@ def test_boosted_flows_from_a_raw_frame_through_the_shared_harness_to_the_compar
     assert outcome.promoted in (True, False)
 
     rows = build_metrics_rows({"Machine Learning": result})
-    assert rows[2]["Model"].text == "Machine Learning"
+    assert rows[0]["Model"].text == "Machine Learning"

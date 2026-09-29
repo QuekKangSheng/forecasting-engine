@@ -44,7 +44,7 @@ def test_run_user_polynomial_result_matches_the_shared_comparison_contract():
     assert outcome.promoted in (True, False)
 
     rows = build_metrics_rows({"Polynomial": result})
-    assert rows[1]["PBO"].text == NO_CONFIG_SEARCH
+    assert rows[0]["PBO"].text == NO_CONFIG_SEARCH
 
 
 def test_run_user_polynomial_raises_when_the_split_produces_no_folds():
@@ -69,5 +69,5 @@ def test_run_derived_polynomial_result_matches_the_shared_comparison_contract():
     assert outcome.promoted in (True, False)
 
     rows = build_metrics_rows({"Polynomial": result})
-    assert rows[1]["Model"].text == "Polynomial"
-    assert rows[1]["PBO"].text != NO_CONFIG_SEARCH
+    assert rows[0]["Model"].text == "Polynomial"
+    assert rows[0]["PBO"].text != NO_CONFIG_SEARCH

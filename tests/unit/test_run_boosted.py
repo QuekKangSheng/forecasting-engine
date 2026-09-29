@@ -52,7 +52,7 @@ def test_run_boosted_result_matches_the_shared_comparison_contract():
     assert outcome.promoted in (True, False)
 
     rows = build_metrics_rows({"Machine Learning": result})
-    assert rows[2]["Model"].text == "Machine Learning"
+    assert rows[0]["Model"].text == "Machine Learning"
 
 
 def test_run_boosted_runs_shap_once_not_once_per_fold(monkeypatch):

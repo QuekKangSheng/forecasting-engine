@@ -384,3 +384,29 @@ def test_a_run_where_every_fold_kept_terms_says_so():
     result, _ = summarize(folds)
 
     assert (result.terms.folds, result.terms.with_terms) == (4, 4)
+
+
+def test_screening_summary_records_each_folds_ic_and_the_latest_folds_choice():
+    panel = _strong_and_flat()
+    splitter = PurgedWalkForward(train=30, test=5, embargo=2)
+    folds = evaluate(_SignalRecordingForecaster, panel, splitter, screen=True)
+
+    result, _ = summarize(folds)
+
+    screening = result.screening
+    assert len(screening.fold_ics) == len(folds)
+    assert screening.latest_ics["strong"] == 1.0
+    assert screening.latest_included == ("strong",)
+
+
+def test_rows_scored_counts_test_rows_with_a_prediction_and_a_realised_value():
+    panel = _panel(n=20)
+    splitter = PurgedWalkForward(train=8, test=4, embargo=1)
+    last_tested = list(splitter.split(panel))[-1][1][-1]
+    panel.frame.loc[last_tested, "signal_a"] = float("nan")
+    folds = evaluate(_EchoForecaster, panel, splitter)
+
+    result, _ = summarize(folds)
+
+    tested = sum(len(f.test) for f in folds)
+    assert result.rows_scored == tested - 1

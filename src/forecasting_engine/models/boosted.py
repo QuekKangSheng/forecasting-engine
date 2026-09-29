@@ -70,7 +70,7 @@ def _leaf_params(library: str, n_rows: int) -> dict:
     return {key: floor}
 
 
-N_TRIALS: int = 15
+N_TRIALS: int = 50
 """Working default (not sponsor-confirmed): Optuna trials per library, tuned once
 per run — see the module docstring on refit cadence."""
 

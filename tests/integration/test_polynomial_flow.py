@@ -49,4 +49,4 @@ def test_derived_fit_flows_through_to_the_promotion_gate_and_comparison_table():
     assert set(outcome.failed_gates) <= {"oos_rank_ic", "pbo"}
 
     rows = build_metrics_rows({"Polynomial": result})
-    assert rows[1]["Model"].text == "Polynomial"
+    assert rows[0]["Model"].text == "Polynomial"

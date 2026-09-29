@@ -1,8 +1,9 @@
 """The Models page, driven through the real Streamlit page script.
 
-These render a stored run the way the page shows a previous result, rather than
-fitting one: a derived fit is slow and nondeterministic, and what's under test
-here is what the page shows, not the fitting.
+Most of these render stored runs the way the page shows a previous result,
+rather than fitting one: a derived fit is slow and nondeterministic, and what's
+under test here is what the page shows, not the fitting. Tests that press Run
+stub the machine-learning fit and the factor download.
 """
 
 from pathlib import Path
@@ -12,13 +13,15 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
+import model_runs
 from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest import fama_french
 from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile, ResolvedFactors
 from forecasting_engine.ingest.provenance import SourceFile
+from forecasting_engine.models import boosted
 from forecasting_engine.models.base import ModelDescription
-from forecasting_engine.models.famafrench import FACTOR_COLUMNS
+from forecasting_engine.models.famafrench import FACTOR_COLUMNS, FactorCoverage
 from forecasting_engine.reporting.model_metrics import (
     FoldTerms,
     ModelRunResult,
@@ -34,45 +37,97 @@ from forecasting_engine.validation.crash import CrashDiagnostics
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PAGE = REPO_ROOT / "app" / "app_pages" / "3_Models.py"
 
+EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
+SPX = "SPX_Index_PX_LAST"
+AGG = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
+#: The page's defaults: 5-day horizon, 120/20 walk-forward windows, and a
+#: blank user-supplied function.
+DEFAULT_SHARED = (5, 120, 20)
+DEFAULT_POLYNOMIAL = ("Enter a function", "")
 
-def _committed() -> pd.DataFrame:
+
+def _committed(*, bond: bool = False) -> pd.DataFrame:
     rng = np.random.default_rng(0)
     n = 200
-    return pd.DataFrame(
+    frame = pd.DataFrame(
         {
             "Date": pd.bdate_range("2024-01-01", periods=n),
-            "SPX_Index_PX_LAST": 4000 + np.cumsum(rng.normal(size=n)),
+            SPX: 4000 + np.cumsum(rng.normal(size=n)),
             "VIX_Index_PX_LAST": 15 + rng.normal(size=n),
             "LUACOAS_Index_PX_LAST": 1.2 + rng.normal(scale=0.1, size=n),
         }
     )
+    if bond:
+        frame[AGG] = 2200 + np.cumsum(rng.normal(size=n))
+    return frame
 
 
-#: The committed data's target, resolved the way the page requires (Task
-#: 4.2) — every helper below seeds this rather than a free column pick.
-_TARGETS = {TargetRole.EQUITY: "SPX_Index_PX_LAST"}
-
-
-def _result(screening: ScreeningSummary | None) -> ModelRunResult:
+def _result(
+    screening: ScreeningSummary | None = None,
+    *,
+    pbo: float | None = 0.3,
+    oos_rank_ic: float = 0.04,
+    terms: FoldTerms | None = None,
+) -> ModelRunResult:
     return ModelRunResult(
         ic=0.05,
-        oos_rank_ic=0.04,
+        oos_rank_ic=oos_rank_ic,
         rmse=0.01,
-        pbo=0.3,
+        pbo=pbo,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
         screening=screening,
+        terms=terms,
+        rows_scored=180,
     )
 
 
-def _page(screening: ScreeningSummary | None) -> AppTest:
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = _committed()
-    app.session_state["extraction_committed_targets"] = _TARGETS
-    app.session_state["polynomial_result_equity"] = _result(screening)
-    app.session_state["polynomial_description_equity"] = ModelDescription(
-        name="Derived polynomial", terms=("VIX_Index_PX_LAST",), coefficients=(0.2,)
+DERIVED = ModelDescription(
+    name="DerivedPolynomial",
+    terms=("VIX_Index_PX_LAST^2", "LUACOAS_Index_PX_LAST VIX_Index_PX_LAST"),
+    coefficients=(0.0004521, -0.000231),
+    intercept=0.001234,
+)
+
+
+def _polynomial_run(
+    result: ModelRunResult | None = None, description: ModelDescription = DERIVED
+) -> model_runs.ModelRun:
+    fn = from_description(description, origin=Origin.DERIVED, target=SPX, horizon=5)
+    return model_runs.ModelRun(result or _result(), description, function=fn)
+
+
+def _ml_run(result: ModelRunResult | None = None) -> model_runs.ModelRun:
+    description = ModelDescription("Boosted[xgboost]", ("VIX_Index_PX_LAST",), (0.3,))
+    return model_runs.ModelRun(result or _result(), description)
+
+
+def _page(
+    tabs: dict[TargetRole, dict[str, model_runs.ModelRun]] | None = None,
+    *,
+    bond: bool = False,
+    sources: dict | None = None,
+    committed: pd.DataFrame | None = None,
+) -> AppTest:
+    """The page with ``tabs``' runs stored under the default settings."""
+    committed = _committed(bond=bond) if committed is None else committed
+    app = AppTest.from_file(str(PAGE), default_timeout=60)
+    app.session_state["extraction_committed"] = committed
+    app.session_state["extraction_committed_targets"] = (
+        {EQUITY: SPX, BOND: AGG} if bond else {EQUITY: SPX}
     )
+    if sources is not None:
+        app.session_state["extraction_committed_sources"] = sources
+    if tabs:
+        stored = model_runs.StoredRuns((dataset_fingerprint(committed), *DEFAULT_SHARED))
+        for role, runs in tabs.items():
+            stored.tabs[role] = model_runs.TabRuns(DEFAULT_POLYNOMIAL, dict(runs))
+        app.session_state[model_runs.RUNS_KEY] = stored
     return app.run()
+
+
+def _stored_runs(app: AppTest, role: TargetRole = EQUITY) -> dict:
+    stored = app.session_state[model_runs.RUNS_KEY]
+    return stored.tabs[role].runs if role in stored.tabs else {}
 
 
 def _markdown(app: AppTest) -> str:
@@ -83,61 +138,74 @@ def _captions(app: AppTest) -> str:
     return " ".join(c.value for c in app.caption)
 
 
-@pytest.fixture
-def screened() -> ScreeningSummary:
-    return ScreeningSummary(
-        folds=8,
-        fell_back=0,
-        counts=(("VIX_Index_PX_LAST", 8), ("LUACOAS_Index_PX_LAST", 0)),
-    )
+def _table(app: AppTest) -> str:
+    return next(m.value for m in app.markdown if '<table class="fe-table"' in m.value)
 
 
-def test_a_screened_run_shows_per_fold_signal_inclusion(screened):
-    app = _page(screened)
+def _has_table(app: AppTest) -> bool:
+    return any('<table class="fe-table"' in m.value for m in app.markdown)
+
+
+def _expander_labels(app: AppTest) -> list[str]:
+    return [e.label for e in app.expander]
+
+
+# --- guards and layout -----------------------------------------------------------
+
+
+def test_no_target_resolved_shows_a_guiding_message():
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state["extraction_committed"] = _committed()
+    app.run()
 
     assert not app.exception
-    assert "Signal inclusion across folds" in _markdown(app)
+    assert any("No target resolved yet" in i.value for i in app.info)
+    assert not app.tabs
 
 
-def test_each_signal_is_shown_against_the_number_of_folds(screened):
-    app = _page(screened)
+def test_there_is_a_tab_per_resolved_target_named_after_it():
+    app = _page(bond=True)
 
-    tables = [d.value for d in app.dataframe]
-    inclusion = next(t for t in tables if "Folds" in t.columns)
-    assert dict(zip(inclusion["Signal"], inclusion["Folds"], strict=True)) == {
-        "VIX_Index_PX_LAST": "8/8",
-        "LUACOAS_Index_PX_LAST": "0/8",
+    assert not app.exception
+    assert [t.label for t in app.tabs] == ["Equity · S&P 500", "Bond · US Aggregate Bond"]
+
+
+def test_the_old_family_and_target_pickers_and_trials_input_are_gone():
+    app = _page()
+
+    assert not [r for r in app.radio if r.label in ("Model family", "Target")]
+    assert all("optuna" not in n.label.lower() for n in app.number_input)
+
+
+def test_the_model_checkboxes_default_to_every_family_with_polynomial_always_on():
+    app = _page()
+
+    boxes = {c.label: c for c in app.checkbox}
+    assert boxes["Polynomial"].value and boxes["Polynomial"].disabled
+    assert boxes["Fama-French 5"].value
+    assert boxes["Machine learning"].value
+
+
+def test_settings_hold_the_horizon_windows_and_embargo():
+    app = _page()
+
+    (settings,) = [e for e in app.expander if e.label == "Settings"]
+    (horizon,) = settings.segmented_control
+    assert list(horizon.options) == ["1 day", "5 days"]
+    assert horizon.value == 5
+    windows = {n.label: n.value for n in settings.number_input}
+    assert windows == {
+        "Walk-forward train window (days)": 120,
+        "Walk-forward test window (days)": 20,
     }
+    assert any(c.value.startswith("Embargo is fixed") for c in settings.caption)
 
 
-def test_a_signal_no_fold_used_is_still_shown(screened):
-    app = _page(screened)
-
-    inclusion = next(d.value for d in app.dataframe if "Folds" in d.value.columns)
-    assert "0/8" in inclusion["Folds"].tolist()
-
-
-def test_folds_that_fell_back_to_every_signal_are_called_out():
-    app = _page(ScreeningSummary(folds=8, fell_back=3, counts=(("VIX_Index_PX_LAST", 8),)))
-    assert "3 of 8 folds kept no signal" in _captions(app)
-
-
-def test_no_fallback_note_when_no_fold_fell_back(screened):
-    app = _page(screened)
-    assert "kept no signal" not in _captions(app)
-
-
-def test_a_run_without_screening_shows_no_inclusion_table():
-    # FF5 and a user-supplied formula are handed their features; there is
-    # nothing per-fold to report.
-    app = _page(None)
-
-    assert not app.exception
-    assert "Signal inclusion across folds" not in _markdown(app)
-    assert all("Folds" not in d.value.columns for d in app.dataframe)
-
-
-# --- Phase 4.3: the horizon, the embargo, and where the lag lives -----------
+def test_the_embargo_and_signal_lag_are_not_inputs():
+    app = _page()
+    labels = [n.label.lower() for n in app.number_input]
+    assert all("embargo" not in label and "lag" not in label for label in labels)
+    assert all("lag-shift" not in e.label.lower() for e in app.expander)
 
 
 @pytest.fixture
@@ -161,318 +229,20 @@ def splitter_calls(monkeypatch):
     return calls
 
 
-def _bare_page() -> AppTest:
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = _committed()
-    app.session_state["extraction_committed_targets"] = _TARGETS
-    return app.run()
-
-
-def test_the_horizon_is_a_choice_of_exactly_one_or_five_days():
-    app = _bare_page()
-
-    (horizon,) = [c for c in app.segmented_control if c.label == "Forecast horizon"]
-    assert list(horizon.options) == ["1 day", "5 days"]
-
-
-def test_the_horizon_defaults_to_five_days():
-    app = _bare_page()
-    (horizon,) = [c for c in app.segmented_control if c.label == "Forecast horizon"]
-    assert horizon.value == 5
-
-
-def test_the_free_numeric_horizon_input_is_gone():
-    app = _bare_page()
-    assert all("horizon" not in n.label.lower() for n in app.number_input)
-
-
 @pytest.mark.parametrize("chosen", [1, 5])
 def test_the_embargo_is_five_whichever_horizon_is_chosen(splitter_calls, chosen):
-    # Before, picking h=1 silently dropped the embargo to 1 as well.
-    app = _bare_page()
+    app = _page()
     (horizon,) = [c for c in app.segmented_control if c.label == "Forecast horizon"]
-    horizon.set_value(chosen)
-    app.run()
+    horizon.set_value(chosen).run()
 
     assert not app.exception
-    assert splitter_calls, "the page must build a splitter"
     assert splitter_calls[-1]["embargo"] == 5
-
-
-def test_the_embargo_is_no_longer_an_editable_input():
-    app = _bare_page()
-    assert all("embargo" not in n.label.lower() for n in app.number_input)
-
-
-def test_the_signal_lag_is_not_an_input():
-    app = _bare_page()
-    assert all("lag" not in n.label.lower() for n in app.number_input)
-    assert all("lag" not in e.label.lower() for e in app.expander)
-
-
-# --- the fitted polynomial as a labelled function ----------------------------
-
-DERIVED = ModelDescription(
-    name="DerivedPolynomial",
-    terms=("VIX_Index_PX_LAST^2", "LUACOAS_Index_PX_LAST VIX_Index_PX_LAST"),
-    coefficients=(0.0004521, -0.000231),
-    intercept=0.001234,
-)
-
-
-def _function_page(
-    *, target: str = "SPX_Index_PX_LAST", horizon: int = 5, frame: pd.DataFrame | None = None
-) -> AppTest:
-    """A page holding a stored derived function, fitted for ``target``/``horizon`` on
-    ``frame`` (the committed data, by default)."""
-    committed = _committed()
-    fn = from_description(DERIVED, origin=Origin.DERIVED, target=target, horizon=horizon)
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = committed
-    app.session_state["extraction_committed_targets"] = _TARGETS
-    app.session_state["polynomial_result_equity"] = _result(None)
-    app.session_state["polynomial_description_equity"] = DERIVED
-    app.session_state["polynomial_function_equity"] = (
-        fn,
-        dataset_fingerprint(committed if frame is None else frame),
-    )
-    return app.run()
-
-
-def _terms_table(app: AppTest) -> pd.DataFrame:
-    return next(d.value for d in app.dataframe if "Exponent" in d.value.columns)
-
-
-def test_a_stored_derived_function_is_headed_as_derived():
-    app = _function_page()
-
-    assert not app.exception
-    assert [s.value for s in app.subheader].count("Derived Function") == 1
-
-
-def test_the_function_says_what_it_forecasts():
-    assert "Forecasts: S&P 500, 5-day return" in _captions(_function_page())
-
-
-def test_no_target_resolved_shows_a_guiding_message_not_a_free_picker():
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = _committed()
-    # No "extraction_committed_targets" at all — nothing resolved on the Data page.
-    app.run()
-
-    assert not app.exception
-    assert any("No target resolved yet" in i.value for i in app.info)
-    assert not app.radio  # no "Target" picker, and no "Model family" either
-
-
-def test_only_the_resolved_targets_are_offered():
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = _committed()
-    app.session_state["extraction_committed_targets"] = {TargetRole.EQUITY: "SPX_Index_PX_LAST"}
-    app.run()
-
-    (target,) = [r for r in app.radio if r.label == "Target"]
-    assert list(target.options) == ["Equity — S&P 500 (total return)"]
-
-
-def test_fama_french_is_not_offered_for_the_bond_target():
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = _committed().rename(
-        columns={"SPX_Index_PX_LAST": "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"}
-    )
-    app.session_state["extraction_committed_targets"] = {
-        TargetRole.BOND: "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
-    }
-    app.run()
-
-    (family,) = [r for r in app.radio if r.label == "Model family"]
-    assert "Fama-French 5-Factor" not in family.options
-
-
-def test_a_target_column_never_appears_as_a_signal_even_for_the_other_role():
-    # Both targets present: selecting Equity must not let the Bond column
-    # (or vice versa) ride along as a candidate signal.
-    committed = _committed().rename(
-        columns={"LUACOAS_Index_PX_LAST": "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"}
-    )
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = committed
-    app.session_state["extraction_committed_targets"] = {
-        TargetRole.EQUITY: "SPX_Index_PX_LAST",
-        TargetRole.BOND: "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS",
-    }
-    app.run()
-
-    assert not app.exception
-    (mode,) = [r for r in app.radio if r.label == "Function source"]
-    # "Enter a function" is the default; the caption right above the formula
-    # box names every column offered as a signal.
-    captions = " ".join(c.value for c in app.caption)
-    assert "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS" not in captions
-    assert "SPX_Index_PX_LAST" not in captions
-
-
-def test_switching_target_does_not_clobber_the_other_targets_result():
-    committed = _committed().rename(
-        columns={"LUACOAS_Index_PX_LAST": "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"}
-    )
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = committed
-    app.session_state["extraction_committed_targets"] = {
-        TargetRole.EQUITY: "SPX_Index_PX_LAST",
-        TargetRole.BOND: "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS",
-    }
-    app.session_state["polynomial_result_equity"] = _result(None)
-    app.session_state["polynomial_description_equity"] = ModelDescription(
-        name="Derived polynomial", terms=("VIX_Index_PX_LAST",), coefficients=(0.2,)
-    )
-    app.run()
-
-    # Nothing about loading the Bond side of the page should touch the
-    # Equity result parked under its own namespaced key.
-    assert app.session_state["polynomial_result_equity"] is not None
-    assert "polynomial_result_bond" not in app.session_state
-
-
-def test_the_equation_is_typeset_with_labels():
-    (latex,) = [lx.value for lx in _function_page().latex]
-    assert r"\hat{y} = 0.001234 + 0.0004521" in latex
-    assert r"\text{VIX}^{2}" in latex
-
-
-def test_the_term_table_uses_labels_not_raw_column_codes():
-    table = _terms_table(_function_page())
-
-    assert table["Factor"].tolist() == ["(intercept)", "VIX", "US IG credit spread × VIX"]
-    assert table["Coefficient"].tolist() == ["0.001234", "0.0004521", "−0.0002310"]
-    assert not table.astype(str).apply(lambda col: col.str.contains("_Index_")).any().any()
-
-
-def test_the_raw_fitted_terms_table_is_replaced():
-    app = _function_page()
-    assert "Fitted terms" not in _markdown(app)
-    assert all("Term" not in d.value.columns for d in app.dataframe)
-
-
-def test_a_current_function_has_no_stale_warning():
-    assert not _function_page().warning
-
-
-def test_a_function_for_another_horizon_is_flagged_stale():
-    (warning,) = _function_page(horizon=1).warning
-    assert warning.value == (
-        "Fitted for S&P 500, 1-day return. The inputs above have changed, so run again "
-        "to update."
-    )
-
-
-def test_a_function_for_another_target_is_flagged_stale():
-    (warning,) = _function_page(target="VIX_Index_PX_LAST").warning
-    assert warning.value.startswith("Fitted for VIX, 5-day return.")
-
-
-def test_a_function_fitted_on_other_data_is_flagged_stale_first():
-    other = _committed().iloc[:-1]
-    (warning,) = _function_page(horizon=1, frame=other).warning
-    assert warning.value == "Fitted on a previous dataset. Run again to update."
-
-
-def test_a_result_without_a_stored_function_still_renders():
-    # A session from before this change holds a result but no function.
-    app = _page(None)
-
-    assert not app.exception
-    assert app.metric
-    assert "Derived Function" not in [s.value for s in app.subheader]
-
-
-def test_applying_a_formula_replaces_the_stored_derived_function():
-    app = _function_page()
-    (mode,) = [r for r in app.radio if r.label == "Function source"]
-    mode.set_value("Enter a function").run()
-    (formula,) = [t for t in app.text_input if t.label.startswith("Function")]
-    formula.set_value("2 * VIX_Index_PX_LAST + LUACOAS_Index_PX_LAST ** 2").run()
-    (apply,) = [b for b in app.button if b.label == "Apply"]
-    apply.click().run()
-
-    assert not app.exception
-    assert not app.error
-    headings = [s.value for s in app.subheader]
-    assert "User-Supplied Function" in headings
-    assert "Derived Function" not in headings
-    assert _terms_table(app)["Factor"].tolist() == ["VIX", "US IG credit spread"]
-    assert not app.warning
-
-
-# --- how typical the shown equation is of the whole run ----------------------
-
-
-def _page_with_terms(with_terms: int, folds: int = 10, description=DERIVED) -> AppTest:
-    committed = _committed()
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = committed
-    app.session_state["extraction_committed_targets"] = _TARGETS
-    app.session_state["polynomial_result_equity"] = ModelRunResult(
-        ic=0.05,
-        oos_rank_ic=0.04,
-        rmse=0.01,
-        pbo=0.3,
-        crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
-        terms=FoldTerms(folds=folds, with_terms=with_terms),
-    )
-    app.session_state["polynomial_description_equity"] = description
-    app.session_state["polynomial_function_equity"] = (
-        from_description(
-            description, origin=Origin.DERIVED, target="SPX_Index_PX_LAST", horizon=5
-        ),
-        dataset_fingerprint(committed),
-    )
-    return app.run()
-
-
-def test_a_run_whose_folds_mostly_kept_nothing_says_so():
-    app = _page_with_terms(with_terms=4, folds=10)
-
-    assert not app.exception
-    assert "4 of 10 walk-forward folds kept any term at all" in _captions(app)
-    assert "most recent fold's fit" in _captions(app)
-
-
-def test_a_run_where_every_fold_kept_terms_says_that_instead():
-    app = _page_with_terms(with_terms=10, folds=10)
-
-    assert "Every one of the 10 walk-forward folds kept at least one term." in _captions(app)
-    assert "kept any term at all" not in _captions(app)
-
-
-def test_an_older_result_without_the_count_still_renders():
-    # A result parked in session state before this field existed.
-    app = _page(None)
-
-    assert not app.exception
-    assert "walk-forward folds kept" not in _captions(app)
-
-
-def test_an_empty_equation_still_explains_itself():
-    empty = ModelDescription(
-        name="DerivedPolynomial", terms=(), coefficients=(), intercept=0.002
-    )
-    app = _page_with_terms(with_terms=3, folds=10, description=empty)
-
-    assert "No terms survived fitting" in _captions(app)
-    assert "3 of 10 walk-forward folds kept any term at all" in _captions(app)
-
-
-# --- signals on the target's calendar ------------------------------------------
 
 
 def test_a_target_securitys_other_fields_are_not_signals_and_transforms_are_shown():
     committed = _committed()
-    committed["SPX_Index_PX_BID"] = committed["SPX_Index_PX_LAST"] - 0.1
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = committed
-    app.session_state["extraction_committed_targets"] = _TARGETS
-    app.session_state["extraction_committed_sources"] = {
+    committed["SPX_Index_PX_BID"] = committed[SPX] - 0.1
+    sources = {
         f"{ticker}_Index_{field}": ColumnSource(f"{ticker} Index", field)
         for ticker, field in [
             ("SPX", "PX_LAST"),
@@ -481,54 +251,325 @@ def test_a_target_securitys_other_fields_are_not_signals_and_transforms_are_show
             ("LUACOAS", "PX_LAST"),
         ]
     }
-    app.run()
+    app = _page(committed=committed, sources=sources)
 
     assert not app.exception
-    alignment = next(d.value for d in app.dataframe if "Transform" in d.value.columns)
+    alignment = next(d.value for d in app.dataframe if "Carried forward" in d.value.columns)
     assert dict(zip(alignment["Signal"], alignment["Transform"], strict=True)) == {
         "VIX_Index_PX_LAST": "difference",
         "LUACOAS_Index_PX_LAST": "difference",
     }
 
 
-# --- Fama-French factors are resolved on Fit ---------------------------------
+# --- results: only what ran, named for its target -------------------------------
 
 
-def _fit_famafrench(monkeypatch, resolve) -> AppTest:
-    monkeypatch.setattr(fama_french, "resolve", resolve)
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["extraction_committed"] = _committed()
-    app.session_state["extraction_committed_targets"] = _TARGETS
+def test_nothing_run_yet_shows_no_results():
+    app = _page()
+
+    assert not app.exception
+    assert "Nothing has run for S&P 500" in _captions(app)
+    assert not _has_table(app)
+
+
+def test_results_render_only_for_the_models_that_ran():
+    app = _page({EQUITY: {"Polynomial": _polynomial_run()}})
+
+    assert not app.exception
+    table = _table(app)
+    assert table.count("<tr>") == 2  # header + one model
+    assert "Polynomial" in table and "Machine Learning" not in table
+    labels = _expander_labels(app)
+    assert "Polynomial · S&P 500" in labels
+    assert not [e for e in labels if e.startswith(("Fama-French 5", "Machine learning"))]
+
+
+def test_every_results_header_names_the_target():
+    app = _page({EQUITY: {"Polynomial": _polynomial_run(), "Machine Learning": _ml_run()}})
+
+    assert "Results · S&P 500" in [s.value for s in app.subheader]
+    for heading in ("Signal screening", "Polynomial", "Machine learning"):
+        assert f"{heading} · S&P 500" in _expander_labels(app)
+
+
+def test_the_table_shows_rows_scored():
+    table = _table(_page({EQUITY: {"Polynomial": _polynomial_run()}}))
+    assert "Rows scored" in table
+    assert "<td>180</td>" in table
+
+
+def test_each_model_gets_a_one_line_gate_summary():
+    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    benchmark = model_runs.ModelRun(
+        _result(pbo=None),
+        ModelDescription("FamaFrench5", FACTOR_COLUMNS, (0.1,) * 5),
+        coverage=FactorCoverage(pd.Timestamp("2024-01-01"), pd.Timestamp("2024-08-30"), 150, 5),
+    )
+    app = _page({EQUITY: {"Polynomial": _polynomial_run(failing), "FF5 Benchmark": benchmark}})
+
+    text = _markdown(app)
+    assert "**Polynomial**: gate failed on OOS Rank IC and PBO." in text
+    assert "**FF5 Benchmark**: not gated" in text
+
+
+def test_each_targets_results_stay_in_its_own_tab():
+    app = _page({EQUITY: {"Polynomial": _polynomial_run()}}, bond=True)
+
+    assert not app.exception
+    assert "Results · S&P 500" in [s.value for s in app.subheader]
+    assert "Nothing has run for US Aggregate Bond" in _captions(app)
+
+
+# --- signal screening -------------------------------------------------------------
+
+
+@pytest.fixture
+def screened() -> ScreeningSummary:
+    return ScreeningSummary(
+        folds=8,
+        fell_back=0,
+        counts=(("VIX_Index_PX_LAST", 8), ("LUACOAS_Index_PX_LAST", 0)),
+        fold_ics=({"VIX_Index_PX_LAST": 0.05, "LUACOAS_Index_PX_LAST": 0.001},),
+        latest_included=("VIX_Index_PX_LAST",),
+    )
+
+
+def _screening_table(app: AppTest) -> pd.DataFrame:
+    return next(d.value for d in app.dataframe if "Included in" in d.value.columns)
+
+
+def test_screening_shows_transform_latest_fold_and_folds_included(screened):
+    app = _page({EQUITY: {"Polynomial": _polynomial_run(_result(screened))}})
+
+    table = _screening_table(app).set_index("Signal")
+    assert table.loc["VIX_Index_PX_LAST", "Transform"] == "difference"
+    assert table.loc["VIX_Index_PX_LAST", "Latest fold"] == "In"
+    assert table.loc["LUACOAS_Index_PX_LAST", "Latest fold"] == "Out"
+    assert table.loc["VIX_Index_PX_LAST", "Latest-fold IC"] == pytest.approx(0.05)
+    assert table.loc["LUACOAS_Index_PX_LAST", "Included in"] == "0 of 8 folds"
+
+
+def test_screening_is_taken_from_ml_when_the_polynomial_did_not_screen(screened):
+    app = _page(
+        {EQUITY: {"Polynomial": _polynomial_run(), "Machine Learning": _ml_run(_result(screened))}}
+    )
+    assert _screening_table(app)["Signal"].tolist() == [
+        "VIX_Index_PX_LAST",
+        "LUACOAS_Index_PX_LAST",
+    ]
+
+
+def test_folds_that_fell_back_to_every_signal_are_called_out():
+    screening = ScreeningSummary(folds=8, fell_back=3, counts=(("VIX_Index_PX_LAST", 8),))
+    app = _page({EQUITY: {"Polynomial": _polynomial_run(_result(screening))}})
+    assert "3 of 8 folds kept no signal" in _captions(app)
+
+
+def test_nothing_screened_says_so():
+    app = _page({EQUITY: {"Polynomial": _polynomial_run()}})
+
+    assert "Nothing was screened" in _captions(app)
+    assert all("Included in" not in d.value.columns for d in app.dataframe)
+
+
+# --- the fitted polynomial as a labelled function --------------------------------
+
+
+def _terms_table(app: AppTest) -> pd.DataFrame:
+    return next(d.value for d in app.dataframe if "Exponent" in d.value.columns)
+
+
+def test_the_function_says_what_it_forecasts():
+    app = _page({EQUITY: {"Polynomial": _polynomial_run()}})
+    assert "Forecasts: S&P 500, 5-day return" in _captions(app)
+    assert "Derived Function" in _markdown(app)
+
+
+def test_the_equation_is_typeset_with_labels():
+    (latex,) = [lx.value for lx in _page({EQUITY: {"Polynomial": _polynomial_run()}}).latex]
+    assert r"\hat{y} = 0.001234 + 0.0004521" in latex
+    assert r"\text{VIX}^{2}" in latex
+
+
+def test_the_term_table_uses_labels_not_raw_column_codes():
+    table = _terms_table(_page({EQUITY: {"Polynomial": _polynomial_run()}}))
+
+    assert table["Factor"].tolist() == ["(intercept)", "VIX", "US IG credit spread × VIX"]
+    assert table["Coefficient"].tolist() == ["0.001234", "0.0004521", "−0.0002310"]
+
+
+def test_a_run_whose_folds_mostly_kept_nothing_says_so():
+    run = _polynomial_run(_result(terms=FoldTerms(folds=10, with_terms=4)))
+    captions = _captions(_page({EQUITY: {"Polynomial": run}}))
+
+    assert "4 of 10 walk-forward folds kept any term at all" in captions
+    assert "most recent fold's fit" in captions
+
+
+def test_a_run_where_every_fold_kept_terms_says_that_instead():
+    run = _polynomial_run(_result(terms=FoldTerms(folds=10, with_terms=10)))
+    captions = _captions(_page({EQUITY: {"Polynomial": run}}))
+
+    assert "Every one of the 10 walk-forward folds kept at least one term." in captions
+
+
+def test_an_empty_equation_still_explains_itself():
+    empty = ModelDescription(name="DerivedPolynomial", terms=(), coefficients=(), intercept=0.002)
+    run = _polynomial_run(_result(terms=FoldTerms(folds=10, with_terms=3)), empty)
+    captions = _captions(_page({EQUITY: {"Polynomial": run}}))
+
+    assert "No terms survived fitting" in captions
+    assert "3 of 10 walk-forward folds kept any term at all" in captions
+
+
+# --- clearing: results always match the settings shown ---------------------------
+
+
+def _two_tabs() -> dict:
+    return {EQUITY: {"Polynomial": _polynomial_run()}, BOND: {"Polynomial": _polynomial_run()}}
+
+
+def test_changing_a_shared_setting_clears_every_tabs_results():
+    app = _page(_two_tabs(), bond=True)
+    (train,) = [n for n in app.number_input if n.label.startswith("Walk-forward train")]
+    train.set_value(130).run()
+
+    assert not app.exception
+    assert _stored_runs(app, EQUITY) == {}
+    assert _stored_runs(app, BOND) == {}
+    assert not _has_table(app)
+
+
+def test_changing_the_horizon_clears_every_tabs_results():
+    app = _page(_two_tabs(), bond=True)
+    (horizon,) = [c for c in app.segmented_control if c.label == "Forecast horizon"]
+    horizon.set_value(1).run()
+
+    assert _stored_runs(app, EQUITY) == {}
+    assert _stored_runs(app, BOND) == {}
+
+
+def test_changing_one_tabs_polynomial_settings_clears_only_that_tab():
+    app = _page(_two_tabs(), bond=True)
+    (formula, _bond_formula) = [t for t in app.text_input if t.label.startswith("Function")]
+    formula.set_value("2 * VIX_Index_PX_LAST").run()
+
+    assert _stored_runs(app, EQUITY) == {}
+    assert "Polynomial" in _stored_runs(app, BOND)
+
+
+def test_ticking_or_unticking_a_model_clears_nothing():
+    app = _page(_two_tabs(), bond=True)
+    (ml,) = [c for c in app.checkbox if c.label == "Machine learning"]
+    ml.uncheck().run()
+
+    assert "Polynomial" in _stored_runs(app, EQUITY)
+    assert "Polynomial" in _stored_runs(app, BOND)
+
+
+def test_committing_a_new_dataset_clears_everything():
+    app = _page(_two_tabs(), bond=True)
+    app.session_state["extraction_committed"] = _committed(bond=True).iloc[:-1]
     app.run()
-    (family,) = [r for r in app.radio if r.label == "Model family"]
-    family.set_value("Fama-French 5-Factor").run()
-    next(b for b in app.button if b.label == "Fit").click().run()
+
+    assert _stored_runs(app, EQUITY) == {}
+    assert _stored_runs(app, BOND) == {}
+
+
+# --- pressing Run ------------------------------------------------------------------
+
+
+@pytest.fixture
+def stub_ml(monkeypatch):
+    calls = []
+
+    def fake(panel, splitter):
+        calls.append(panel)
+        return _result(), _ml_run().description
+
+    monkeypatch.setattr(boosted, "run_boosted", fake)
+    return calls
+
+
+def _factors(dates: pd.Series) -> pd.DataFrame:
+    rng = np.random.default_rng(1)
+    return pd.DataFrame(
+        {"Date": dates, **{c: rng.normal(size=len(dates)) for c in FACTOR_COLUMNS}}
+    )
+
+
+def _untick(app: AppTest, *labels: str) -> AppTest:
+    for label in labels:
+        next(c for c in app.checkbox if c.label == label).uncheck()
+    return app.run()
+
+
+def _run_equity(app: AppTest, formula: str = "2 * VIX_Index_PX_LAST") -> AppTest:
+    next(t for t in app.text_input if t.label.startswith("Function")).set_value(formula).run()
+    next(b for b in app.button if b.label == "Run").click().run()
     return app
 
 
-def test_ff5_is_not_run_and_says_why_when_no_factors_can_be_had(monkeypatch):
+def test_run_fits_every_ticked_model_and_one_failure_does_not_stop_the_rest(
+    monkeypatch, stub_ml
+):
     def unavailable():
         raise FactorFetchError("OSError: no route to host")
 
-    app = _fit_famafrench(monkeypatch, unavailable)
+    monkeypatch.setattr(fama_french, "resolve", unavailable)
+    app = _run_equity(_page())
 
     assert not app.exception
+    assert set(_stored_runs(app)) == {"Polynomial", "Machine Learning"}
     assert "no route to host" in " ".join(e.value for e in app.error)
-    assert "famafrench_result_equity" not in app.session_state
+    assert len(stub_ml) == 1
 
 
-def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch):
-    dates = _committed()["Date"]
-    rng = np.random.default_rng(1)
-    factors = pd.DataFrame(
-        {"Date": dates[:-10], **{c: rng.normal(size=len(dates) - 10) for c in FACTOR_COLUMNS}}
-    )
-    resolved = ResolvedFactors(
-        FactorFile(factors, SourceFile.of("ff.csv", b"x")), warning="Using the saved copy."
-    )
+def test_an_unticked_model_is_not_run(monkeypatch, stub_ml):
+    monkeypatch.setattr(fama_french, "resolve", lambda: pytest.fail("FF5 was unticked"))
+    app = _run_equity(_untick(_page(), "Fama-French 5", "Machine learning"))
 
-    app = _fit_famafrench(monkeypatch, lambda: resolved)
+    assert set(_stored_runs(app)) == {"Polynomial"}
+    assert not stub_ml
+
+
+def test_ff5_never_runs_on_the_bond_tab(monkeypatch, stub_ml):
+    monkeypatch.setattr(fama_french, "resolve", lambda: pytest.fail("FF5 ran for bonds"))
+    app = _page(bond=True)
+    (_equity_formula, bond_formula) = [t for t in app.text_input if t.label.startswith("Function")]
+    bond_formula.set_value("2 * VIX_Index_PX_LAST").run()
+    (_equity_run, bond_run) = [b for b in app.button if b.label == "Run"]
+    bond_run.click().run()
 
     assert not app.exception
+    assert set(_stored_runs(app, BOND)) == {"Polynomial", "Machine Learning"}
+
+
+def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch, stub_ml):
+    dates = _committed()["Date"]
+    resolved = ResolvedFactors(
+        FactorFile(_factors(dates[:-10]), SourceFile.of("ff.csv", b"x")),
+        warning="Using the saved copy.",
+    )
+    monkeypatch.setattr(fama_french, "resolve", lambda: resolved)
+    app = _run_equity(_page())
+
+    assert not app.exception
+    assert "Fama-French 5 · S&P 500" in _expander_labels(app)
     assert "Using the saved copy." in " ".join(w.value for w in app.warning)
     assert "10 target dates have no factor row" in _captions(app)
+
+
+def test_a_blank_function_fails_the_polynomial_but_the_rest_still_run(monkeypatch, stub_ml):
+    app = _untick(_page(), "Fama-French 5")
+    next(b for b in app.button if b.label == "Run").click().run()
+
+    assert "enter a function above first" in " ".join(e.value for e in app.error)
+    assert set(_stored_runs(app)) == {"Machine Learning"}
+
+
+def test_ml_results_show_shap_and_the_coarse_pbo_note(stub_ml):
+    app = _run_equity(_untick(_page(), "Fama-French 5"))
+
+    assert "Feature attribution (SHAP)" in _markdown(app)
+    assert "only two candidates" in _captions(app)

@@ -1,5 +1,6 @@
 """Every piece of jargon on the dashboard explains itself on hover."""
 
+import html
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import glossary
+import model_runs
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult, ScreeningSummary
@@ -20,7 +22,6 @@ from forecasting_engine.validation.crash import CrashDiagnostics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODELS_PAGE = REPO_ROOT / "app" / "app_pages" / "3_Models.py"
-METRICS_PAGE = REPO_ROOT / "app" / "app_pages" / "4_Model_Metrics.py"
 
 
 def _committed() -> pd.DataFrame:
@@ -55,19 +56,18 @@ def models_page() -> AppTest:
         intercept=0.001234,
     )
     committed = _committed()
+    fn = from_description(description, origin=Origin.DERIVED, target="SPX_Index_PX_LAST", horizon=5)
+    stored = model_runs.StoredRuns((dataset_fingerprint(committed), 5, 120, 20))
+    stored.tabs[TargetRole.EQUITY] = model_runs.TabRuns(
+        ("Enter a function", ""),
+        {"Polynomial": model_runs.ModelRun(_result(), description, function=fn)},
+    )
     app = AppTest.from_file(str(MODELS_PAGE), default_timeout=30)
     app.session_state["extraction_committed"] = committed
     app.session_state["extraction_committed_targets"] = {
         TargetRole.EQUITY: "SPX_Index_PX_LAST"
     }
-    app.session_state["polynomial_result_equity"] = _result()
-    app.session_state["polynomial_description_equity"] = description
-    app.session_state["polynomial_function_equity"] = (
-        from_description(
-            description, origin=Origin.DERIVED, target="SPX_Index_PX_LAST", horizon=5
-        ),
-        dataset_fingerprint(committed),
-    )
+    app.session_state[model_runs.RUNS_KEY] = stored
     return app.run()
 
 
@@ -85,19 +85,16 @@ def _helps(app: AppTest) -> dict[str, str]:
     return {label: help_text for label, help_text in labelled if help_text}
 
 
-@pytest.mark.parametrize(
-    "label",
-    ["Target", "Model family", "Forecast horizon"],
-)
+@pytest.mark.parametrize("label", ["Forecast horizon", "Function source"])
 def test_the_controls_that_name_a_concept_explain_it(models_page, label):
     assert label in _helps(models_page)
 
 
 @pytest.mark.parametrize("metric", ["IC", "OOS Rank IC", "RMSE", "PBO"])
 def test_every_headline_metric_explains_itself(models_page, metric):
-    helps = _helps(models_page)
-    assert metric in helps
-    assert len(helps[metric]) > 80, "a metric's tooltip should say what it is and why it matters"
+    hint = html.escape(glossary.term(metric), quote=True)
+    assert f'<th title="{hint}">{metric}' in _table(models_page)
+    assert len(glossary.term(metric)) > 80, "a tooltip should say what it is and why it matters"
 
 
 def test_the_walk_forward_windows_explain_what_walk_forward_means(models_page):
@@ -117,33 +114,27 @@ def test_the_signal_lag_caption_explains_itself(models_page):
 
 
 def test_crash_diagnostics_explain_recall_and_precision(models_page):
-    assert any(
-        "Recall" in label and "precision" in help_text
-        for label, help_text in _helps(models_page).items()
-    )
+    hint = html.escape(glossary.term("Crash diagnostics"), quote=True)
+    assert f'<th title="{hint}">Crash Recall' in _table(models_page)
+    assert "precision" in glossary.term("Crash diagnostics")
 
 
 def test_the_fitted_function_heading_explains_what_it_shows(models_page):
-    assert _helps(models_page)["Derived Function"] == glossary.term("Fitted terms")
+    hint = html.escape(glossary.term("Fitted terms"), quote=True)
+    assert any("Derived Function" in m.value and hint in m.value for m in models_page.markdown)
 
 
-def test_section_labels_without_streamlit_help_carry_a_hover_hint(models_page):
-    markdown = " ".join(m.value for m in models_page.markdown)
-    assert 'class="fe-eyebrow-help"' in markdown
-    assert "Signal inclusion across folds" in markdown
+def test_the_screening_caption_explains_itself(models_page):
+    assert glossary.term("Signal inclusion across folds") in _helps(models_page).values()
 
 
 def _table(app: AppTest) -> str:
     return next(m.value for m in app.markdown if '<table class="fe-table"' in m.value)
 
 
-def test_the_comparison_table_explains_every_column_it_can():
-    app = AppTest.from_file(str(METRICS_PAGE), default_timeout=30)
-    app.session_state["polynomial_result_equity"] = _result()
-    app.run()
-
-    table = _table(app)
-    assert not app.exception
+def test_the_comparison_table_explains_every_column_it_can(models_page):
+    table = _table(models_page)
+    assert not models_page.exception
     for column in ("IC", "OOS Rank IC", "RMSE", "PBO", "Crash Recall"):
         assert "<th title=" in table
         assert column in table
@@ -152,14 +143,10 @@ def test_the_comparison_table_explains_every_column_it_can():
     )
 
 
-def test_a_tooltip_is_escaped_so_it_cannot_break_the_table():
+def test_a_tooltip_is_escaped_so_it_cannot_break_the_table(models_page):
     # The hint is written into an HTML attribute; a quote in the wording would
     # otherwise end the attribute early.
-    app = AppTest.from_file(str(METRICS_PAGE), default_timeout=30)
-    app.session_state["polynomial_result_equity"] = _result()
-    app.run()
-
-    table = _table(app)
+    table = _table(models_page)
     assert "&#x27;" in table or all('"' not in glossary.term(t) for t in glossary.TERMS)
 
 

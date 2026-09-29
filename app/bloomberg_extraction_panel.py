@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 import streamlit as st
 
+import model_runs
 import ui
 from forecasting_engine.extraction import bloomberg_csv, bloomberg_xlsx, validation
 from forecasting_engine.extraction.bloomberg_csv import BloombergCsvExport
@@ -52,8 +53,8 @@ _SIGNAL_EXPORTS_KEY = "_signal_exports"
 _TARGET_ROLE_CHOICES_KEY = "_target_role_choices"
 _TARGET_FIELD_CHOICES_KEY = "_target_field_choices"
 
-#: The cleaned, combined frame (and its own report) that Home, Models and
-#: Model Metrics read. Only updated when the user clicks "Use Updated Data" —
+#: The cleaned, combined frame (and its own report) that Home and Models
+#: read. Only updated when the user clicks "Use Updated Data" —
 #: not on every gap-review edit — so those pages stay stable while decisions
 #: are still being made.
 COMMITTED_KEY = "extraction_committed"
@@ -74,23 +75,6 @@ _LOGGED_KEY = "_logged_bloomberg_merge"
 #: Bumped by "Clear Data" so both file_uploaders get a fresh widget key and
 #: drop whatever files they were showing, instead of re-displaying them.
 _UPLOADER_VERSION_KEY = "_bloomberg_uploader_version"
-
-#: Matches app_pages/3_Models.py's result-key constants and role-namespacing
-#: (``_role_key``) — duplicated rather than imported, same reason as
-#: 4_Model_Metrics.py: a page filename starting with a digit isn't a valid
-#: Python module name. Old results are stale once the data they were fit on
-#: is cleared, so "Clear Data" clears these too.
-_MODEL_RESULT_BASE_KEYS = (
-    "polynomial_result",
-    "polynomial_description",
-    "polynomial_function",
-    "famafrench_result",
-    "famafrench_description",
-    "famafrench_coverage",
-    "ml_result",
-    "ml_description",
-)
-
 
 def _fmt(date) -> str:
     """A date for display: dd/mm/yyyy, no time component."""
@@ -182,9 +166,8 @@ def render() -> None:
             _LOGGED_KEY,
         ):
             st.session_state.pop(key, None)
-        for base in _MODEL_RESULT_BASE_KEYS:
-            for role in TargetRole:
-                st.session_state.pop(f"{base}_{role.value}", None)
+        # Old results are stale once the data they were fit on is cleared.
+        st.session_state.pop(model_runs.RUNS_KEY, None)
         st.session_state[_UPLOADER_VERSION_KEY] = (
             st.session_state.get(_UPLOADER_VERSION_KEY, 0) + 1
         )
@@ -332,9 +315,9 @@ def render() -> None:
             icon=":material/check_circle:",
         )
     elif COMMITTED_KEY in st.session_state:
-        st.caption("A dataset is committed for Home, Models and Model Metrics.")
+        st.caption("A dataset is committed for Home and Models.")
     else:
-        st.caption("Nothing committed yet — Home, Models and Model Metrics have no data yet.")
+        st.caption("Nothing committed yet — Home and Models have no data yet.")
 
     # Filled in now (not where reserved above) so this reflects a commit made
     # by the button just above it, in this same run — no rerun needed.
