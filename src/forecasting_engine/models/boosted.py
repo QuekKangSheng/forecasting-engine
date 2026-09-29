@@ -19,7 +19,7 @@ with no new UI.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import optuna
@@ -31,7 +31,12 @@ from xgboost import XGBRegressor
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult
-from forecasting_engine.validation.harness import evaluate, select_best_candidate, summarize
+from forecasting_engine.validation.harness import (
+    FoldResult,
+    evaluate,
+    select_best_candidate,
+    summarize,
+)
 from forecasting_engine.validation.metrics import rmse
 from forecasting_engine.validation.pbo import N_BLOCKS
 from forecasting_engine.validation.splitters import PurgedWalkForward
@@ -173,7 +178,9 @@ class BoostedForecaster:
         x, y = frame[signals], frame[panel.targets[0]]
         # A caller's explicit leaf setting wins; tuned params carry none, so the
         # data-scaled floor applies to every walk-forward refit.
-        params = {**_leaf_params(self.library, len(x)), **self.params}
+        # Gain, not LightGBM's default split count, so both libraries' per-fold
+        # importances measure the same thing.
+        params = {**_leaf_params(self.library, len(x)), **self.params, "importance_type": "gain"}
         self._model = _LIBRARIES[self.library](**params).fit(x, y)
         self._signals = signals
         self._fit_x = x
@@ -189,18 +196,30 @@ class BoostedForecaster:
         return predicted
 
     def describe(self) -> ModelDescription:
+        """The library's own feature importances — cheap enough to run every fold.
+
+        SHAP attribution is reserved for the fold that is displayed; see ``explain``.
+        """
+        self._require_fit("describe")
+        return self._description(self._model.feature_importances_)
+
+    def explain(self) -> ModelDescription:
         """FYP-149: mean |SHAP value| per feature, reusing the terms/coefficients
         contract Polynomial and FF5 already report through."""
-        if self._model is None or self._signals is None or self._fit_x is None:
-            raise RuntimeError("describe() called before fit()")
+        self._require_fit("explain")
         explainer = shap.TreeExplainer(self._model)
-        importance = np.abs(explainer.shap_values(self._fit_x)).mean(axis=0)
+        return self._description(np.abs(explainer.shap_values(self._fit_x)).mean(axis=0))
+
+    def _require_fit(self, method: str) -> None:
+        if self._model is None or self._signals is None or self._fit_x is None:
+            raise RuntimeError(f"{method}() called before fit()")
+
+    def _description(self, values) -> ModelDescription:
         return ModelDescription(
             name=self.name,
             terms=tuple(self._signals),
-            coefficients=tuple(float(v) for v in importance),
+            coefficients=tuple(float(v) for v in values),
         )
-
 
 def run_boosted(
     panel: FeaturePanel,
@@ -242,4 +261,16 @@ def run_boosted(
         for library in _LIBRARIES
     }
     best_name, pbo_value = select_best_candidate(per_candidate, n_blocks=n_blocks)
-    return summarize(per_candidate[best_name], pbo=pbo_value)
+    result, _description = summarize(per_candidate[best_name], pbo=pbo_value)
+    return result, _explain_last_fold(panel, per_candidate[best_name][-1], best_name, tuned)
+
+
+def _explain_last_fold(
+    panel: FeaturePanel, fold: FoldResult, library: str, tuned: dict[str, dict]
+) -> ModelDescription:
+    """SHAP for the displayed fold only: refit it exactly as ``evaluate`` did and
+    explain that fit, rather than running SHAP on every fold of both libraries."""
+    signals = fold.screening.fitted if fold.screening is not None else panel.signals
+    forecaster = BoostedForecaster(library, tuned[library])
+    forecaster.fit(replace(panel, signals=signals), fold.train)
+    return forecaster.explain()

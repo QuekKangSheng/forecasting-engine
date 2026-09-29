@@ -77,12 +77,12 @@ def test_boosted_forecaster_fits_and_predicts(library):
 
 
 @pytest.mark.parametrize("library", ["xgboost", "lightgbm"])
-def test_boosted_forecaster_describe_reports_shap_importance_per_signal(library):
+def test_boosted_forecaster_explain_reports_shap_importance_per_signal(library):
     panel = _panel()
     model = BoostedForecaster(library, _params(library))
     model.fit(panel, panel.frame.index)
 
-    description = model.describe()
+    description = model.explain()
 
     assert description.terms == ("sig_a", "sig_b")
     assert len(description.coefficients) == 2
@@ -90,6 +90,22 @@ def test_boosted_forecaster_describe_reports_shap_importance_per_signal(library)
     assert all(c >= 0 for c in description.coefficients)
     # sig_a has twice sig_b's true coefficient magnitude in the synthetic
     # target — its attribution should come out higher.
+    assert description.coefficients[0] > description.coefficients[1]
+
+
+@pytest.mark.parametrize("library", ["xgboost", "lightgbm"])
+def test_boosted_forecaster_describe_reports_native_importance_without_shap(library, monkeypatch):
+    panel = _panel()
+    model = BoostedForecaster(library, _params(library))
+    model.fit(panel, panel.frame.index)
+    monkeypatch.setattr(
+        "forecasting_engine.models.boosted.shap.TreeExplainer",
+        lambda *_: pytest.fail("describe() must not run SHAP"),
+    )
+
+    description = model.describe()
+
+    assert description.terms == ("sig_a", "sig_b")
     assert description.coefficients[0] > description.coefficients[1]
 
 
@@ -126,7 +142,8 @@ def test_boosted_forecaster_predict_before_fit_raises():
         model.predict(_panel(), _panel().frame.index)
 
 
-def test_boosted_forecaster_describe_before_fit_raises():
+@pytest.mark.parametrize("method", ["describe", "explain"])
+def test_boosted_forecaster_describe_before_fit_raises(method):
     model = BoostedForecaster("xgboost", _params("xgboost"))
     with pytest.raises(RuntimeError):
-        model.describe()
+        getattr(model, method)()

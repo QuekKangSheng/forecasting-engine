@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+import shap
 
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.boosted import BoostedConfigError, run_boosted
@@ -52,3 +53,21 @@ def test_run_boosted_result_matches_the_shared_comparison_contract():
 
     rows = build_metrics_rows({"Machine Learning": result})
     assert rows[2]["Model"].text == "Machine Learning"
+
+
+def test_run_boosted_runs_shap_once_not_once_per_fold(monkeypatch):
+    calls = []
+    real = shap.TreeExplainer
+
+    def counting(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("forecasting_engine.models.boosted.shap.TreeExplainer", counting)
+    splitter = _splitter()
+    assert len(list(splitter.split(_panel()))) > 1
+
+    _result, description = run_boosted(_panel(), splitter, n_trials=_N_TRIALS, n_blocks=4)
+
+    assert len(calls) == 1
+    assert all(c >= 0 for c in description.coefficients)
