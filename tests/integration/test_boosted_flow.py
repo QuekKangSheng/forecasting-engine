@@ -1,4 +1,4 @@
-"""End-to-end: raw frame -> lag-safe panel -> XGBoost/LightGBM (Optuna-tuned once,
+"""End-to-end: raw frame -> lag-safe panel -> XGBoost/LightGBM (Optuna-tuned on a schedule,
 SHAP-explained) -> the shared comparison contract (FYP-133)."""
 
 from __future__ import annotations
@@ -12,10 +12,10 @@ from forecasting_engine.reporting.model_metrics import build_metrics_rows
 from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
-_N_TRIALS = 5  # kept tiny — Optuna tunes once per run, not once per fold
+_N_TRIALS = 3  # kept tiny — every trial runs a mini walk-forward
 
 
-def _raw_frame(n: int = 100) -> pd.DataFrame:
+def _raw_frame(n: int = 120) -> pd.DataFrame:
     rng = np.random.default_rng(8)
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
     sig_a = rng.normal(size=n)
@@ -25,14 +25,16 @@ def _raw_frame(n: int = 100) -> pd.DataFrame:
 
 
 def _splitter() -> PurgedWalkForward:
-    return PurgedWalkForward(train=40, test=8, embargo=2)
+    return PurgedWalkForward(train=20, test=5, embargo=2, tuning_rows=45)
 
 
 def test_boosted_flows_from_a_raw_frame_through_the_shared_harness_to_the_comparison_table():
     frame = _raw_frame()
     panel = align_and_lag(frame, ["sig_a", "sig_b"], "price", horizon=1)
 
-    result, description = run_boosted(panel, _splitter(), n_trials=_N_TRIALS, n_blocks=4)
+    result, description, _tuning = run_boosted(
+        panel, _splitter(), n_trials=_N_TRIALS, retune_trials=_N_TRIALS, n_blocks=4
+    )
 
     assert result.pbo is not None
     assert description.terms == ("sig_a", "sig_b")

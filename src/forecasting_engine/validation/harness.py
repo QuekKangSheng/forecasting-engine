@@ -20,10 +20,9 @@ one itself).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 
-import numpy as np
 import pandas as pd
 
 from forecasting_engine.features.screening import screen_over_folds
@@ -180,7 +179,7 @@ def summarize(
     window") before calling this — the message belongs with the caller who
     knows what a portfolio manager should be told to fix.
     """
-    predicted, realised = _pooled(folds)
+    predicted, realised = pooled(folds)
     result = ModelRunResult(
         ic=metrics.ic(predicted, realised),
         oos_rank_ic=metrics.rank_ic(predicted, realised),
@@ -205,7 +204,7 @@ def select_best_candidate(
     per_candidate: dict[str, tuple[FoldResult, ...]], *, n_blocks: int = N_BLOCKS
 ) -> tuple[str, float]:
     """Compare several named candidates' fold results via PBO, return the name of
-    the one with the best mean OOS Rank IC and the shared PBO score every
+    the one with the best pooled OOS Rank IC and the shared PBO score every
     candidate was judged against.
 
     Used by any ``run_*`` function that has more than one fixed configuration to
@@ -213,37 +212,22 @@ def select_best_candidate(
     ``BoostedForecaster``'s tuned XGBoost vs. tuned LightGBM. A single
     configuration (FF5, a user-supplied polynomial) has nothing to compare
     against and reports ``pbo=None`` directly to ``summarize()`` instead of
-    calling this.
-
-    The per-candidate return series PBO's CSCV compares is a simple directional
-    strategy — ``sign(prediction) * realised`` — a documented working default,
-    not a claim about how the sponsor wants PBO measured.
+    calling this. Selection, PBO and the gate all use Rank IC.
     """
-    pbo_result = compute_pbo(
-        {name: _strategy_returns(folds) for name, folds in per_candidate.items()},
-        n_blocks=n_blocks,
-    )
-    best_name = max(per_candidate, key=lambda name: _mean_finite(_rank_ics(per_candidate[name])))
+    pooled_by_name = {name: pooled(folds) for name, folds in per_candidate.items()}
+    pbo_result = compute_pbo(pooled_by_name, n_blocks=n_blocks)
+    scores = {name: _finite(metrics.rank_ic(*pair)) for name, pair in pooled_by_name.items()}
+    best_name = max(scores, key=scores.__getitem__)
     return best_name, pbo_result.pbo
 
 
-def _pooled(folds: tuple[FoldResult, ...]) -> tuple[pd.Series, pd.Series]:
+def pooled(folds: tuple[FoldResult, ...]) -> tuple[pd.Series, pd.Series]:
     """Every fold's test predictions and realised values, end to end."""
     return pd.concat([f.predicted for f in folds]), pd.concat([f.realised for f in folds])
 
 
-def _strategy_returns(folds: tuple[FoldResult, ...]) -> pd.Series:
-    parts = [np.sign(f.predicted) * f.realised for f in folds]
-    return pd.concat(parts) if parts else pd.Series(dtype=float)
-
-
-def _rank_ics(folds: tuple[FoldResult, ...]) -> list[float]:
-    return [metrics.rank_ic(f.predicted, f.realised) for f in folds]
-
-
-def _mean_finite(values: Iterable[float]) -> float:
-    finite = [v for v in values if v == v]  # drop NaN
-    return sum(finite) / len(finite) if finite else float("nan")
+def _finite(value: float) -> float:
+    return value if value == value else float("-inf")  # NaN ranks last
 
 
 def _crash_over_folds(folds: tuple[FoldResult, ...]) -> CrashDiagnostics:

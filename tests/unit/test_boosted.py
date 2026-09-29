@@ -8,6 +8,7 @@ from forecasting_engine.models.boosted import (
     BoostedForecaster,
     tune_hyperparameters,
 )
+from forecasting_engine.validation.splitters import PurgedWalkForward
 
 _N_TRIALS = 5  # kept tiny — tuning happens once per test, not per fold
 
@@ -32,29 +33,83 @@ def _panel(n: int = 80, seed: int = 0) -> FeaturePanel:
 # --- tune_hyperparameters: FYP-128, FYP-129 ---------------------------------
 
 
+def _mini_splitter() -> PurgedWalkForward:
+    return PurgedWalkForward(train=20, test=5, embargo=2)
+
+
 @pytest.mark.parametrize("library", ["xgboost", "lightgbm"])
 def test_tune_hyperparameters_stays_within_the_declared_search_space(library):
     panel = _panel()
-    params = tune_hyperparameters(panel, panel.frame.index, library, n_trials=_N_TRIALS)
+    params = tune_hyperparameters(
+        panel, panel.frame.index, library, _mini_splitter(), n_trials=_N_TRIALS
+    )
 
     assert 20 <= params["n_estimators"] <= 100
-    assert 2 <= params["max_depth"] <= 5
+    assert 2 <= params["max_depth"] <= 4
     assert 0.01 <= params["learning_rate"] <= 0.3
+    leaf = "min_child_weight" if library == "xgboost" else "min_child_samples"
+    assert 5 <= params[leaf] <= 100
+
+
+def test_tune_hyperparameters_only_sees_its_own_window(monkeypatch):
+    panel = _panel()
+    window = panel.frame.index[:50]
+    seen = []
+    real_fit = BoostedForecaster.fit
+
+    def recording(self, panel, train):
+        seen.append(train.max())
+        real_fit(self, panel, train)
+
+    monkeypatch.setattr(BoostedForecaster, "fit", recording)
+    tune_hyperparameters(panel, window, "xgboost", _mini_splitter(), n_trials=2)
+
+    assert seen and max(seen) < window[-1]
+
+
+def test_tune_hyperparameters_tries_the_warm_start_first():
+    panel = _panel()
+    warm = {
+        "n_estimators": 37,
+        "max_depth": 3,
+        "learning_rate": 0.05,
+        "subsample": 0.9,
+        "colsample_bytree": 0.9,
+        "reg_lambda": 1.0,
+        "reg_alpha": 0.01,
+        "min_child_weight": 7,
+    }
+    params = tune_hyperparameters(
+        panel, panel.frame.index, "xgboost", _mini_splitter(), n_trials=1, warm_start=warm
+    )
+    assert params == warm
 
 
 def test_tune_hyperparameters_rejects_an_unknown_library():
     panel = _panel()
     with pytest.raises(BoostedConfigError):
-        tune_hyperparameters(panel, panel.frame.index, "not-a-library", n_trials=_N_TRIALS)
+        tune_hyperparameters(
+            panel, panel.frame.index, "not-a-library", _mini_splitter(), n_trials=_N_TRIALS
+        )
 
 
-def test_tune_hyperparameters_rejects_too_few_training_rows():
-    idx = pd.date_range("2024-01-01", periods=5, freq="D")
-    frame = pd.DataFrame({"sig_a": range(5), "sig_b": range(5), "target": range(5)}, index=idx)
-    panel = FeaturePanel(frame=frame, signals=("sig_a", "sig_b"), targets=("target",), lag_days=1)
+def test_tune_hyperparameters_rejects_a_window_too_short_for_three_folds():
+    panel = _panel()
+    with pytest.raises(BoostedConfigError, match="at least 3"):
+        tune_hyperparameters(
+            panel, panel.frame.index[:35], "xgboost", _mini_splitter(), n_trials=_N_TRIALS
+        )
 
-    with pytest.raises(BoostedConfigError):
-        tune_hyperparameters(panel, panel.frame.index, "xgboost", n_trials=_N_TRIALS)
+
+@pytest.mark.parametrize("library", ["xgboost", "lightgbm"])
+def test_a_tuned_leaf_size_is_capped_at_a_quarter_of_the_training_rows(library):
+    panel = _panel(n=40)
+    leaf = "min_child_weight" if library == "xgboost" else "min_child_samples"
+    model = BoostedForecaster(library, {**_params(library), leaf: 100})
+
+    model.fit(panel, panel.frame.index)
+
+    assert model._model.get_params()[leaf] == 10
 
 
 # --- BoostedForecaster: FYP-126, FYP-127, FYP-149 (SHAP) --------------------

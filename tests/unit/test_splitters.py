@@ -113,3 +113,38 @@ def test_date_based_purging_is_never_looser_than_counting_rows():
         strict=True,
     ):
         assert len(dated) <= len(counted)
+
+
+# --- the tuning period ----------------------------------------------------------
+
+
+def test_no_test_window_starts_before_the_tuning_period_and_embargo_end():
+    panel = _panel(60)
+    folds = list(PurgedWalkForward(train=10, test=3, embargo=2, tuning_rows=30).split(panel))
+
+    assert folds[0][1][0] == panel.frame.index[32]
+    # Training windows may reach back into the tuning period.
+    assert folds[0][0][0] == panel.frame.index[20]
+
+
+def test_a_tuning_period_shorter_than_the_train_window_changes_nothing():
+    panel = _panel(40)
+    plain = list(PurgedWalkForward(train=10, test=3, embargo=2).split(panel))
+    tuned = list(PurgedWalkForward(train=10, test=3, embargo=2, tuning_rows=5).split(panel))
+    assert [t[0] for _, t in plain] == [t[0] for _, t in tuned]
+
+
+def test_window_before_purges_labels_that_reach_the_test_window():
+    panel = _gappy_panel()
+    splitter = PurgedWalkForward(train=20, test=5, embargo=1)
+
+    window = splitter.window_before(panel, 40, rows=30)
+
+    assert (panel.label_end.reindex(window).dropna() < panel.frame.index[40]).all()
+    assert len(window) <= 30
+
+
+def test_too_short_says_how_many_dates_the_first_fold_needs():
+    message = PurgedWalkForward(train=10, test=3, embargo=2, tuning_rows=30).too_short(_panel(20))
+    assert "20 target dates" in message
+    assert "needs 35" in message

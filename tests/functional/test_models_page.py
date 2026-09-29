@@ -21,6 +21,7 @@ from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile, 
 from forecasting_engine.ingest.provenance import SourceFile
 from forecasting_engine.models import boosted
 from forecasting_engine.models.base import ModelDescription
+from forecasting_engine.models.boosted import Tune, TuningLog
 from forecasting_engine.models.famafrench import FACTOR_COLUMNS, FactorCoverage
 from forecasting_engine.reporting.model_metrics import (
     FoldTerms,
@@ -32,6 +33,7 @@ from forecasting_engine.reporting.polynomial_function import (
     dataset_fingerprint,
     from_description,
 )
+from forecasting_engine.validation import splitters
 from forecasting_engine.validation.crash import CrashDiagnostics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -44,6 +46,12 @@ AGG = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
 #: blank user-supplied function.
 DEFAULT_SHARED = (5, 120, 20)
 DEFAULT_POLYNOMIAL = ("Enter a function", "")
+
+
+@pytest.fixture(autouse=True)
+def short_tuning_period(monkeypatch):
+    """The fixture data is 200 rows, far short of the real 504-row tuning period."""
+    monkeypatch.setattr(splitters, "TUNING_ROWS", 40)
 
 
 def _committed(*, bond: bool = False) -> pd.DataFrame:
@@ -215,15 +223,15 @@ def splitter_calls(monkeypatch):
     The page imports the name when its script runs, so patching the module
     attribute beforehand is what the page picks up.
     """
-    import forecasting_engine.validation.splitters as splitters
-
     calls: list[dict] = []
     real = splitters.PurgedWalkForward
 
     class Recording(real):
-        def __init__(self, train: int, test: int, embargo: int):
-            calls.append({"train": train, "test": test, "embargo": embargo})
-            super().__init__(train, test, embargo)
+        def __init__(self, train: int, test: int, embargo: int, tuning_rows: int = 0):
+            calls.append(
+                {"train": train, "test": test, "embargo": embargo, "tuning_rows": tuning_rows}
+            )
+            super().__init__(train, test, embargo, tuning_rows)
 
     monkeypatch.setattr(splitters, "PurgedWalkForward", Recording)
     return calls
@@ -237,6 +245,14 @@ def test_the_embargo_is_five_whichever_horizon_is_chosen(splitter_calls, chosen)
 
     assert not app.exception
     assert splitter_calls[-1]["embargo"] == 5
+
+
+def test_every_model_is_scored_only_after_the_tuning_period(splitter_calls):
+    app = _page()
+
+    assert not app.exception
+    assert splitter_calls[-1]["tuning_rows"] == splitters.TUNING_ROWS
+    assert "tuning period" in _captions(app)
 
 
 def test_a_target_securitys_other_fields_are_not_signals_and_transforms_are_shown():
@@ -485,10 +501,24 @@ def stub_ml(monkeypatch):
 
     def fake(panel, splitter):
         calls.append(panel)
-        return _result(), _ml_run().description
+        return _result(), _ml_run().description, _tuning_log()
 
     monkeypatch.setattr(boosted, "run_boosted", fake)
     return calls
+
+
+def _tuning_log() -> TuningLog:
+    def tune(first: str, last: str, trials: int, depth: int) -> Tune:
+        params = {"max_depth": depth, "learning_rate": 0.05}
+        return Tune(
+            pd.Timestamp(first), pd.Timestamp(last), 40, trials, {"xgboost": params}
+        )
+
+    return TuningLog(
+        tunes=(tune("2024-01-01", "2024-02-23", 50, 3), tune("2024-03-01", "2024-04-25", 20, 4)),
+        fold_tunes=(0, 0, 1),
+        library="xgboost",
+    )
 
 
 def _factors(dates: pd.Series) -> pd.DataFrame:
@@ -573,3 +603,14 @@ def test_ml_results_show_shap_and_the_coarse_pbo_note(stub_ml):
 
     assert "Feature attribution (SHAP)" in _markdown(app)
     assert "only two candidates" in _captions(app)
+
+
+def test_ml_results_show_which_tune_each_fold_used_and_the_latest_settings(stub_ml):
+    app = _run_equity(_untick(_page(), "Fama-French 5"))
+
+    tunes = next(d.value for d in app.dataframe if "Tuned on" in d.value.columns)
+    assert tunes["Folds"].tolist() == ["1–2", "3"]
+    assert tunes["Trials"].tolist() == [50, 20]
+    settings = next(d.value for d in app.dataframe if "Setting" in d.value.columns)
+    assert dict(zip(settings["Setting"], settings["Value"], strict=True))["max_depth"] == "4"
+    assert "latest tune (xgboost)" in _captions(app)

@@ -64,7 +64,7 @@ from forecasting_engine.reporting.polynomial_function import (
     to_latex,
 )
 from forecasting_engine.validation.gates import evaluate_candidate
-from forecasting_engine.validation.splitters import PurgedWalkForward
+from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
 FF5, POLYNOMIAL, ML = MODEL_ORDER
@@ -179,6 +179,10 @@ with st.expander("Settings"):
         "had already been published.",
         help=glossary.term("Signal lag"),
     )
+    st.caption(
+        f"The first {TUNING_ROWS} target dates are a tuning period: no model is scored "
+        "on them, so machine learning's tuning never touches a reported result."
+    )
 
 check_cols = st.columns(3)
 check_cols[0].checkbox("Polynomial", value=True, disabled=True)
@@ -188,7 +192,9 @@ run_ff5 = check_cols[1].checkbox(
 run_ml = check_cols[2].checkbox("Machine learning", value=True)
 
 horizon = int(horizon)
-splitter = PurgedWalkForward(train=int(train), test=int(test), embargo=EMBARGO_DAYS)
+splitter = PurgedWalkForward(
+    train=int(train), test=int(test), embargo=EMBARGO_DAYS, tuning_rows=TUNING_ROWS
+)
 stored = model_runs.stored(
     st.session_state, (dataset_fingerprint(merged), horizon, int(train), int(test))
 )
@@ -277,6 +283,11 @@ def _run_famafrench(price_col: str) -> model_runs.ModelRun:
         coverage=factor_coverage(resolved.file.frame, panel),
         warning=resolved.warning,
     )
+
+
+def _run_ml(panel: FeaturePanel) -> model_runs.ModelRun:
+    result, description, tuning = run_boosted(panel, splitter)
+    return model_runs.ModelRun(result, description, tuning=tuning)
 
 
 def _run(models: list[str], runs: model_runs.TabRuns, *, run_one, target_name: str) -> None:
@@ -467,6 +478,34 @@ def _show_ml(run: model_runs.ModelRun) -> None:
         "PBO here compares only two candidates, tuned XGBoost and tuned LightGBM, so it "
         "is coarse — read it as a rough check rather than a precise probability."
     )
+    tuning = run.tuning
+    if tuning is None:
+        return
+    st.markdown(ui.eyebrow("Tuning"), unsafe_allow_html=True)
+    st.caption(
+        "Hyperparameters are re-tuned about once a year on the period just before the "
+        "next test window, so each fold uses settings tuned only on its past."
+    )
+    rows = []
+    for number, tune in enumerate(tuning.tunes):
+        folds = [i + 1 for i, t in enumerate(tuning.fold_tunes) if t == number]
+        rows.append(
+            {
+                "Tune": number + 1,
+                "Tuned on": f"{tune.first:%d/%m/%Y} to {tune.last:%d/%m/%Y}",
+                "Rows": tune.rows,
+                "Trials": tune.trials,
+                "Folds": f"{folds[0]}–{folds[-1]}" if len(folds) > 1 else str(folds[0]),
+            }
+        )
+    st.dataframe(rows, width="stretch", hide_index=True)
+    latest = tuning.tunes[tuning.fold_tunes[-1]].params[tuning.library]
+    st.caption(f"Settings from the latest tune ({tuning.library}):")
+    st.dataframe(
+        [{"Setting": name, "Value": f"{value:.4g}"} for name, value in latest.items()],
+        width="stretch",
+        hide_index=True,
+    )
 
 
 def _render_tab(role: TargetRole, price_col: str) -> None:
@@ -492,7 +531,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         runners = {
             POLYNOMIAL: lambda: _run_polynomial(tab_runs.polynomial_settings, panel, price_col),
             FF5: lambda: _run_famafrench(price_col),
-            ML: lambda: model_runs.ModelRun(*run_boosted(panel, splitter)),
+            ML: lambda: _run_ml(panel),
         }
         _run(models, tab_runs, run_one=lambda name: runners[name](), target_name=target_name)
 

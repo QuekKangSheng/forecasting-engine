@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.models.base import ModelDescription
+from forecasting_engine.models.boosted import TuningLog
 from forecasting_engine.models.famafrench import FactorCoverage
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.reporting.polynomial_function import PolynomialFunction
@@ -33,6 +34,8 @@ class ModelRun:
     """What the factor file covered, for the FF5 run only."""
     warning: str | None = None
     """Shown with the result, e.g. that an older saved factor file was used."""
+    tuning: TuningLog | None = None
+    """Which tune each fold used, for the machine-learning run only."""
 
 
 @dataclass

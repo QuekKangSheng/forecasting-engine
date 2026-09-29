@@ -13,36 +13,60 @@ import pandas as pd
 
 from forecasting_engine.ingest.align import FeaturePanel
 
+#: Rows at the start of the target calendar reserved for tuning. No test window
+#: starts before they end (plus the embargo), so tuning never touches a score.
+TUNING_ROWS: int = 504
+
 
 class PurgedWalkForward:
-    def __init__(self, train: int, test: int, embargo: int):
+    def __init__(self, train: int, test: int, embargo: int, tuning_rows: int = 0):
         self.train = train
         self.test = test
         self.embargo = embargo
+        self.tuning_rows = tuning_rows
 
     def split(
         self, panel: FeaturePanel
     ) -> Iterator[tuple[pd.DatetimeIndex, pd.DatetimeIndex]]:
         index = panel.frame.index
-        start = 0
-        while start + self.train + self.embargo + self.test <= len(index):
-            natural_train_end = start + self.train
-            test_start = natural_train_end + self.embargo
-            # A training row's label looks `panel.horizon` days past its own
-            # date. If that reaches test_start or beyond, the label needs a
-            # price the model isn't supposed to see yet — purge those rows
-            # regardless of how large `embargo` is, rather than trusting the
-            # caller to have picked embargo >= horizon.
-            purge_boundary = min(natural_train_end, test_start - panel.horizon)
-            if panel.label_end is not None:
-                reaching = _first_label_reaching(
-                    panel.label_end, index, start, natural_train_end, index[test_start]
-                )
-                purge_boundary = min(purge_boundary, reaching)
-            train_idx = index[start:purge_boundary]
-            test_idx = index[test_start : test_start + self.test]
-            yield train_idx, test_idx
-            start += self.test
+        test_start = max(self.train, self.tuning_rows) + self.embargo
+        while test_start + self.test <= len(index):
+            yield (
+                self.window_before(panel, test_start, self.train),
+                index[test_start : test_start + self.test],
+            )
+            test_start += self.test
+
+    def window_before(self, panel: FeaturePanel, test_start: int, rows: int) -> pd.DatetimeIndex:
+        """Up to ``rows`` rows ending ``embargo`` rows before position ``test_start``,
+        less any whose label reaches the test window.
+
+        A row's label looks ``panel.horizon`` days past its own date. If that
+        reaches the test window, the label needs a price the model isn't
+        supposed to see yet — those rows are purged regardless of how large
+        ``embargo`` is, rather than trusting the caller to have picked
+        embargo >= horizon. Training windows and tuning windows both use this.
+        """
+        index = panel.frame.index
+        natural_end = test_start - self.embargo
+        start = max(0, natural_end - rows)
+        purge_boundary = min(natural_end, test_start - panel.horizon)
+        if panel.label_end is not None:
+            reaching = _first_label_reaching(
+                panel.label_end, index, start, natural_end, index[test_start]
+            )
+            purge_boundary = min(purge_boundary, reaching)
+        return index[start : max(start, purge_boundary)]
+
+    def too_short(self, panel: FeaturePanel) -> str:
+        """Why ``split`` produced no folds, for a portfolio manager."""
+        needed = max(self.train, self.tuning_rows) + self.embargo + self.test
+        return (
+            f"the committed data has {len(panel.frame):,} target dates, too few for one "
+            f"walk-forward fold: the first test window needs {needed:,} (the longer of a "
+            f"{self.tuning_rows}-row tuning period and a {self.train}-row train window, a "
+            f"{self.embargo}-row embargo, then {self.test} test rows)."
+        )
 
 
 def _first_label_reaching(

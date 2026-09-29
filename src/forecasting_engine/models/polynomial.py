@@ -304,7 +304,7 @@ def run_user_polynomial(
     No configuration search happens, so ``pbo`` is ``None`` — the same "no
     configuration search" case FF5 reports."""
     folds = evaluate(lambda: UserPolynomial(formula), panel, splitter)
-    _require_folds(folds)
+    _require_folds(folds, panel, splitter)
     return summarize(folds, pbo=None)
 
 
@@ -317,7 +317,7 @@ def run_derived_polynomial(
     """Evaluates every candidate in ``candidates``, compares them via PBO
     (``compute_pbo`` needs several configurations' return series — a single
     fitted model has nothing to compute PBO against), then reports the
-    candidate with the best mean OOS Rank IC alongside that shared PBO score.
+    candidate with the best pooled OOS Rank IC alongside that shared PBO score.
 
     ``n_blocks`` is forwarded to ``compute_pbo`` — CSCV's cost is combinatorial
     in it (``C(n_blocks, n_blocks/2)`` splits), so a caller under a tight
@@ -338,7 +338,7 @@ def run_derived_polynomial(
         )
         for c in candidates
     }
-    _require_folds(next(iter(per_candidate.values()), ()))
+    _require_folds(next(iter(per_candidate.values()), ()), panel, splitter)
     if len(per_candidate) == 1:
         # PBO asks how often the best of several configurations was luck. One
         # configuration was never chosen from anything, so it reports no PBO
@@ -349,9 +349,8 @@ def run_derived_polynomial(
     return summarize(per_candidate[best_name], pbo=pbo_value)
 
 
-def _require_folds(folds: tuple[FoldResult, ...]) -> None:
+def _require_folds(
+    folds: tuple[FoldResult, ...], panel: FeaturePanel, splitter: PurgedWalkForward
+) -> None:
     if not folds:
-        raise PolynomialConfigError(
-            "the walk-forward split produced no folds — the committed dataset is too "
-            "short for the chosen train/test/embargo window."
-        )
+        raise PolynomialConfigError(splitter.too_short(panel))

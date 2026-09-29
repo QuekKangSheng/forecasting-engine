@@ -154,8 +154,5 @@ def run_famafrench(
     ``pbo=None``."""
     folds = evaluate(FamaFrench5, panel, splitter)
     if not folds:
-        raise FamaFrenchDataError(
-            "the walk-forward split produced no folds — the committed dataset is too "
-            "short for the chosen train/test/embargo window."
-        )
+        raise FamaFrenchDataError(splitter.too_short(panel))
     return summarize(folds, pbo=None)
