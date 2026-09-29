@@ -29,6 +29,7 @@ from forecasting_engine.extraction.bloomberg_csv import BloombergCsvExport
 from forecasting_engine.extraction.targets import PREFERRED_FIELD, TARGET_TICKERS, TargetRole
 from forecasting_engine.extraction.validation import ValidationReport
 from forecasting_engine.ingest import fama_french
+from forecasting_engine.ingest.align import MAX_STALENESS
 from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile
 from forecasting_engine.ingest.upload import (
     MAX_UPLOAD_BYTES,
@@ -63,9 +64,12 @@ COMMITTED_KEY = "extraction_committed"
 COMMITTED_REPORT_KEY = "extraction_committed_report"
 #: role -> resolved column name in COMMITTED_KEY's frame, for whichever roles
 #: were actually resolved at the last commit. Read by the Models page
-#: (Phase 4.2) and by forward-fill (Phase 2) to know which columns are
-#: targets and must never be treated as signals.
+#: (Phase 4.2) to know which columns are targets and must never be treated as
+#: signals.
 COMMITTED_TARGETS_KEY = "extraction_committed_targets"
+#: column -> ColumnSource (security, field) for COMMITTED_KEY's frame, so the
+#: Models page can leave out every field of a target's security.
+COMMITTED_SOURCES_KEY = "extraction_committed_sources"
 
 #: What the merged file is called in the upload log and under data/uploads.
 MERGED_NAME = "bloomberg_merged.csv"
@@ -177,6 +181,7 @@ def render() -> None:
             COMMITTED_KEY,
             COMMITTED_REPORT_KEY,
             COMMITTED_TARGETS_KEY,
+            COMMITTED_SOURCES_KEY,
             _LOGGED_KEY,
         ):
             st.session_state.pop(key, None)
@@ -311,7 +316,7 @@ def render() -> None:
             factors = _download_factors()
     ff = _render_factors(factors, combined)
 
-    download_merged = _render_gap_review(combined, set(target_columns.values()))
+    _render_gap_review(combined)
 
     st.divider()
     st.markdown(ui.eyebrow("Using this data"), unsafe_allow_html=True)
@@ -323,9 +328,16 @@ def render() -> None:
     )
     if st.button("Use Updated Data", icon=":material/publish:"):
         with st.spinner("Validating the cleaned dataset…"):
-            st.session_state[COMMITTED_KEY] = download_merged
-            st.session_state[COMMITTED_REPORT_KEY] = validation.validate(download_merged)
+            st.session_state[COMMITTED_KEY] = combined
+            st.session_state[COMMITTED_REPORT_KEY] = validation.validate(combined)
             st.session_state[COMMITTED_TARGETS_KEY] = target_columns
+            st.session_state[COMMITTED_SOURCES_KEY] = bloomberg_csv.column_sources(
+                [
+                    *st.session_state.get(_TARGET_EXPORTS_KEY, []),
+                    *st.session_state.get(_SIGNAL_EXPORTS_KEY, []),
+                ],
+                combined.columns,
+            )
         st.success(
             "This cleaned dataset is now committed and available throughout the application.",
             icon=":material/check_circle:",
@@ -346,7 +358,7 @@ def render() -> None:
     bloomberg_col, factor_col, workbook_col = st.columns(3)
     bloomberg_col.download_button(
         "Bloomberg merged (.csv)",
-        data=bloomberg_csv.with_display_dates(download_merged).to_csv(index=False).encode(),
+        data=bloomberg_csv.with_display_dates(combined).to_csv(index=False).encode(),
         file_name="bloomberg_merged.csv",
         mime="text/csv",
         icon=":material/download:",
@@ -362,7 +374,7 @@ def render() -> None:
         workbook_col.download_button(
             "Workbook (.xlsx)",
             data=workbook.build(
-                bloomberg_csv.with_display_dates(download_merged),
+                bloomberg_csv.with_display_dates(combined),
                 bloomberg_csv.with_display_dates(ff),
             ),
             file_name="Bloomberg + Fama-French.xlsx",
@@ -598,41 +610,18 @@ def _render_factors(factors: FactorFile | None, merged: pd.DataFrame) -> pd.Data
     return ff
 
 
-def _render_gap_review(merged: pd.DataFrame, target_columns: Collection[str]) -> pd.DataFrame:
-    """Forward-fill every signal gap automatically, up to a configurable cap,
-    and show whatever is still missing afterward.
-
-    No manual per-row decision — a calendar closure (a security's own market
-    was shut) isn't a fault to be reviewed, it's the expected value carrying
-    forward unchanged, so the fill just happens. Targets are the one
-    exception, and are never filled regardless of the cap: a filled price on
-    a day the target's own market was shut would read as a real trading day
-    and fabricate a return that never happened. What's left below is only
-    what a person actually needs to know about — a gap too long to fill, or a
-    target's own (permanently unfilled) closures.
-    """
-    key = f"gap_fill_{len(merged)}_{hash(tuple(merged.columns))}"
-    max_gap = st.number_input(
-        "Max fill-gap (days)",
-        min_value=1,
-        max_value=30,
-        value=1,
-        step=1,
-        key=f"{key}_max_gap",
-        help="Signal gaps are forward-filled automatically up to this many "
-        "days; a longer gap is left blank. Targets are never filled.",
-    )
-    filled = bloomberg_csv.forward_fill(merged, int(max_gap), exclude=target_columns)
-
-    remaining = bloomberg_csv.missing_row_report(filled)
+def _render_gap_review(merged: pd.DataFrame) -> None:
+    """List every row missing a value. Nothing here is filled: each model
+    aligns its signals to its own target's calendar on the Models page."""
+    remaining = bloomberg_csv.missing_row_report(merged)
     if remaining.empty:
-        return filled
+        return
 
-    st.markdown(ui.eyebrow("Rows still missing a value"), unsafe_allow_html=True)
+    st.markdown(ui.eyebrow("Rows missing a value"), unsafe_allow_html=True)
     st.caption(
-        "Every signal gap up to the cap above was forward-filled automatically "
-        "in the downloads. What's left here either exceeded that cap, or is a "
-        "target column, which is never filled."
+        "Nothing is filled here. On the Models page each target keeps only the dates "
+        "it has a price, and each signal takes its latest value on or before each of "
+        f"those dates, for up to {MAX_STALENESS} rows."
     )
     st.dataframe(
         bloomberg_csv.with_display_dates(remaining),
@@ -644,7 +633,6 @@ def _render_gap_review(merged: pd.DataFrame, target_columns: Collection[str]) ->
             "Likely reason": st.column_config.TextColumn(width="medium"),
         },
     )
-    return filled
 
 
 def render_summary() -> None:

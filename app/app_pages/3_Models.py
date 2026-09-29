@@ -16,7 +16,13 @@ import glossary
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
-from forecasting_engine.ingest.align import PRODUCTION_LAG_DAYS, align_and_lag
+from forecasting_engine.ingest.align import (
+    MAX_STALENESS,
+    PRODUCTION_LAG_DAYS,
+    align_and_lag,
+    select_signals,
+    transform_for,
+)
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import BoostedConfigError, run_boosted
 from forecasting_engine.models.famafrench import (
@@ -117,10 +123,35 @@ role = st.radio(
 price_col = target_columns[role]
 
 numeric_cols = [c for c in merged.columns if c != DATE_COLUMN and merged[c].dtype.kind in "fi"]
-# Every resolved target is excluded, not just the one currently selected —
-# otherwise picking Equity as the target would still let the Bond column
-# (or vice versa) ride along as a candidate signal.
-signal_cols = [c for c in numeric_cols if c not in target_columns.values()]
+# Every field of every resolved target's security is excluded, not just the
+# one currently selected — otherwise picking Equity as the target would still
+# let the Bond column (or SPX's own bid) ride along as a candidate signal.
+sources = st.session_state.get(bloomberg_extraction_panel.COMMITTED_SOURCES_KEY, {})
+signal_cols = select_signals(numeric_cols, list(target_columns.values()), sources)
+transforms = {c: transform_for(sources.get(c)) for c in signal_cols}
+
+
+def _show_alignment(panel) -> None:
+    """Per signal: how it was made stationary, and how much of it is carried or missing."""
+    with st.expander(f"Signal alignment · {len(panel.frame):,} target dates"):
+        st.caption(
+            f"Signals are read as of each date the target has a price, carried forward "
+            f"for at most {MAX_STALENESS} rows. Excluded rows have no value once "
+            "transformed and lagged, and are left out of fitting and scoring."
+        )
+        st.dataframe(
+            [
+                {
+                    "Signal": signal,
+                    "Transform": str(a.transform),
+                    "Carried forward": a.carried_forward,
+                    "Rows excluded": a.excluded,
+                }
+                for signal, a in panel.alignment.items()
+            ],
+            width="stretch",
+            hide_index=True,
+        )
 
 family_options = ["Polynomial", "Fama-French 5-Factor", "Machine Learning"]
 if role == TargetRole.BOND:
@@ -186,8 +217,9 @@ if family == "Polynomial":
         st.stop()
     indexed = merged.set_index(DATE_COLUMN)
     panel = align_and_lag(
-        indexed, signal_cols, price_col, horizon=int(horizon)
+        indexed, signal_cols, price_col, horizon=int(horizon), transforms=transforms
     )
+    _show_alignment(panel)
 
     st.subheader("Polynomial forecasting function")
     st.caption(
@@ -258,8 +290,9 @@ elif family == "Fama-French 5-Factor":
         st.stop()
     indexed = with_factors.set_index(DATE_COLUMN)
     panel = align_and_lag(
-        indexed, list(FACTOR_COLUMNS), price_col, horizon=int(horizon)
+        indexed, list(FACTOR_COLUMNS), price_col, horizon=int(horizon), exact=FACTOR_COLUMNS
     )
+    _show_alignment(panel)
 
     if st.button("Fit", type="primary"):
         try:
@@ -276,8 +309,9 @@ else:
         st.stop()
     indexed = merged.set_index(DATE_COLUMN)
     panel = align_and_lag(
-        indexed, signal_cols, price_col, horizon=int(horizon)
+        indexed, signal_cols, price_col, horizon=int(horizon), transforms=transforms
     )
+    _show_alignment(panel)
 
     st.subheader("Machine learning (XGBoost / LightGBM)")
     st.caption(

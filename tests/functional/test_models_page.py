@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import (
@@ -456,3 +457,31 @@ def test_an_empty_equation_still_explains_itself():
 
     assert "No terms survived fitting" in _captions(app)
     assert "3 of 10 walk-forward folds kept any term at all" in _captions(app)
+
+
+# --- signals on the target's calendar ------------------------------------------
+
+
+def test_a_target_securitys_other_fields_are_not_signals_and_transforms_are_shown():
+    committed = _committed()
+    committed["SPX_Index_PX_BID"] = committed["SPX_Index_PX_LAST"] - 0.1
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state["extraction_committed"] = committed
+    app.session_state["extraction_committed_targets"] = _TARGETS
+    app.session_state["extraction_committed_sources"] = {
+        f"{ticker}_Index_{field}": ColumnSource(f"{ticker} Index", field)
+        for ticker, field in [
+            ("SPX", "PX_LAST"),
+            ("SPX", "PX_BID"),
+            ("VIX", "PX_LAST"),
+            ("LUACOAS", "PX_LAST"),
+        ]
+    }
+    app.run()
+
+    assert not app.exception
+    alignment = next(d.value for d in app.dataframe if "Transform" in d.value.columns)
+    assert dict(zip(alignment["Signal"], alignment["Transform"], strict=True)) == {
+        "VIX_Index_PX_LAST": "difference",
+        "LUACOAS_Index_PX_LAST": "difference",
+    }

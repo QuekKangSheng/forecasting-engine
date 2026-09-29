@@ -83,6 +83,42 @@ def read_export(filename: str, data: bytes) -> BloombergCsvExport:
     return BloombergCsvExport(filename=filename, security=security, frame=frame)
 
 
+@dataclass(frozen=True)
+class ColumnSource:
+    """The export a merged column came from: its security and its field."""
+
+    security: str
+    field: str
+
+    @property
+    def ticker(self) -> str:
+        return self.security.split(" ", 1)[0]
+
+
+def column_sources(
+    exports: Sequence[BloombergCsvExport], columns: Collection[str]
+) -> dict[str, ColumnSource]:
+    """Which security and field each of ``columns`` came from.
+
+    A column is found under its security's label or, where ``merge`` or a
+    target/signal collision relabelled it, under its file's. Either way only
+    exports sharing a label can collide, so the security it maps to is right.
+    Earlier exports win, so pass target exports first.
+    """
+    sources: dict[str, ColumnSource] = {}
+    for export in exports:
+        lbl = label(export.security, export.filename)
+        distinct = label("", export.filename)
+        for column in export.frame.columns:
+            if column == DATE_COLUMN:
+                continue
+            field = column[len(lbl) + 1 :]
+            for name in (column, f"{distinct}_{field}"):
+                if name in columns:
+                    sources.setdefault(name, ColumnSource(export.security, field))
+    return sources
+
+
 def merge(exports: Sequence[BloombergCsvExport]) -> pd.DataFrame:
     """Outer-join every export's data on ``Date``, sorted ascending.
 
@@ -183,32 +219,6 @@ def missing_row_report(frame: pd.DataFrame) -> pd.DataFrame:
             {"Date": date, "Missing columns": ", ".join(missing), "Likely reason": reason}
         )
     return pd.DataFrame(rows)
-
-
-def forward_fill(
-    frame: pd.DataFrame, max_gap: int, *, exclude: Collection[str] = ()
-) -> pd.DataFrame:
-    """Carry the last available value forward, up to ``max_gap`` rows, on
-    every column except ``exclude``.
-
-    Applied automatically to every gap, not just ones a caller selects — a
-    calendar closure (a security's own market was shut) isn't a fault to be
-    reviewed, it's the expected value carrying forward unchanged. A run of
-    missing values longer than ``max_gap`` is left blank past that point:
-    ``ffill(limit=...)`` already stops there, which is exactly "forward-fill
-    up to a maximum gap length, leave longer gaps missing".
-
-    ``exclude`` is for target price columns. A filled cell on a day the
-    target's own market was shut would read as a real trading day and
-    fabricate a return that never happened — a target is never forward-filled,
-    whatever gap length is configured.
-    """
-    out = frame.copy()
-    for col in frame.columns:
-        if col == DATE_COLUMN or col in exclude:
-            continue
-        out[col] = frame[col].ffill(limit=max_gap)
-    return out
 
 
 @lru_cache(maxsize=32)

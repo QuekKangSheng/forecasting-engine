@@ -3,7 +3,9 @@
 import pandas as pd
 
 from forecasting_engine.extraction.bloomberg_csv import (
-    forward_fill,
+    ColumnSource,
+    column_sources,
+    merge,
     missing_row_report,
     read_export,
 )
@@ -28,45 +30,32 @@ def test_a_trailing_empty_metadata_field_does_not_leak_into_the_security():
     assert export.security == "SPX Index"
 
 
-def _daily(values):
-    dates = pd.date_range("2024-01-01", periods=len(values))
-    return pd.DataFrame({"Date": dates, "A": values})
+def _export(security: str, filename: str, fields: str):
+    data = f"Security,{security}\n\nDate,{fields}\n2024-01-02,1,2\n"
+    return read_export(filename, data.encode())
 
 
-def test_every_gap_is_filled_automatically_up_to_the_cap():
-    frame = _daily([1.0, None, None, 4.0])
+def test_column_sources_name_each_merged_column_by_security_and_field():
+    spx = _export("SPX Index", "spx.csv", "TOT_RETURN_INDEX_GROSS_DVDS,PX_BID")
+    vix = _export("VIX Index", "vix.csv", "PX_LAST,PX_BID")
+    merged = merge([spx, vix])
 
-    out = forward_fill(frame, max_gap=5)
+    sources = column_sources([spx, vix], merged.columns)
 
-    assert out["A"].tolist() == [1.0, 1.0, 1.0, 4.0]
-
-
-def test_a_gap_longer_than_max_gap_stays_blank_past_the_limit():
-    frame = _daily([1.0, None, None, None, 5.0])
-
-    out = forward_fill(frame, max_gap=2)
-
-    assert out["A"].tolist()[:3] == [1.0, 1.0, 1.0]
-    assert pd.isna(out["A"].iloc[3])
+    assert sources["SPX_Index_PX_BID"] == ColumnSource("SPX Index", "PX_BID")
+    assert sources["VIX_Index_PX_LAST"].ticker == "VIX"
+    assert len(sources) == 4
 
 
-def test_an_excluded_column_is_never_filled_however_short_the_gap():
-    # A target price column: a filled cell on a closed-market day would read
-    # as a real trading day and fabricate a return that never happened.
-    frame = _daily([1.0, None, 3.0])
+def test_column_sources_follow_a_column_relabelled_by_its_file():
+    # Two files sharing a security are relabelled by filename in merge().
+    price = _export("SPX Index", "spx_price.csv", "PX_LAST,PX_BID")
+    total = _export("SPX Index", "spx_tr.csv", "TOT_RETURN_INDEX_GROSS_DVDS,PX_BID")
+    merged = merge([price, total])
 
-    out = forward_fill(frame, max_gap=5, exclude={"A"})
+    sources = column_sources([price, total], merged.columns)
 
-    assert out["A"].iloc[0] == 1.0
-    assert pd.isna(out["A"].iloc[1])
-    assert out["A"].iloc[2] == 3.0
-
-
-def test_excluding_one_column_does_not_stop_others_filling():
-    frame = _daily([1.0, None, 3.0])
-    frame["B"] = [10.0, None, 30.0]
-
-    out = forward_fill(frame, max_gap=5, exclude={"A"})
-
-    assert pd.isna(out["A"].iloc[1])
-    assert out["B"].iloc[1] == 10.0
+    assert sources["spx_tr_TOT_RETURN_INDEX_GROSS_DVDS"] == ColumnSource(
+        "SPX Index", "TOT_RETURN_INDEX_GROSS_DVDS"
+    )
+    assert sources["spx_price_PX_LAST"].security == "SPX Index"

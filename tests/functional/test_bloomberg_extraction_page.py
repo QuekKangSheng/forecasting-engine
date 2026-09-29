@@ -251,8 +251,7 @@ def test_a_column_with_no_data_at_all_is_dropped_and_noted(page):
 
 def gappy_csv():
     # 2016-09-05 is Labor Day; LF98TRUU has no row for it, LEGATRUU does —
-    # merging on Date leaves that cell blank for LF98TRUU, exactly one row —
-    # within the default 1-day fill cap, so it's auto-filled.
+    # merging on Date leaves that cell blank for LF98TRUU.
     lf98truu = export("LF98TRUU Index", ["9/6/2016,1772.0", "9/2/2016,1771.03"])
     legatruu = export(
         "LEGATRUU Index", ["9/6/2016,486.5722", "9/5/2016,482.7748", "9/2/2016,481.9552"]
@@ -260,58 +259,37 @@ def gappy_csv():
     return lf98truu, legatruu
 
 
-def long_gappy_csv():
-    # LF98TRUU is missing two consecutive rows (2016-09-06 and 2016-09-07) —
-    # longer than the default 1-day fill cap, so it stays blank and shows in
-    # the "still missing" report.
-    lf98truu = export("LF98TRUU Index", ["9/8/2016,1774.0", "9/2/2016,1771.03"])
-    legatruu = export(
-        "LEGATRUU Index",
-        ["9/8/2016,487.0", "9/7/2016,486.9", "9/6/2016,486.5722", "9/2/2016,481.9552"],
-    )
-    return lf98truu, legatruu
-
-
-def test_no_still_missing_section_when_nothing_is_missing(page):
+def test_no_missing_section_when_nothing_is_missing(page):
     result = upload(page, [("spx.csv", SPX, "text/csv")])
-    assert "Rows still missing a value" not in texts(result.markdown)
+    assert "Rows missing a value" not in texts(result.markdown)
 
 
-def test_a_short_gap_is_auto_filled_with_no_manual_step_and_does_not_show_as_missing(page):
+def test_a_gap_is_listed_and_committed_blank_never_filled(page):
     lf98truu, legatruu = gappy_csv()
     result = upload(
         page, [("lf98truu.csv", lf98truu, "text/csv"), ("legatruu.csv", legatruu, "text/csv")]
     )
-
-    assert "Rows still missing a value" not in texts(result.markdown)
-    # No manual fill controls exist any more.
-    labels = [b.label for b in result.button]
-    assert "Clean all listed rows" not in labels
-    assert "Include all listed rows" not in labels
-
-
-def test_a_gap_longer_than_the_cap_still_shows_as_missing(page):
-    lf98truu, legatruu = long_gappy_csv()
-    result = upload(
-        page, [("lf98truu.csv", lf98truu, "text/csv"), ("legatruu.csv", legatruu, "text/csv")]
-    )
-
-    assert "Rows still missing a value" in texts(result.markdown)
-
-
-def test_auto_fill_never_drops_a_row(page):
-    lf98truu, legatruu = long_gappy_csv()
-    result = upload(
-        page, [("lf98truu.csv", lf98truu, "text/csv"), ("legatruu.csv", legatruu, "text/csv")]
-    )
-    assert len(result.session_state["signal_merged"]) == 4
+    assert "Rows missing a value" in texts(result.markdown)
+    assert all("fill" not in n.label.lower() for n in result.number_input)
 
     commit_button = next(b for b in result.button if b.label == "Use Updated Data")
     result = commit_button.click().run()
 
-    # Filling changes values, never row count — the still-missing rows stay
-    # in the committed data too, just blank rather than dropped.
-    assert len(result.session_state["extraction_committed"]) == 4
+    committed = result.session_state["extraction_committed"].set_index("Date")
+    assert len(committed) == 3
+    assert pd.isna(committed.loc[pd.Timestamp("2016-09-05"), "LF98TRUU_Index_PX_LAST"])
+
+
+def test_committing_records_each_columns_security_and_field(page):
+    upload_targets(page, [("spx.csv", SPX, "text/csv")])
+    result = upload(page, [("vix.csv", VIX, "text/csv")])
+
+    commit_button = next(b for b in result.button if b.label == "Use Updated Data")
+    result = commit_button.click().run()
+
+    sources = result.session_state["extraction_committed_sources"]
+    assert sources["SPX_Index_PX_LAST"].security == "SPX Index"
+    assert sources["VIX_Index_PX_LAST"].field == "PX_LAST"
 
 
 def test_a_target_column_is_never_filled_even_for_a_short_gap(page):
