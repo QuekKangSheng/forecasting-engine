@@ -84,3 +84,10 @@ def test_rows_scored_is_shown_when_known():
     assert build_metrics_rows({"Polynomial": result})[0]["Rows scored"] == Cell("—")
     counted = ModelRunResult(**{**result.__dict__, "rows_scored": 1234})
     assert build_metrics_rows({"Polynomial": counted})[0]["Rows scored"] == Cell("1,234")
+
+
+def test_the_rank_ic_standard_error_is_shown_beside_it():
+    result = _result(0.03, 0.03, 0.015, 0.4)
+    with_se = ModelRunResult(**{**result.__dict__, "oos_rank_ic_se": 0.012})
+    row = build_metrics_rows({"Polynomial": with_se})[0]
+    assert row["OOS Rank IC"] == Cell("0.0300 (s.e. 0.0120)", "success")

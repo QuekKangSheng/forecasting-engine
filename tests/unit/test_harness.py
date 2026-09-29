@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pandas as pd
 
 from forecasting_engine.ingest.align import FeaturePanel
@@ -112,20 +114,32 @@ def test_description_travels_with_its_own_fold():
         )
 
 
-def test_summarize_averages_ic_rank_ic_rmse_across_folds():
+def test_summarize_scores_ic_rank_ic_rmse_once_over_pooled_folds():
     panel = _panel_with_varying_folds()
     splitter = PurgedWalkForward(train=10, test=3, embargo=2)
     folds = evaluate(_EchoForecaster, panel, splitter)
-    assert len(folds) > 1, "fixture must produce more than one fold to test averaging"
+    assert len(folds) > 1, "fixture must produce more than one fold to test pooling"
 
     result, _description = summarize(folds, pbo=None)
 
-    expected_ic = sum(metrics.ic(f.predicted, f.realised) for f in folds) / len(folds)
-    expected_rank_ic = sum(metrics.rank_ic(f.predicted, f.realised) for f in folds) / len(folds)
-    expected_rmse = sum(metrics.rmse(f.predicted, f.realised) for f in folds) / len(folds)
-    assert result.ic == expected_ic
-    assert result.oos_rank_ic == expected_rank_ic
-    assert result.rmse == expected_rmse
+    predicted = pd.concat([f.predicted for f in folds])
+    realised = pd.concat([f.realised for f in folds])
+    assert result.ic == metrics.ic(predicted, realised)
+    assert result.oos_rank_ic == metrics.rank_ic(predicted, realised)
+    assert result.rmse == metrics.rmse(predicted, realised)
+    per_fold_mean = sum(metrics.rank_ic(f.predicted, f.realised) for f in folds) / len(folds)
+    assert result.oos_rank_ic != per_fold_mean
+
+
+def test_summarize_reports_a_newey_west_se_using_the_panels_horizon():
+    panel = replace(_panel_with_varying_folds(n=60), horizon=5)
+    folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=10, test=5, embargo=5))
+
+    result, _description = summarize(folds, pbo=None)
+
+    predicted = pd.concat([f.predicted for f in folds])
+    realised = pd.concat([f.realised for f in folds])
+    assert result.oos_rank_ic_se == metrics.rank_ic_se(predicted, realised, lags=4)
 
 
 def test_summarize_passes_pbo_through_unchanged():

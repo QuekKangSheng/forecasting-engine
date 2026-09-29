@@ -94,6 +94,8 @@ class FoldResult:
     screening: FoldScreening | None = None
     """Which signals this fold's screening kept and fit on, or ``None`` when
     ``evaluate()`` ran without screening."""
+    horizon: int = 1
+    """The panel's label horizon, which sets how far apart errors stay correlated."""
 
 
 def evaluate(
@@ -152,6 +154,7 @@ def evaluate(
                 realised_train=realised_train,
                 description=forecaster.describe(),
                 screening=screening,
+                horizon=panel.horizon,
             )
         )
     return tuple(results)
@@ -160,9 +163,16 @@ def evaluate(
 def summarize(
     folds: tuple[FoldResult, ...], *, pbo: float | None = None
 ) -> tuple[ModelRunResult, ModelDescription]:
-    """Mean IC/RankIC/RMSE across folds, crash diagnostics, and the most recent
-    fold's fitted description — the shape every ``run_*`` function (Polynomial,
-    and now Fama-French) bridges its own model into.
+    """IC, Rank IC and RMSE over every fold's test predictions pooled together,
+    crash diagnostics, and the most recent fold's fitted description — the shape
+    every ``run_*`` function bridges its own model into.
+
+    Pooling scores one long out-of-sample series rather than averaging short,
+    noisy per-fold scores. Each fold's predictions come from its own fit, so a
+    pooled Pearson IC mixes those fits' scales; Rank IC does not care about
+    scale, which is why it, not IC, is what the gate is set on. The Newey-West
+    standard error of the pooled Rank IC allows for the overlap between
+    neighbouring h-day labels.
 
     Requires at least one fold. Callers should check ``evaluate()``'s output is
     non-empty themselves and raise their own domain-appropriate error message
@@ -170,10 +180,12 @@ def summarize(
     window") before calling this — the message belongs with the caller who
     knows what a portfolio manager should be told to fix.
     """
+    predicted, realised = _pooled(folds)
     result = ModelRunResult(
-        ic=_mean_finite(metrics.ic(f.predicted, f.realised) for f in folds),
-        oos_rank_ic=_mean_finite(_rank_ics(folds)),
-        rmse=_mean_finite(metrics.rmse(f.predicted, f.realised) for f in folds),
+        ic=metrics.ic(predicted, realised),
+        oos_rank_ic=metrics.rank_ic(predicted, realised),
+        oos_rank_ic_se=metrics.rank_ic_se(predicted, realised, lags=folds[0].horizon - 1),
+        rmse=metrics.rmse(predicted, realised),
         pbo=pbo,
         crash=_crash_over_folds(folds),
         screening=_screening_summary(folds),
@@ -213,6 +225,11 @@ def select_best_candidate(
     )
     best_name = max(per_candidate, key=lambda name: _mean_finite(_rank_ics(per_candidate[name])))
     return best_name, pbo_result.pbo
+
+
+def _pooled(folds: tuple[FoldResult, ...]) -> tuple[pd.Series, pd.Series]:
+    """Every fold's test predictions and realised values, end to end."""
+    return pd.concat([f.predicted for f in folds]), pd.concat([f.realised for f in folds])
 
 
 def _strategy_returns(folds: tuple[FoldResult, ...]) -> pd.Series:

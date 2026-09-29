@@ -15,10 +15,10 @@ schema validation (FYP-8), which enforces the **column** rules. When
 `src/forecasting_engine/ingest/schema.py` exists it becomes the machine-readable
 twin of the column contract — if you change one, change the other.
 
-> **Status of the column contract.** Provisional. It cannot be finalised until
-> the sponsor answers Q1 (which bond index) and Q2 (the forecast horizon) from
-> the architecture design. Both are single config values rather than structural
-> commitments. The file format, type and size rules are settled.
+> **Status of the column contract.** Settled. Q1 (which bond index) and Q2 (the
+> forecast horizon) from the architecture design are answered: the bond target
+> is `LBUSTRUU Index`, and horizons are 1 and 5 days. The file format, type and
+> size rules are settled too.
 
 ## Producing this file from Bloomberg
 

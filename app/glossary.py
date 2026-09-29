@@ -70,8 +70,8 @@ TERMS: Mapping[str, str] = {
     ),
     "IC": (
         "Information Coefficient: the correlation between what the model "
-        "predicted and what actually happened, averaged across grading "
-        "periods. 0 means no skill. In this field even 0.02–0.05 is a real "
+        "predicted and what actually happened, over every grading period "
+        "together. 0 means no skill. In this field even 0.02–0.05 is a real "
         "edge, so treat a large value as a reason to look for a leak rather "
         "than a cause for celebration."
     ),
@@ -80,7 +80,8 @@ TERMS: Mapping[str, str] = {
         "of predictions with the order of outcomes, on data the model never "
         "trained on. Using ranks stops one wild day from dominating the score, "
         "which is why this is the headline number and the one the promotion "
-        "gate is set on."
+        "gate is set on. The s.e. beside it is its standard error: a value "
+        "within about two of them of zero may be luck."
     ),
     "RMSE": (
         "Root mean squared error: the typical size of a miss, in the same "

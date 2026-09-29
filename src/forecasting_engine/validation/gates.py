@@ -9,12 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 OOS_RANK_IC_GATE: float = 0.02
-"""Tier 1 gate: mean OOS Rank IC must exceed this (strictly) to validate a
+"""Tier 1 gate: pooled OOS Rank IC must exceed this (strictly) to validate a
 candidate."""
 
 PBO_GATE: float = 0.5
-"""Tier 2 gate — provisional. The sponsor answered "TBC" when asked to
-confirm this number; treated as the working gate until confirmed."""
+"""Tier 2 gate: PBO must be at or below this."""
 
 
 @dataclass(frozen=True)
@@ -23,7 +22,7 @@ class ValidationOutcome:
     failed_gates: tuple[str, ...]
 
 
-def evaluate_candidate(mean_oos_rank_ic: float, pbo: float | None) -> ValidationOutcome:
+def evaluate_candidate(oos_rank_ic: float, pbo: float | None) -> ValidationOutcome:
     """Apply the OOS Rank IC and PBO promotion gates. A NaN input (e.g. a
     candidate whose IC couldn't be computed) fails its gate rather than
     passing or raising. ``pbo=None`` means no configuration search happened
@@ -32,7 +31,7 @@ def evaluate_candidate(mean_oos_rank_ic: float, pbo: float | None) -> Validation
     renders as N/A rather than a pass/fail badge, so that gate is skipped
     here too rather than raising on the comparison ``None <= PBO_GATE``."""
     failed = []
-    if not (mean_oos_rank_ic > OOS_RANK_IC_GATE):
+    if not (oos_rank_ic > OOS_RANK_IC_GATE):
         failed.append("oos_rank_ic")
     if pbo is not None and not (pbo <= PBO_GATE):
         failed.append("pbo")

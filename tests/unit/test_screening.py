@@ -42,3 +42,12 @@ def test_screen_over_folds_uses_only_trailing_window():
     assert len(results) == len(folds)
     for fold_scores in results.values():
         assert {s.signal for s in fold_scores} == {"strong_signal", "weak_signal"}
+
+
+def test_a_signal_exactly_at_the_threshold_is_excluded():
+    panel = _panel_with_known_signals()
+    strong = next(s for s in screen_signals(panel) if s.signal == "strong_signal")
+    at_threshold = screen_signals(panel, threshold=abs(strong.ic))
+
+    assert strong.included
+    assert not next(s for s in at_threshold if s.signal == "strong_signal").included

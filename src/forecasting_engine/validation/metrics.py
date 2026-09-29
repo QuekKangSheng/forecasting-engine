@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 
 
 def rank_ic(signal: pd.Series, target: pd.Series) -> float:
@@ -52,3 +54,25 @@ def rmse(predicted: pd.Series, actual: pd.Series) -> float:
         return float("nan")
     errors = paired.iloc[:, 0] - paired.iloc[:, 1]
     return float((errors**2).mean() ** 0.5)
+
+
+def rank_ic_se(predicted: pd.Series, realised: pd.Series, lags: int) -> float:
+    """Newey-West standard error of ``rank_ic(predicted, realised)``.
+
+    Regresses standardised ranks of the realised values on standardised ranks
+    of the predictions, whose slope is the rank IC, with a HAC covariance over
+    ``lags`` lags: overlapping h-day labels make neighbouring errors
+    correlated, so ``lags`` is h - 1. Returns NaN with fewer than three pairs.
+    """
+    paired = pd.concat([predicted, realised], axis=1).dropna()
+    if len(paired) < 3:
+        return float("nan")
+    ranks = paired.rank()
+    standardised = (ranks - ranks.mean()) / ranks.std(ddof=0)
+    if not np.isfinite(standardised.to_numpy()).all():
+        return float("nan")
+    x = sm.add_constant(standardised.iloc[:, 0].to_numpy())
+    fit = sm.OLS(standardised.iloc[:, 1].to_numpy(), x).fit(
+        cov_type="HAC", cov_kwds={"maxlags": lags}
+    )
+    return float(fit.bse[1])

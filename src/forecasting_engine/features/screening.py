@@ -13,8 +13,7 @@ from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
 from forecasting_engine.validation.metrics import rank_ic
 
 INCLUSION_THRESHOLD: float = 0.02
-"""Working default (not sponsor-confirmed): minimum absolute rank IC for a
-signal to be included in modelling. Revisit once Alpha Norm gives a number."""
+"""A signal is included in modelling when its absolute rank IC exceeds this."""
 
 
 @dataclass(frozen=True)
@@ -34,7 +33,7 @@ def screen_signals(
     scores = []
     for name in panel.signals:
         ic = rank_ic(panel.frame[name], target)
-        included = bool(not pd.isna(ic) and abs(ic) >= threshold)
+        included = bool(not pd.isna(ic) and abs(ic) > threshold)
         scores.append(SignalScore(signal=name, ic=ic, included=included))
     return tuple(scores)
 

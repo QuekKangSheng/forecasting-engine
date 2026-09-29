@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from forecasting_engine.validation.metrics import ic, rank_ic, rmse
+from forecasting_engine.validation.metrics import ic, rank_ic, rank_ic_se, rmse
 
 
 def test_rank_ic_perfect_positive_correlation():
@@ -79,3 +79,32 @@ def test_rmse_nan_when_no_valid_pairs():
     predicted = pd.Series([np.nan])
     actual = pd.Series([1.0])
     assert np.isnan(rmse(predicted, actual))
+
+
+# --- Newey-West standard error of the rank IC ---------------------------------
+
+
+def _noisy_pair(n: int, seed: int = 0) -> tuple[pd.Series, pd.Series]:
+    rng = np.random.default_rng(seed)
+    predicted = pd.Series(rng.normal(size=n))
+    return predicted, predicted * 0.1 + pd.Series(rng.normal(size=n))
+
+
+def test_rank_ic_se_on_independent_data_is_about_one_over_root_n():
+    predicted, realised = _noisy_pair(2_000)
+    assert rank_ic_se(predicted, realised, lags=0) == pytest.approx(1 / np.sqrt(2_000), rel=0.1)
+
+
+def test_rank_ic_se_widens_when_neighbouring_errors_overlap():
+    # Five-day sums of daily shocks overlap, like h = 5 labels do, so
+    # neighbouring rows share most of their information.
+    rng = np.random.default_rng(1)
+    realised = pd.Series(rng.normal(size=4_004)).rolling(5).sum().dropna()
+    predicted = pd.Series(rng.normal(size=4_004)).rolling(5).sum().dropna()
+
+    overlapping = rank_ic_se(predicted, realised, lags=4)
+    assert overlapping > 1.3 * rank_ic_se(predicted, realised, lags=0)
+
+
+def test_rank_ic_se_is_nan_without_enough_pairs():
+    assert np.isnan(rank_ic_se(pd.Series([1.0, 2.0]), pd.Series([2.0, 1.0]), lags=0))
