@@ -1,8 +1,12 @@
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.model_selection import TimeSeriesSplit
 
 from forecasting_engine.ingest.align import FeaturePanel
+from forecasting_engine.models import polynomial
 from forecasting_engine.models.polynomial import (
     MAX_DEGREE,
     DerivedPolynomial,
@@ -227,3 +231,46 @@ def test_deriving_with_no_candidates_says_so_in_plain_words():
 
     with pytest.raises(PolynomialConfigError, match="at least one"):
         run_derived_polynomial(panel, splitter, candidates=())
+
+
+# --- scaling and validation stay inside the training window, in time order ----
+
+
+def test_the_fit_ignores_rows_outside_the_training_window():
+    panel = _scaled_panel(1.0)
+    train = panel.frame.index[:200]
+    shifted = panel.frame.copy()
+    shifted.loc[panel.frame.index[200:], "x"] *= 1_000
+    other = FeaturePanel(frame=shifted, signals=("x",), targets=("target",), lag_days=1)
+
+    descriptions = []
+    for p in (panel, other):
+        model = DerivedPolynomial(degree=2, regularizer="lasso")
+        model.fit(p, train)
+        descriptions.append(model.describe())
+
+    assert descriptions[0] == descriptions[1]
+
+
+def test_the_inner_validation_is_time_ordered_with_a_horizon_gap(monkeypatch):
+    seen = []
+    real = polynomial._REGULARIZERS["lasso"]
+
+    def recording(cv, **kwargs):
+        seen.append(cv)
+        return real(cv=cv, **kwargs)
+
+    monkeypatch.setitem(polynomial._REGULARIZERS, "lasso", recording)
+    panel = replace(_scaled_panel(1.0), horizon=5)
+    DerivedPolynomial(degree=1, regularizer="lasso").fit(panel, panel.frame.index)
+
+    (cv,) = seen
+    assert isinstance(cv, TimeSeriesSplit)
+    assert cv.gap == 5
+    assert cv.n_splits == 5
+
+
+def test_a_short_window_validates_on_fewer_folds_and_too_short_says_so():
+    assert polynomial._time_series_cv(20, gap=5).n_splits < 5
+    with pytest.raises(PolynomialConfigError, match="too short"):
+        polynomial._time_series_cv(10, gap=5)

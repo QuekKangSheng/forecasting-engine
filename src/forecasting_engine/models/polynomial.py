@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import ElasticNetCV, LassoCV
-from sklearn.preprocessing import PolynomialFeatures
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
@@ -190,6 +191,7 @@ class DerivedPolynomial:
                 f"regularizer must be one of {known}, got {self.regularizer!r}."
             )
         self._poly = PolynomialFeatures(degree=self.degree, include_bias=False)
+        self._scaler = StandardScaler()
         self._columns: list[str] | None = None
         self._model = None
         self._intercept: float | None = None
@@ -216,8 +218,12 @@ class DerivedPolynomial:
         else:
             self._columns = list(x.columns)
 
-        model = _REGULARIZERS[self.regularizer](cv=min(5, len(x)), max_iter=10_000)
-        model.fit(x, y)
+        # The penalty acts on coefficients, whose size depends on each expanded
+        # term's units, so terms are standardised — on this window only.
+        scaled = self._scaler.fit_transform(x)
+        cv = _time_series_cv(len(x), gap=panel.horizon)
+        model = _REGULARIZERS[self.regularizer](cv=cv, max_iter=10_000)
+        model.fit(scaled, y)
         self._model = model
         self._intercept = float(model.intercept_)
 
@@ -241,14 +247,18 @@ class DerivedPolynomial:
             columns=self._poly.get_feature_names_out(signals),
             index=raw.index,
         )[self._columns]
-        predicted.loc[expanded.index] = self._model.predict(expanded)
+        predicted.loc[expanded.index] = self._model.predict(self._scaler.transform(expanded))
         return predicted
 
     def describe(self) -> ModelDescription:
         if self._model is None or self._columns is None:
             raise RuntimeError("describe() called before fit()")
+        # Back in each term's own units, so the displayed equation reproduces
+        # predict() on the raw signals.
+        raw = self._model.coef_ / self._scaler.scale_
+        intercept = self._intercept - float(np.dot(raw, self._scaler.mean_))
         terms, coefficients = [], []
-        for term, coefficient in zip(self._columns, self._model.coef_, strict=True):
+        for term, coefficient in zip(self._columns, raw, strict=True):
             if coefficient != 0:
                 terms.append(term)
                 coefficients.append(float(coefficient))
@@ -256,8 +266,21 @@ class DerivedPolynomial:
             name=self.name,
             terms=tuple(terms),
             coefficients=tuple(coefficients),
-            intercept=self._intercept,
+            intercept=intercept,
         )
+
+
+def _time_series_cv(n_rows: int, gap: int) -> TimeSeriesSplit:
+    """Up to five time-ordered folds, each validating after a ``gap`` of rows so
+    no training label overlaps it; fewer when the window is too short for five."""
+    for n_splits in range(5, 1, -1):
+        test_size = n_rows // (n_splits + 1)
+        if test_size >= 2 and n_rows - gap - n_splits * test_size >= 2:
+            return TimeSeriesSplit(n_splits=n_splits, gap=gap)
+    raise PolynomialConfigError(
+        f"a {n_rows}-row training window is too short to validate a regularized fit "
+        f"in time order with a {gap}-row gap — lengthen the train window."
+    )
 
 
 # ── Bridging to the shared comparison view (ModelRunResult) ─────────────────
