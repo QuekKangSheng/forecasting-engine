@@ -38,7 +38,7 @@ def test_famafrench_flows_from_raw_frames_through_the_shared_harness_to_the_comp
 
     merged = merge_factors(bloomberg, factors)
     panel = align_and_lag(
-        merged.set_index("Date"), list(FACTOR_COLUMNS), "price", horizon=1, lag_days=1
+        merged.set_index("Date"), list(FACTOR_COLUMNS), "price", horizon=1
     )
 
     result, description = run_famafrench(panel, _splitter())

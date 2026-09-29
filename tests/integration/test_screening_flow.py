@@ -21,7 +21,7 @@ def _raw_frame(n: int = 80) -> pd.DataFrame:
 
 def test_screening_flow_from_raw_frame_to_walk_forward_registry():
     frame = _raw_frame()
-    panel = align_and_lag(frame, ["strong_signal"], "price", horizon=1, lag_days=1)
+    panel = align_and_lag(frame, ["strong_signal"], "price", horizon=1)
 
     folds = list(PurgedWalkForward(train=30, test=5, embargo=1).split(panel))
     assert folds, "fixture must be large enough to produce at least one fold"
@@ -37,6 +37,6 @@ def test_screening_flow_from_raw_frame_to_walk_forward_registry():
 
 def test_whole_sample_screening_also_registers_every_signal():
     frame = _raw_frame()
-    panel = align_and_lag(frame, ["strong_signal"], "price", horizon=1, lag_days=1)
+    panel = align_and_lag(frame, ["strong_signal"], "price", horizon=1)
     scores = screen_signals(panel)
     assert {s.signal for s in scores} == {"strong_signal"}

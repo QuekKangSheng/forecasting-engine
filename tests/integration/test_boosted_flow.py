@@ -30,7 +30,7 @@ def _splitter() -> PurgedWalkForward:
 
 def test_boosted_flows_from_a_raw_frame_through_the_shared_harness_to_the_comparison_table():
     frame = _raw_frame()
-    panel = align_and_lag(frame, ["sig_a", "sig_b"], "price", horizon=1, lag_days=1)
+    panel = align_and_lag(frame, ["sig_a", "sig_b"], "price", horizon=1)
 
     result, description = run_boosted(panel, _splitter(), n_trials=_N_TRIALS, n_blocks=4)
 

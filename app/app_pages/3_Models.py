@@ -16,7 +16,7 @@ import glossary
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
-from forecasting_engine.ingest.align import align_and_lag
+from forecasting_engine.ingest.align import PRODUCTION_LAG_DAYS, align_and_lag
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import BoostedConfigError, run_boosted
 from forecasting_engine.models.famafrench import (
@@ -77,11 +77,6 @@ HORIZONS: tuple[int, ...] = (1, 5)
 #: One embargo shared by every horizon, equal to the longest of them, rather than
 #: one per horizon. Picking h=1 used to drop the embargo to 1 as well.
 EMBARGO_DAYS: int = max(HORIZONS)
-
-#: Signal lag in production. There is no legitimate reason to run with any other
-#: value: a longer lag throws away usable data, a shorter one uses data not yet
-#: published. Raising it is only for the lag-shift audit.
-PRODUCTION_LAG_DAYS: int = 1
 
 st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
 ui.inject()
@@ -170,22 +165,11 @@ st.caption(
     help=glossary.term("Embargo"),
 )
 
-# st.expander takes no help text, so the ⓘ goes on the caption inside it.
-with st.expander("Advanced: lag-shift audit"):
-    st.caption(
-        f"Signals are lagged {PRODUCTION_LAG_DAYS} trading day, so each value is one that "
-        "had already been published. Leave this alone for a normal run. To audit for "
-        "look-ahead, run once, raise the lag by one day and run again: a signal whose "
-        "predictive power collapses was probably leaking.",
-        help=glossary.term("Lag-shift audit"),
-    )
-    lag_days = st.number_input(
-        "Signal lag (days)",
-        min_value=1,
-        value=PRODUCTION_LAG_DAYS,
-        step=1,
-        help=glossary.term("Signal lag (days)"),
-    )
+st.caption(
+    f"Signals are lagged {PRODUCTION_LAG_DAYS} trading day, so each value is one that "
+    "had already been published.",
+    help=glossary.term("Signal lag"),
+)
 
 splitter = PurgedWalkForward(train=int(train), test=int(test), embargo=EMBARGO_DAYS)
 
@@ -202,7 +186,7 @@ if family == "Polynomial":
         st.stop()
     indexed = merged.set_index(DATE_COLUMN)
     panel = align_and_lag(
-        indexed, signal_cols, price_col, horizon=int(horizon), lag_days=int(lag_days)
+        indexed, signal_cols, price_col, horizon=int(horizon)
     )
 
     st.subheader("Polynomial forecasting function")
@@ -274,7 +258,7 @@ elif family == "Fama-French 5-Factor":
         st.stop()
     indexed = with_factors.set_index(DATE_COLUMN)
     panel = align_and_lag(
-        indexed, list(FACTOR_COLUMNS), price_col, horizon=int(horizon), lag_days=int(lag_days)
+        indexed, list(FACTOR_COLUMNS), price_col, horizon=int(horizon)
     )
 
     if st.button("Fit", type="primary"):
@@ -292,7 +276,7 @@ else:
         st.stop()
     indexed = merged.set_index(DATE_COLUMN)
     panel = align_and_lag(
-        indexed, signal_cols, price_col, horizon=int(horizon), lag_days=int(lag_days)
+        indexed, signal_cols, price_col, horizon=int(horizon)
     )
 
     st.subheader("Machine learning (XGBoost / LightGBM)")

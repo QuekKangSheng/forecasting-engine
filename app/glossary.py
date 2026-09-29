@@ -76,17 +76,11 @@ TERMS: Mapping[str, str] = {
         "on an outcome it is about to be graded on — a leak that makes results "
         "look far better than they are. Fixed at the longest horizon."
     ),
-    "Signal lag (days)": (
-        "Every signal is shifted forward by this many days, so a value dated "
-        "today is one that had already been published today. Without it, a "
-        "model can 'predict' using a number nobody had yet — the most common "
-        "way a backtest ends up worthless."
-    ),
-    "Lag-shift audit": (
-        "A check for hidden look-ahead. Run once, raise the lag by a day, run "
-        "again: real predictive power fades gently, whereas a signal that was "
-        "secretly using same-day information collapses. Leave the lag alone "
-        "for a normal run."
+    "Signal lag": (
+        "Every signal is shifted forward a day, so a value dated today is one "
+        "that had already been published today. Without it, a model can "
+        "'predict' using a number nobody had yet — the most common way a "
+        "backtest ends up worthless."
     ),
     "IC": (
         "Information Coefficient: the correlation between what the model "

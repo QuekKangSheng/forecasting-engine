@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
+from forecasting_engine.ingest.align import PRODUCTION_LAG_DAYS, FeaturePanel, align_and_lag
 
 
 def _frame() -> pd.DataFrame:
@@ -13,22 +13,23 @@ def _frame() -> pd.DataFrame:
 
 
 def test_align_and_lag_shifts_signals_forward():
-    panel = align_and_lag(_frame(), ["signal_a"], "price", horizon=2, lag_days=1)
+    panel = align_and_lag(_frame(), ["signal_a"], "price", horizon=2)
     assert panel.frame["signal_a"].iloc[2] == 1
     assert pd.isna(panel.frame["signal_a"].iloc[0])
 
 
 def test_align_and_lag_computes_forward_return_target():
-    panel = align_and_lag(_frame(), ["signal_a"], "price", horizon=2, lag_days=1)
+    panel = align_and_lag(_frame(), ["signal_a"], "price", horizon=2)
     assert panel.targets == ("fwd_return_2d",)
     expected = (102 / 100) - 1
     assert panel.frame["fwd_return_2d"].iloc[0] == pytest.approx(expected)
     assert pd.isna(panel.frame["fwd_return_2d"].iloc[-1])
 
 
-def test_lag_days_must_be_positive():
+def test_lag_days_is_fixed_at_the_production_lag():
+    assert align_and_lag(_frame(), ["signal_a"], "price").lag_days == PRODUCTION_LAG_DAYS
     with pytest.raises(ValueError):
-        align_and_lag(_frame(), ["signal_a"], "price", lag_days=0)
+        FeaturePanel(frame=_frame(), signals=("signal_a",), targets=("price",), lag_days=2)
 
 
 def test_target_cannot_also_be_a_signal():
@@ -120,13 +121,13 @@ def test_no_label_end_where_there_is_no_label():
 
 
 def test_a_frame_with_no_gaps_is_unchanged_by_the_fix():
-    panel = align_and_lag(_frame(), ["signal_a"], "price", horizon=2, lag_days=1)
+    panel = align_and_lag(_frame(), ["signal_a"], "price", horizon=2)
     expected = _frame()["price"].pct_change(2).shift(-2)
     pd.testing.assert_series_equal(panel.frame["fwd_return_2d"], expected, check_names=False)
 
 
 def test_signals_are_still_lagged_by_row():
-    panel = align_and_lag(_bond_frame(), ["vix"], "bond", horizon=1, lag_days=1)
+    panel = align_and_lag(_bond_frame(), ["vix"], "bond", horizon=1)
     assert panel.frame.loc["2024-10-15", "vix"] == 19.7  # the Columbus Day value
 
 

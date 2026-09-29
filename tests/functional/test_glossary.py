@@ -111,10 +111,9 @@ def test_the_embargo_caption_explains_the_leak_it_prevents(models_page):
     assert "leak" in embargo
 
 
-def test_the_lag_control_and_its_audit_both_explain_themselves(models_page):
+def test_the_signal_lag_caption_explains_itself(models_page):
     helps = _helps(models_page)
-    assert "Signal lag (days)" in helps
-    assert any("look-ahead" in h for h in helps.values())
+    assert glossary.term("Signal lag") in helps.values()
 
 
 def test_crash_diagnostics_explain_recall_and_precision(models_page):

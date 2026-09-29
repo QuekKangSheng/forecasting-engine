@@ -27,7 +27,7 @@ def _splitter() -> PurgedWalkForward:
 
 def test_user_supplied_formula_bypasses_fitting_and_applies_directly():
     frame = _raw_frame()
-    panel = align_and_lag(frame, ["strong_signal"], "price", horizon=1, lag_days=1)
+    panel = align_and_lag(frame, ["strong_signal"], "price", horizon=1)
 
     result, description = run_user_polynomial("strong_signal", panel, _splitter())
 
@@ -38,7 +38,7 @@ def test_user_supplied_formula_bypasses_fitting_and_applies_directly():
 
 def test_derived_fit_flows_through_to_the_promotion_gate_and_comparison_table():
     frame = _raw_frame()
-    panel = align_and_lag(frame, ["strong_signal"], "price", horizon=1, lag_days=1)
+    panel = align_and_lag(frame, ["strong_signal"], "price", horizon=1)
 
     result, _description = run_derived_polynomial(panel, _splitter(), n_blocks=4)
 

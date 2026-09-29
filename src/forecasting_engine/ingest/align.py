@@ -12,6 +12,10 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+#: Signal lag, in rows. A longer lag throws away usable data, a shorter one uses
+#: data not yet published, so it is not a setting.
+PRODUCTION_LAG_DAYS: int = 1
+
 
 @dataclass(frozen=True)
 class FeaturePanel:
@@ -20,7 +24,7 @@ class FeaturePanel:
     frame: pd.DataFrame
     signals: tuple[str, ...]
     targets: tuple[str, ...]
-    lag_days: int
+    lag_days: int = PRODUCTION_LAG_DAYS
     horizon: int = 1
     """Trading days a target label looks forward from its own date. Lets a
     splitter purge training rows whose label window would reach past a
@@ -35,8 +39,8 @@ class FeaturePanel:
     of the target, so a label crossing it reaches further than ``horizon`` rows."""
 
     def __post_init__(self) -> None:
-        if self.lag_days < 1:
-            raise ValueError(f"lag_days must be >= 1, got {self.lag_days}")
+        if self.lag_days != PRODUCTION_LAG_DAYS:
+            raise ValueError(f"lag_days must be {PRODUCTION_LAG_DAYS}, got {self.lag_days}")
         if self.horizon < 1:
             raise ValueError(f"horizon must be >= 1, got {self.horizon}")
         overlap = set(self.signals) & set(self.targets)
@@ -49,13 +53,12 @@ def align_and_lag(
     signal_cols: Sequence[str],
     price_col: str,
     horizon: int = 5,
-    lag_days: int = 1,
 ) -> FeaturePanel:
     """Lag every signal, derive a forward-return target, freeze both into a FeaturePanel.
 
     ``price_col`` is a price/level column already present in ``frame``; the
     target is the ``horizon``-day forward return computed from it. Every
-    signal in ``signal_cols`` is shifted forward ``lag_days`` so its value on
+    signal in ``signal_cols`` is shifted forward ``PRODUCTION_LAG_DAYS`` so its value on
     a given date is what was actually observable on that date.
 
     The horizon is counted in the target's own trading days — the rows where
@@ -77,12 +80,11 @@ def align_and_lag(
     out[target_col] = prices.pct_change(horizon).shift(-horizon).reindex(out.index)
     label_end = pd.Series(prices.index, index=prices.index).shift(-horizon).reindex(out.index)
 
-    out[list(signal_cols)] = out[list(signal_cols)].shift(lag_days)
+    out[list(signal_cols)] = out[list(signal_cols)].shift(PRODUCTION_LAG_DAYS)
     return FeaturePanel(
         frame=out,
         signals=tuple(signal_cols),
         targets=(target_col,),
-        lag_days=lag_days,
         horizon=horizon,
         label_end=label_end,
     )

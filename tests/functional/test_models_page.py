@@ -199,16 +199,10 @@ def test_the_embargo_is_no_longer_an_editable_input():
     assert all("embargo" not in n.label.lower() for n in app.number_input)
 
 
-def test_signal_lag_lives_in_the_advanced_audit_section_not_the_main_row():
+def test_the_signal_lag_is_not_an_input():
     app = _bare_page()
-
-    (audit,) = [e for e in app.expander if e.label == "Advanced: lag-shift audit"]
-    lag_inputs = [n for n in audit.number_input if n.label == "Signal lag (days)"]
-    assert len(lag_inputs) == 1
-    assert lag_inputs[0].value == 1
-
-    everywhere = [n for n in app.number_input if n.label == "Signal lag (days)"]
-    assert len(everywhere) == 1, "the lag control should exist only inside the audit section"
+    assert all("lag" not in n.label.lower() for n in app.number_input)
+    assert all("lag" not in e.label.lower() for e in app.expander)
 
 
 # --- the fitted polynomial as a labelled function ----------------------------

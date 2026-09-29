@@ -73,7 +73,7 @@ def _gappy_panel() -> FeaturePanel:
     idx = pd.bdate_range("2024-01-01", periods=60)
     price = [100.0 + i if i % 4 != 3 else None for i in range(60)]
     frame = pd.DataFrame({"signal_a": range(60), "price": price}, index=idx)
-    return align_and_lag(frame, ["signal_a"], "price", horizon=5, lag_days=1)
+    return align_and_lag(frame, ["signal_a"], "price", horizon=5)
 
 
 def test_a_label_crossing_a_closed_day_is_purged_even_when_row_count_says_it_is_safe():
