@@ -10,8 +10,8 @@ under ``data/fama_french`` named by its content hash and handed back as a
 ``SourceFile``, for two reasons. The library is updated monthly, so the same
 URL returns different rows across a sprint and a run has to be able to name
 the exact file it used. And the sponsor's brief is manual data with no
-automated feeds: a person asks for the download, and what they fetched is
-kept like any other upload.
+automated feeds: a fetch only ever happens because a person pressed Run on
+the Models page, and what it fetched is kept like any other upload.
 
 Nothing here imports Streamlit; the dashboard is a caller, not a dependency.
 """
@@ -22,6 +22,7 @@ import io
 import re
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -39,6 +40,9 @@ FILE_NAME = "fama_french_5_factors_daily.csv"
 
 #: Where downloaded copies live, named by content hash. Gitignored.
 DEFAULT_CACHE_DIR = Path("data/fama_french")
+
+#: A saved copy younger than this is used as is; an older one prompts a download.
+MAX_AGE = timedelta(days=30)
 
 _DATE_RE = re.compile(r"^\d{8}$")
 _TIMEOUT_SECONDS = 30
@@ -108,7 +112,9 @@ def save(frame: pd.DataFrame, cache_dir: Path = DEFAULT_CACHE_DIR) -> FactorFile
     source = SourceFile.of(FILE_NAME, data)
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"{source.sha256}.csv"
-    if not path.exists():
+    if path.exists():
+        path.touch()  # its age is when it was last fetched, not first
+    else:
         path.write_bytes(data)
     return FactorFile(frame=frame, source=SourceFile.of(FILE_NAME, data, path=path))
 
@@ -130,3 +136,40 @@ def load_latest(cache_dir: Path = DEFAULT_CACHE_DIR) -> FactorFile | None:
 def download(cache_dir: Path = DEFAULT_CACHE_DIR) -> FactorFile:
     """Fetch today's file and keep it. Raises ``FactorFetchError`` on failure."""
     return save(fetch(), cache_dir)
+
+
+@dataclass(frozen=True)
+class ResolvedFactors:
+    file: FactorFile
+    warning: str | None = None
+    """Set when a download failed and an older saved copy is used instead."""
+
+
+def resolve(cache_dir: Path = DEFAULT_CACHE_DIR, *, now: datetime | None = None) -> ResolvedFactors:
+    """The factor file a run should use.
+
+    The saved copy if it is younger than ``MAX_AGE``; otherwise a fresh
+    download, falling back to the saved copy with a warning if that fails.
+    Raises ``FactorFetchError`` when there is neither.
+    """
+    saved = load_latest(cache_dir)
+    if saved is not None and _age(saved, now) < MAX_AGE:
+        return ResolvedFactors(saved)
+    try:
+        return ResolvedFactors(download(cache_dir))
+    except FactorFetchError as exc:
+        if saved is None:
+            raise
+        fetched = datetime.fromtimestamp(saved.source.path.stat().st_mtime)
+        return ResolvedFactors(
+            saved,
+            warning=(
+                f"Could not download a newer factor file ({exc}), so the copy saved on "
+                f"{fetched:%d/%m/%Y} is used instead."
+            ),
+        )
+
+
+def _age(factors: FactorFile, now: datetime | None) -> timedelta:
+    fetched = datetime.fromtimestamp(factors.source.path.stat().st_mtime)
+    return (now or datetime.now()) - fetched

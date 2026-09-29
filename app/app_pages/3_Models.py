@@ -16,6 +16,7 @@ import glossary
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest import fama_french
 from forecasting_engine.ingest.align import (
     MAX_STALENESS,
     PRODUCTION_LAG_DAYS,
@@ -23,11 +24,14 @@ from forecasting_engine.ingest.align import (
     select_signals,
     transform_for,
 )
+from forecasting_engine.ingest.fama_french import FactorFetchError
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import BoostedConfigError, run_boosted
 from forecasting_engine.models.famafrench import (
     FACTOR_COLUMNS,
+    FactorCoverage,
     FamaFrenchDataError,
+    factor_coverage,
     merge_factors,
     run_famafrench,
 )
@@ -59,6 +63,7 @@ POLYNOMIAL_RESULT_KEY = "polynomial_result"
 POLYNOMIAL_DESCRIPTION_KEY = "polynomial_description"
 FAMAFRENCH_RESULT_KEY = "famafrench_result"
 FAMAFRENCH_DESCRIPTION_KEY = "famafrench_description"
+FAMAFRENCH_COVERAGE_KEY = "famafrench_coverage"
 ML_RESULT_KEY = "ml_result"
 ML_DESCRIPTION_KEY = "ml_description"
 #: The polynomial last run, as ``(PolynomialFunction, dataset_fingerprint)``.
@@ -274,29 +279,36 @@ elif family == "Fama-French 5-Factor":
     description_key = _role_key(FAMAFRENCH_DESCRIPTION_KEY, role)
 
     st.subheader("Fama-French five-factor benchmark")
-    factor_file = st.session_state.get(bloomberg_extraction_panel.FACTORS_KEY)
-    if factor_file is None:
-        st.info("No Fama-French factors loaded yet — download them on the Data page first.")
-        st.stop()
     st.caption(
         "Regresses the target on the five Fama-French factors, lagged like any other "
         "signal, so every model's OOS Rank IC means the same thing. No configuration "
-        "search happens, so no PBO is computed — same as a user-supplied polynomial."
+        "search happens, so no PBO is computed — same as a user-supplied polynomial. "
+        f"Fit uses a saved factor file under {fama_french.MAX_AGE.days} days old, or "
+        "downloads the latest one."
     )
-    try:
-        with_factors = merge_factors(merged, factor_file.frame)
-    except FamaFrenchDataError as exc:
-        st.error(str(exc))
-        st.stop()
-    indexed = with_factors.set_index(DATE_COLUMN)
-    panel = align_and_lag(
-        indexed, list(FACTOR_COLUMNS), price_col, horizon=int(horizon), exact=FACTOR_COLUMNS
-    )
-    _show_alignment(panel)
 
     if st.button("Fit", type="primary"):
         try:
+            resolved = fama_french.resolve()
+        except FactorFetchError as exc:
+            st.error(
+                f"The Fama-French factors could not be downloaded and none are saved, so "
+                f"FF5 was not run: {exc}",
+                icon=":material/error:",
+            )
+            st.stop()
+        if resolved.warning:
+            st.warning(resolved.warning, icon=":material/warning:")
+        indexed = merge_factors(merged, resolved.file.frame).set_index(DATE_COLUMN)
+        panel = align_and_lag(
+            indexed, list(FACTOR_COLUMNS), price_col, horizon=int(horizon), exact=FACTOR_COLUMNS
+        )
+        _show_alignment(panel)
+        try:
             result, description = run_famafrench(panel, splitter)
+            st.session_state[_role_key(FAMAFRENCH_COVERAGE_KEY, role)] = factor_coverage(
+                resolved.file.frame, panel
+            )
         except FamaFrenchDataError as exc:
             st.error(str(exc))
 
@@ -461,6 +473,16 @@ if result_key in st.session_state:
         f"({crash.n_true_tail_days} true tail day(s) in the walk-forward test windows).",
         help=glossary.term("Crash diagnostics"),
     )
+
+    coverage: FactorCoverage | None = st.session_state.get(
+        _role_key(FAMAFRENCH_COVERAGE_KEY, role)
+    )
+    if family == "Fama-French 5-Factor" and coverage is not None:
+        st.caption(
+            f"Factor file covers {coverage.first:%d/%m/%Y} to {coverage.last:%d/%m/%Y}. "
+            f"{coverage.rows_used:,} rows used. {coverage.missing_dates:,} target dates "
+            "have no factor row — Ken French publishes one to two months late."
+        )
 
     polynomial_function_key = _role_key(POLYNOMIAL_FUNCTION_KEY, role)
     if family == "Polynomial" and polynomial_function_key in st.session_state:

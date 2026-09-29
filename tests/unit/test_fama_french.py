@@ -6,17 +6,21 @@ parser finds the table by content, not by position.
 """
 
 import io
+import os
 import zipfile
+from datetime import datetime
 
 import pandas as pd
 import pytest
 
 from forecasting_engine.ingest import fama_french
 from forecasting_engine.ingest.fama_french import (
+    MAX_AGE,
     FactorFetchError,
     download,
     load_latest,
     parse,
+    resolve,
     restrict_to,
     save,
 )
@@ -135,3 +139,67 @@ def test_a_failed_fetch_is_one_named_error(monkeypatch):
     monkeypatch.setattr(fama_french, "urlopen", broken)
     with pytest.raises(FactorFetchError, match="no route to host"):
         fama_french.fetch()
+
+
+# --- resolving the file a run uses --------------------------------------------
+
+
+def _age_saved_copy(tmp_path, days: int) -> None:
+    (path,) = tmp_path.glob("*.csv")
+    then = datetime.now().timestamp() - days * 86_400
+    os.utime(path, (then, then))
+
+
+def _fail_fetch(monkeypatch):
+    def broken():
+        raise FactorFetchError("OSError: no route to host")
+
+    monkeypatch.setattr(fama_french, "fetch", broken)
+
+
+def test_a_recent_saved_copy_is_used_without_downloading(tmp_path, monkeypatch):
+    saved = save(parse(zip_bytes()), tmp_path)
+    _fail_fetch(monkeypatch)
+
+    resolved = resolve(tmp_path)
+
+    assert resolved.file.source.sha256 == saved.source.sha256
+    assert resolved.warning is None
+
+
+def test_an_old_saved_copy_prompts_a_download(tmp_path, monkeypatch):
+    save(parse(zip_bytes()), tmp_path)
+    _age_saved_copy(tmp_path, MAX_AGE.days + 1)
+    fetched = []
+    monkeypatch.setattr(fama_french, "fetch", lambda: fetched.append(1) or parse(zip_bytes()))
+
+    resolved = resolve(tmp_path)
+
+    assert fetched == [1]
+    assert resolved.warning is None
+
+
+def test_redownloading_an_unchanged_file_resets_its_age(tmp_path, monkeypatch):
+    save(parse(zip_bytes()), tmp_path)
+    _age_saved_copy(tmp_path, MAX_AGE.days + 1)
+    monkeypatch.setattr(fama_french, "fetch", lambda: parse(zip_bytes()))
+    resolve(tmp_path)
+    _fail_fetch(monkeypatch)
+
+    assert resolve(tmp_path).warning is None
+
+
+def test_a_failed_download_falls_back_to_the_saved_copy_with_a_warning(tmp_path, monkeypatch):
+    save(parse(zip_bytes()), tmp_path)
+    _age_saved_copy(tmp_path, MAX_AGE.days + 1)
+    _fail_fetch(monkeypatch)
+
+    resolved = resolve(tmp_path)
+
+    assert resolved.warning is not None and "no route to host" in resolved.warning
+
+
+def test_no_saved_copy_and_a_failed_download_raises(tmp_path, monkeypatch):
+    _fail_fetch(monkeypatch)
+    with pytest.raises(FactorFetchError):
+        resolve(tmp_path)

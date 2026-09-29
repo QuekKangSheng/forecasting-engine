@@ -1,8 +1,7 @@
 """The Bloomberg extraction panel: file upload, merge, validate, download.
 
 Rendering only. Parsing, merging and validation live in
-``forecasting_engine.extraction`` and know nothing about Streamlit. The cached
-Fama-French download is shared from ``forecasting_engine.ingest``.
+``forecasting_engine.extraction`` and know nothing about Streamlit.
 
 The validation report renderer is shared between this page and the Home
 page's summary — that sharing is the whole integration between the two.
@@ -24,13 +23,11 @@ import pandas as pd
 import streamlit as st
 
 import ui
-from forecasting_engine.extraction import bloomberg_csv, bloomberg_xlsx, validation, workbook
+from forecasting_engine.extraction import bloomberg_csv, bloomberg_xlsx, validation
 from forecasting_engine.extraction.bloomberg_csv import BloombergCsvExport
 from forecasting_engine.extraction.targets import PREFERRED_FIELD, TARGET_TICKERS, TargetRole
 from forecasting_engine.extraction.validation import ValidationReport
-from forecasting_engine.ingest import fama_french
 from forecasting_engine.ingest.align import MAX_STALENESS
-from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile
 from forecasting_engine.ingest.upload import (
     MAX_UPLOAD_BYTES,
     AcceptedUpload,
@@ -47,7 +44,6 @@ TARGET_MERGED_KEY = "target_merged"
 TARGET_REPORT_KEY = "target_report"
 SIGNAL_MERGED_KEY = "signal_merged"
 SIGNAL_REPORT_KEY = "signal_report"
-FACTORS_KEY = "fama_french"
 _TARGET_EXPORTS_KEY = "_target_exports"
 _SIGNAL_EXPORTS_KEY = "_signal_exports"
 #: filename -> the Role/Field the user last picked for it, so navigating to
@@ -90,6 +86,7 @@ _MODEL_RESULT_BASE_KEYS = (
     "polynomial_function",
     "famafrench_result",
     "famafrench_description",
+    "famafrench_coverage",
     "ml_result",
     "ml_description",
 )
@@ -308,14 +305,6 @@ def render() -> None:
     # (the "flash" a full rerun causes here).
     summary_slot = st.container()
 
-    st.divider()
-    st.markdown(ui.eyebrow("Fama-French Factors"), unsafe_allow_html=True)
-    factors = _factor_file()
-    if st.button("Download the latest factors", icon=":material/download:"):
-        with st.spinner("Downloading the latest Fama-French factors…"):
-            factors = _download_factors()
-    ff = _render_factors(factors, combined)
-
     _render_gap_review(combined)
 
     st.divider()
@@ -354,33 +343,13 @@ def render() -> None:
         committed_merged = st.session_state.get(COMMITTED_KEY, combined)
         _render_report(committed_report, committed_merged)
 
-    st.write("Download the following files:")
-    bloomberg_col, factor_col, workbook_col = st.columns(3)
-    bloomberg_col.download_button(
+    st.download_button(
         "Bloomberg merged (.csv)",
         data=bloomberg_csv.with_display_dates(combined).to_csv(index=False).encode(),
         file_name="bloomberg_merged.csv",
         mime="text/csv",
         icon=":material/download:",
     )
-    if ff is not None:
-        factor_col.download_button(
-            "Fama-French only (.csv)",
-            data=bloomberg_csv.with_display_dates(ff).to_csv(index=False).encode(),
-            file_name="fama_french_factors.csv",
-            mime="text/csv",
-            icon=":material/download:",
-        )
-        workbook_col.download_button(
-            "Workbook (.xlsx)",
-            data=workbook.build(
-                bloomberg_csv.with_display_dates(combined),
-                bloomberg_csv.with_display_dates(ff),
-            ),
-            file_name="Bloomberg + Fama-French.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            icon=":material/download:",
-        )
 
 
 def _render_target_uploader(
@@ -572,42 +541,6 @@ def _keep_and_log(merged: pd.DataFrame, *, file_id: str) -> AcceptedUpload:
         st.session_state[_LOGGED_KEY] = file_id
     st.caption(f"Stored as {MERGED_NAME}, content hash {accepted.source.short_hash}.")
     return accepted
-
-
-def _factor_file() -> FactorFile | None:
-    if FACTORS_KEY not in st.session_state:
-        st.session_state[FACTORS_KEY] = fama_french.load_latest()
-    return st.session_state[FACTORS_KEY]
-
-
-def _download_factors() -> FactorFile | None:
-    try:
-        st.session_state[FACTORS_KEY] = fama_french.download()
-    except FactorFetchError as exc:
-        st.error(f"Could not download the factor file: {exc}", icon=":material/error:")
-    return st.session_state.get(FACTORS_KEY)
-
-
-def _render_factors(factors: FactorFile | None, merged: pd.DataFrame) -> pd.DataFrame | None:
-    if factors is None:
-        st.info(
-            "No factor file yet. Download one to preview it and enable factor downloads.",
-            icon=":material/insights:",
-        )
-        return None
-    ff = fama_french.restrict_to(
-        factors.frame, merged["Date"].min(), merged["Date"].max()
-    )
-    st.caption(
-        f"{len(ff):,} rows within the Bloomberg dates. "
-        f"Content hash {factors.source.short_hash}."
-    )
-    if ff.empty:
-        st.caption("No Fama-French rows fall within the Bloomberg data's date range.")
-    else:
-        st.caption(f"{_fmt(ff['Date'].min())} to {_fmt(ff['Date'].max())}.")
-        st.dataframe(bloomberg_csv.with_display_dates(ff.head(10)), width="stretch")
-    return ff
 
 
 def _render_gap_review(merged: pd.DataFrame) -> None:

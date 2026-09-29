@@ -14,7 +14,11 @@ from streamlit.testing.v1 import AppTest
 
 from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest import fama_french
+from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile, ResolvedFactors
+from forecasting_engine.ingest.provenance import SourceFile
 from forecasting_engine.models.base import ModelDescription
+from forecasting_engine.models.famafrench import FACTOR_COLUMNS
 from forecasting_engine.reporting.model_metrics import (
     FoldTerms,
     ModelRunResult,
@@ -485,3 +489,46 @@ def test_a_target_securitys_other_fields_are_not_signals_and_transforms_are_show
         "VIX_Index_PX_LAST": "difference",
         "LUACOAS_Index_PX_LAST": "difference",
     }
+
+
+# --- Fama-French factors are resolved on Fit ---------------------------------
+
+
+def _fit_famafrench(monkeypatch, resolve) -> AppTest:
+    monkeypatch.setattr(fama_french, "resolve", resolve)
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state["extraction_committed"] = _committed()
+    app.session_state["extraction_committed_targets"] = _TARGETS
+    app.run()
+    (family,) = [r for r in app.radio if r.label == "Model family"]
+    family.set_value("Fama-French 5-Factor").run()
+    next(b for b in app.button if b.label == "Fit").click().run()
+    return app
+
+
+def test_ff5_is_not_run_and_says_why_when_no_factors_can_be_had(monkeypatch):
+    def unavailable():
+        raise FactorFetchError("OSError: no route to host")
+
+    app = _fit_famafrench(monkeypatch, unavailable)
+
+    assert not app.exception
+    assert "no route to host" in " ".join(e.value for e in app.error)
+    assert "famafrench_result_equity" not in app.session_state
+
+
+def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch):
+    dates = _committed()["Date"]
+    rng = np.random.default_rng(1)
+    factors = pd.DataFrame(
+        {"Date": dates[:-10], **{c: rng.normal(size=len(dates) - 10) for c in FACTOR_COLUMNS}}
+    )
+    resolved = ResolvedFactors(
+        FactorFile(factors, SourceFile.of("ff.csv", b"x")), warning="Using the saved copy."
+    )
+
+    app = _fit_famafrench(monkeypatch, lambda: resolved)
+
+    assert not app.exception
+    assert "Using the saved copy." in " ".join(w.value for w in app.warning)
+    assert "10 target dates have no factor row" in _captions(app)

@@ -2,11 +2,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from forecasting_engine.ingest.align import FeaturePanel
+from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
 from forecasting_engine.models.famafrench import (
     FACTOR_COLUMNS,
     FamaFrench5,
     FamaFrenchDataError,
+    factor_coverage,
     merge_factors,
 )
 
@@ -86,7 +87,7 @@ def test_famafrench5_describe_before_fit_raises():
 # --- merge_factors: FYP-111 -------------------------------------------------
 
 
-def test_merge_factors_joins_on_date_and_restricts_to_the_overlap():
+def test_merge_factors_keeps_every_bloomberg_date_and_leaves_uncovered_ones_blank():
     bloomberg = pd.DataFrame(
         {
             "Date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
@@ -102,9 +103,25 @@ def test_merge_factors_joins_on_date_and_restricts_to_the_overlap():
 
     merged = merge_factors(bloomberg, factors)
 
-    assert list(merged["Date"]) == list(pd.to_datetime(["2024-01-01", "2024-01-02"]))
-    assert "price" in merged.columns
-    assert "Mkt-RF" in merged.columns
+    assert list(merged["Date"]) == list(bloomberg["Date"])
+    assert merged["Mkt-RF"].tolist()[:2] == [0.1, 0.2]
+    assert pd.isna(merged["Mkt-RF"].iloc[2])
+
+
+def test_factor_coverage_counts_rows_used_and_target_dates_without_factors():
+    dates = pd.bdate_range("2024-01-01", periods=30)
+    bloomberg = pd.DataFrame({"Date": dates, "price": 100 + np.arange(30.0)})
+    factors = pd.DataFrame({"Date": dates[:25], **{c: 0.1 for c in FACTOR_COLUMNS}})
+    merged = merge_factors(bloomberg, factors).set_index("Date")
+    panel = align_and_lag(merged, list(FACTOR_COLUMNS), "price", horizon=1, exact=FACTOR_COLUMNS)
+
+    coverage = factor_coverage(factors, panel)
+
+    assert coverage.first == dates[0]
+    assert coverage.last == dates[24]
+    assert coverage.missing_dates == 5
+    # Lagged a row, factors reach rows 1-25 of 30; row 25's label is row 26's price.
+    assert coverage.rows_used == 25
 
 
 def test_merge_factors_rejects_an_empty_bloomberg_frame():

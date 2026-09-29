@@ -52,21 +52,43 @@ class FamaFrenchDataError(ValueError):
 
 
 def merge_factors(bloomberg_frame: pd.DataFrame, factors_frame: pd.DataFrame) -> pd.DataFrame:
-    """Join the Bloomberg-merged frame with the Fama-French factors on ``Date``,
-    restricted to their overlapping range.
+    """Join the Fama-French factors onto the Bloomberg-merged frame by exact date.
 
-    An inner join: a date the factor file doesn't cover yet (it lags the
-    calendar by about a month, per ``ingest/fama_french.py``) is dropped
-    rather than left with NaN factor columns that would just fail the
-    minimum-row check downstream anyway.
+    A left join: every Bloomberg row is kept, and a date the factor file doesn't
+    cover yet (it lags the calendar by a month or two) has blank factors rather
+    than being dropped, so ``factor_coverage`` can count it and the FF5 fit
+    leaves it out like any other incomplete row.
     """
-    from forecasting_engine.ingest.fama_french import DATE_COLUMN, restrict_to
+    from forecasting_engine.ingest.fama_french import DATE_COLUMN
 
     if bloomberg_frame.empty:
         raise FamaFrenchDataError("the Bloomberg data is empty — nothing to merge factors into.")
-    dates = bloomberg_frame[DATE_COLUMN]
-    trimmed = restrict_to(factors_frame, dates.min(), dates.max())
-    return bloomberg_frame.merge(trimmed, on=DATE_COLUMN, how="inner")
+    return bloomberg_frame.merge(factors_frame, on=DATE_COLUMN, how="left")
+
+
+@dataclass(frozen=True)
+class FactorCoverage:
+    """What the factor file contributed to an FF5 run."""
+
+    first: pd.Timestamp
+    last: pd.Timestamp
+    rows_used: int
+    """Target dates with every factor and a label, so usable for fitting and scoring."""
+    missing_dates: int
+    """Target dates the factor file has no row for."""
+
+
+def factor_coverage(factors_frame: pd.DataFrame, panel: FeaturePanel) -> FactorCoverage:
+    from forecasting_engine.ingest.fama_french import DATE_COLUMN
+
+    dates = factors_frame[DATE_COLUMN]
+    used = panel.frame[[*FACTOR_COLUMNS, panel.targets[0]]].dropna()
+    return FactorCoverage(
+        first=dates.min(),
+        last=dates.max(),
+        rows_used=len(used),
+        missing_dates=int((~panel.frame.index.isin(dates)).sum()),
+    )
 
 
 @dataclass
