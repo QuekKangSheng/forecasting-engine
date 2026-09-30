@@ -272,9 +272,24 @@ def test_a_target_securitys_other_fields_are_not_signals_and_transforms_are_show
     assert not app.exception
     alignment = next(d.value for d in app.dataframe if "Carried forward" in d.value.columns)
     assert dict(zip(alignment["Signal"], alignment["Transform"], strict=True)) == {
-        "VIX_Index_PX_LAST": "difference",
-        "LUACOAS_Index_PX_LAST": "difference",
+        "VIX_Index_PX_LAST": "level",
+        "LUACOAS_Index_PX_LAST": "level",
     }
+    assert not app.warning
+
+
+def test_an_unclassified_signal_is_named_in_a_warning():
+    sources = {
+        SPX: ColumnSource("SPX Index", "PX_LAST"),
+        "VIX_Index_PX_LAST": ColumnSource("VIX Index", "PX_LAST"),
+        "LUACOAS_Index_PX_LAST": ColumnSource("NEWTICK Index", "PX_LAST"),
+    }
+    app = _page(sources=sources)
+
+    (warning,) = app.warning
+    assert "LUACOAS_Index_PX_LAST" in warning.value
+    assert "VIX_Index_PX_LAST" not in warning.value
+    assert "difference" in warning.value
 
 
 # --- results: only what ran, named for its target -------------------------------

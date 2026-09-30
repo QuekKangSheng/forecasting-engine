@@ -9,6 +9,7 @@ from forecasting_engine.ingest.align import (
     FeaturePanel,
     Transform,
     align_and_lag,
+    is_classified,
     select_signals,
     transform_for,
 )
@@ -223,17 +224,39 @@ def test_a_column_with_no_known_source_is_kept_as_its_own_signal():
 
 
 @pytest.mark.parametrize(
-    ("source", "expected"),
+    ("ticker", "expected"),
     [
-        (ColumnSource("SPX Index", "PX_LAST"), Transform.LOG_RETURN),
-        (ColumnSource("VIX Index", "PX_LAST"), Transform.DIFFERENCE),
-        (ColumnSource("ABC Index", "TOT_RETURN_INDEX_NET_DVDS"), Transform.LOG_RETURN),
-        (ColumnSource("ABC Index", "PX_LAST"), Transform.DIFFERENCE),
-        (None, Transform.DIFFERENCE),
+        *[(t, Transform.LEVEL) for t in ("VIX", "JPMVXYGL", "LUACOAS", "LF98OAS")],
+        *[(t, Transform.DIFFERENCE) for t in ("USGGBE10", "USGG10YR", "USYC2Y10")],
+        *[
+            (t, Transform.LOG_RETURN)
+            for t in ("LF98TRUU", "LEGATRUU", "LBUSTRUU", "SPX", "DXY")
+        ],
     ],
 )
-def test_the_transform_follows_the_ticker_map_with_difference_as_default(source, expected):
+def test_each_ticker_is_transformed_by_its_signal_type(ticker, expected):
+    source = ColumnSource(f"{ticker} Index", "PX_LAST")
+    assert is_classified(source)
     assert transform_for(source) is expected
+
+
+def test_any_total_return_field_is_a_log_return():
+    source = ColumnSource("ABC Index", "TOT_RETURN_INDEX_NET_DVDS")
+    assert is_classified(source)
+    assert transform_for(source) is Transform.LOG_RETURN
+
+
+@pytest.mark.parametrize("source", [ColumnSource("ABC Index", "PX_LAST"), None])
+def test_an_unknown_ticker_is_differenced_and_reported_unclassified(source):
+    assert not is_classified(source)
+    assert transform_for(source) is Transform.DIFFERENCE
+
+
+def test_a_level_signal_is_used_as_it_is():
+    panel = align_and_lag(
+        _frame(), ["signal_a"], "price", horizon=1, transforms={"signal_a": Transform.LEVEL}
+    )
+    assert panel.frame["signal_a"].iloc[5] == 4  # row 4's value, lagged a row
 
 
 def test_a_hand_built_panel_has_no_label_end():

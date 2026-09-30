@@ -24,8 +24,10 @@ from forecasting_engine.ingest import fama_french
 from forecasting_engine.ingest.align import (
     MAX_STALENESS,
     PRODUCTION_LAG_DAYS,
+    UNCLASSIFIED_TRANSFORM,
     FeaturePanel,
     align_and_lag,
+    is_classified,
     select_signals,
     transform_for,
 )
@@ -144,6 +146,15 @@ label = labeller(numeric_cols)
 sources = st.session_state.get(bloomberg_extraction_panel.COMMITTED_SOURCES_KEY, {})
 signal_cols = select_signals(numeric_cols, list(target_columns.values()), sources)
 transforms = {c: transform_for(sources.get(c)) for c in signal_cols}
+unclassified = [c for c in signal_cols if not is_classified(sources.get(c))]
+if unclassified:
+    st.warning(
+        f"No transform is defined for {', '.join(unclassified)}, so "
+        f"{'it is' if len(unclassified) == 1 else 'they are'} treated as a "
+        f"{UNCLASSIFIED_TRANSFORM}. Add the ticker to TICKER_TRANSFORMS in "
+        "ingest/align.py to classify it.",
+        icon=":material/warning:",
+    )
 
 with st.expander("Settings"):
     horizon = st.segmented_control(

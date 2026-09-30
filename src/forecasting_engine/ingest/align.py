@@ -31,34 +31,51 @@ MAX_STALENESS: int = 3
 
 
 class Transform(StrEnum):
-    LOG_RETURN = "log return"
+    LEVEL = "level"
     DIFFERENCE = "difference"
-    NONE = "none"
+    LOG_RETURN = "log return"
 
 
-#: Bloomberg ticker -> how its level is made stationary. A ticker not listed
-#: here is differenced; a total-return index field is always a log return.
+#: Bloomberg ticker -> how it enters a model, by what kind of series it is.
+#: Risk gauges are used as levels, rates and curve points as differences, and
+#: prices and total-return indices as log returns. Any ``*_TOT_RETURN_INDEX_*``
+#: field is a log return whatever its ticker.
 TICKER_TRANSFORMS: Mapping[str, Transform] = {
+    "VIX": Transform.LEVEL,
+    "JPMVXYGL": Transform.LEVEL,
+    "LUACOAS": Transform.LEVEL,
+    "LF98OAS": Transform.LEVEL,
+    "USGGBE10": Transform.DIFFERENCE,
+    "USGG10YR": Transform.DIFFERENCE,
+    "USYC2Y10": Transform.DIFFERENCE,
     "LF98TRUU": Transform.LOG_RETURN,
     "LEGATRUU": Transform.LOG_RETURN,
+    "LBUSTRUU": Transform.LOG_RETURN,
     "SPX": Transform.LOG_RETURN,
-    "LUACOAS": Transform.DIFFERENCE,
-    "USGGBE10": Transform.DIFFERENCE,
-    "VIX": Transform.DIFFERENCE,
-    "JPMVXYGL": Transform.DIFFERENCE,
+    "DXY": Transform.LOG_RETURN,
 }
+
+#: What an unclassified signal is treated as. The Models page names every
+#: signal this applies to, so the default is never silent.
+UNCLASSIFIED_TRANSFORM: Transform = Transform.DIFFERENCE
 
 _TOTAL_RETURN_FIELD = "TOT_RETURN_INDEX"
 _PRICE_FIELD = "PX_LAST"
 _QUOTE_FIELDS = frozenset({"PX_BID", "PX_ASK"})
 
 
+def is_classified(source: ColumnSource | None) -> bool:
+    return source is not None and (
+        source.field.startswith(_TOTAL_RETURN_FIELD) or source.ticker in TICKER_TRANSFORMS
+    )
+
+
 def transform_for(source: ColumnSource | None) -> Transform:
-    if source is None:
-        return Transform.DIFFERENCE
+    if not is_classified(source):
+        return UNCLASSIFIED_TRANSFORM
     if source.field.startswith(_TOTAL_RETURN_FIELD):
         return Transform.LOG_RETURN
-    return TICKER_TRANSFORMS.get(source.ticker, Transform.DIFFERENCE)
+    return TICKER_TRANSFORMS[source.ticker]
 
 
 def select_signals(
@@ -154,7 +171,7 @@ def align_and_lag(
     b. Each signal takes its last value on or before each calendar date, unless
        that value is more than ``MAX_STALENESS`` calendar rows old. A column in
        ``exact`` is matched by date only, never carried forward.
-    c. Each signal is transformed per ``transforms`` (``Transform.NONE`` where
+    c. Each signal is transformed per ``transforms`` (``Transform.LEVEL`` where
        unlisted), so a change spans any dropped date.
     d. Signals are lagged ``PRODUCTION_LAG_DAYS`` row.
     e. The target is the ``horizon``-row forward return on the same calendar,
@@ -176,7 +193,7 @@ def align_and_lag(
             level, carried = frame[signal].reindex(calendar), 0
         else:
             level, carried = _as_of(frame[signal], calendar)
-        transform = transforms.get(signal, Transform.NONE)
+        transform = transforms.get(signal, Transform.LEVEL)
         lagged = _transform(level, transform).shift(PRODUCTION_LAG_DAYS)
         out[signal] = lagged
         alignment[signal] = SignalAlignment(
