@@ -80,8 +80,9 @@ TERMS: Mapping[str, str] = {
         "of predictions with the order of outcomes, on data the model never "
         "trained on. Using ranks stops one wild day from dominating the score, "
         "which is why this is the headline number and the one the promotion "
-        "gate is set on. The s.e. beside it is its standard error: a value "
-        "within about two of them of zero may be luck."
+        "gate is set on. The two s.e.s beside it are standard errors, one "
+        "allowing for overlapping labels, one for errors shared within a test "
+        "window: a value within about two of the larger of zero may be luck."
     ),
     "RMSE": (
         "Root mean squared error: the typical size of a miss, in the same "

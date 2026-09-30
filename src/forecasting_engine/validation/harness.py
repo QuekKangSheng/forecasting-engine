@@ -169,9 +169,10 @@ def summarize(
     Pooling scores one long out-of-sample series rather than averaging short,
     noisy per-fold scores. Each fold's predictions come from its own fit, so a
     pooled Pearson IC mixes those fits' scales; Rank IC does not care about
-    scale, which is why it, not IC, is what the gate is set on. The Newey-West
-    standard error of the pooled Rank IC allows for the overlap between
-    neighbouring h-day labels.
+    scale, which is why it, not IC, is what the gate is set on. Two Newey-West
+    standard errors of the pooled Rank IC are reported: one over h - 1 lags,
+    for the overlap between neighbouring h-day labels, and one over as many
+    lags as a test window has rows, for errors a fold's single fit shares.
 
     Requires at least one fold. Callers should check ``evaluate()``'s output is
     non-empty themselves and raise their own domain-appropriate error message
@@ -184,6 +185,9 @@ def summarize(
         ic=metrics.ic(predicted, realised),
         oos_rank_ic=metrics.rank_ic(predicted, realised),
         oos_rank_ic_se=metrics.rank_ic_se(predicted, realised, lags=folds[0].horizon - 1),
+        oos_rank_ic_se_test=metrics.rank_ic_se(
+            predicted, realised, lags=max(len(f.test) for f in folds)
+        ),
         rmse=metrics.rmse(predicted, realised),
         pbo=pbo,
         crash=_crash_over_folds(folds),

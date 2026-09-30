@@ -86,8 +86,18 @@ def test_rows_scored_is_shown_when_known():
     assert build_metrics_rows({"Polynomial": counted})[0]["Rows scored"] == Cell("1,234")
 
 
-def test_the_rank_ic_standard_error_is_shown_beside_it():
+def test_both_rank_ic_standard_errors_are_shown_beside_it_and_labelled():
     result = _result(0.03, 0.03, 0.015, 0.4)
-    with_se = ModelRunResult(**{**result.__dict__, "oos_rank_ic_se": 0.012})
+    with_se = ModelRunResult(
+        **{**result.__dict__, "oos_rank_ic_se": 0.012, "oos_rank_ic_se_test": 0.019}
+    )
     row = build_metrics_rows({"Polynomial": with_se})[0]
-    assert row["OOS Rank IC"] == Cell("0.0300 (s.e. 0.0120)", "success")
+    assert row["OOS Rank IC"] == Cell(
+        "0.0300 (s.e. (h−1 lags) 0.0120; s.e. (test-window lags) 0.0190)", "success"
+    )
+
+
+def test_the_gate_ignores_the_standard_errors():
+    result = _result(0.03, 0.021, 0.015, 0.4)
+    wide = ModelRunResult(**{**result.__dict__, "oos_rank_ic_se": 0.5, "oos_rank_ic_se_test": 0.9})
+    assert build_metrics_rows({"Polynomial": wide})[0]["OOS Rank IC"].tone == "success"

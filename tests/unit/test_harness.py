@@ -131,15 +131,16 @@ def test_summarize_scores_ic_rank_ic_rmse_once_over_pooled_folds():
     assert result.oos_rank_ic != per_fold_mean
 
 
-def test_summarize_reports_a_newey_west_se_using_the_panels_horizon():
+def test_summarize_reports_newey_west_ses_over_the_horizon_and_the_test_window():
     panel = replace(_panel_with_varying_folds(n=60), horizon=5)
-    folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=10, test=5, embargo=5))
+    folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=10, test=7, embargo=5))
 
     result, _description = summarize(folds, pbo=None)
 
     predicted = pd.concat([f.predicted for f in folds])
     realised = pd.concat([f.realised for f in folds])
     assert result.oos_rank_ic_se == metrics.rank_ic_se(predicted, realised, lags=4)
+    assert result.oos_rank_ic_se_test == metrics.rank_ic_se(predicted, realised, lags=7)
 
 
 def test_summarize_passes_pbo_through_unchanged():

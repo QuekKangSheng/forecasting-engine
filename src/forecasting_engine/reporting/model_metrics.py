@@ -102,7 +102,11 @@ class ModelRunResult:
     """How many folds kept any term. ``None`` only on a result built before this
     field existed (one parked in session state by an older run)."""
     oos_rank_ic_se: float | None = None
-    """Newey-West standard error of ``oos_rank_ic``, or ``None`` if not computed."""
+    """Newey-West standard error of ``oos_rank_ic`` over h - 1 lags (the overlap
+    between labels), or ``None`` if not computed."""
+    oos_rank_ic_se_test: float | None = None
+    """The same over as many lags as a walk-forward test window has rows, allowing
+    for errors shared within a fold's single fit."""
     rows_scored: int | None = None
     """Test rows with both a prediction and a realised value. Each model drops
     rows missing a signal it uses, so this can differ between models."""
@@ -121,8 +125,16 @@ def build_metrics_rows(
 def _row(name: str, result: ModelRunResult, decimals: int) -> dict[str, Cell]:
     can_be_gated = result.pbo is not None
     rank_ic_text = _fmt(result.oos_rank_ic, decimals)
-    if result.oos_rank_ic_se is not None:
-        rank_ic_text += f" (s.e. {_fmt(result.oos_rank_ic_se, decimals)})"
+    errors = [
+        f"{name} {_fmt(se, decimals)}"
+        for name, se in (
+            ("s.e. (h−1 lags)", result.oos_rank_ic_se),
+            ("s.e. (test-window lags)", result.oos_rank_ic_se_test),
+        )
+        if se is not None
+    ]
+    if errors:
+        rank_ic_text += f" ({'; '.join(errors)})"
     oos_rank_ic_cell = (
         _gated_cell(rank_ic_text, result.oos_rank_ic > OOS_RANK_IC_GATE)
         if can_be_gated
