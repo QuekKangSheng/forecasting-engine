@@ -47,6 +47,8 @@ SIGNAL_MERGED_KEY = "signal_merged"
 SIGNAL_REPORT_KEY = "signal_report"
 _TARGET_EXPORTS_KEY = "_target_exports"
 _SIGNAL_EXPORTS_KEY = "_signal_exports"
+_TARGET_DROPPED_KEY = "_target_dropped"
+_SIGNAL_DROPPED_KEY = "_signal_dropped"
 #: filename -> the Role/Field the user last picked for it, so navigating to
 #: another page and back doesn't lose the choice (a fresh upload resets the
 #: file_uploader widget itself, but this dict is plain session state).
@@ -67,6 +69,8 @@ COMMITTED_TARGETS_KEY = "extraction_committed_targets"
 #: column -> ColumnSource (security, field) for COMMITTED_KEY's frame, so the
 #: Models page can leave out every field of a target's security.
 COMMITTED_SOURCES_KEY = "extraction_committed_sources"
+#: Columns dropped at ingest for holding no data, for the data quality report.
+COMMITTED_DROPPED_KEY = "extraction_committed_dropped"
 
 #: What the merged file is called in the upload log and under data/uploads.
 MERGED_NAME = "bloomberg_merged.csv"
@@ -154,15 +158,18 @@ def render() -> None:
             TARGET_MERGED_KEY,
             TARGET_REPORT_KEY,
             _TARGET_EXPORTS_KEY,
+            _TARGET_DROPPED_KEY,
             _TARGET_ROLE_CHOICES_KEY,
             _TARGET_FIELD_CHOICES_KEY,
             SIGNAL_MERGED_KEY,
             SIGNAL_REPORT_KEY,
             _SIGNAL_EXPORTS_KEY,
+            _SIGNAL_DROPPED_KEY,
             COMMITTED_KEY,
             COMMITTED_REPORT_KEY,
             COMMITTED_TARGETS_KEY,
             COMMITTED_SOURCES_KEY,
+            COMMITTED_DROPPED_KEY,
             _LOGGED_KEY,
         ):
             st.session_state.pop(key, None)
@@ -225,6 +232,7 @@ def render() -> None:
             st.session_state[SIGNAL_MERGED_KEY] = result.merged
             st.session_state[SIGNAL_REPORT_KEY] = result.report
             st.session_state[_SIGNAL_EXPORTS_KEY] = result.exports
+            st.session_state[_SIGNAL_DROPPED_KEY] = result.dropped
 
     signal_merged = st.session_state.get(SIGNAL_MERGED_KEY)
 
@@ -310,6 +318,7 @@ def render() -> None:
                 ],
                 combined.columns,
             )
+            st.session_state[COMMITTED_DROPPED_KEY] = _dropped()
         st.success(
             "This cleaned dataset is now committed and available throughout the application.",
             icon=":material/check_circle:",
@@ -324,7 +333,8 @@ def render() -> None:
     with summary_slot:
         committed_report = st.session_state.get(COMMITTED_REPORT_KEY, validation.validate(combined))
         committed_merged = st.session_state.get(COMMITTED_KEY, combined)
-        _render_report(committed_report, committed_merged)
+        committed_dropped = st.session_state.get(COMMITTED_DROPPED_KEY, _dropped())
+        _render_report(committed_report, committed_merged, committed_dropped)
 
     st.download_button(
         "Bloomberg merged (.csv)",
@@ -354,6 +364,7 @@ def _render_target_uploader(
             st.session_state[TARGET_MERGED_KEY] = result.merged
             st.session_state[TARGET_REPORT_KEY] = result.report
             st.session_state[_TARGET_EXPORTS_KEY] = result.exports
+            st.session_state[_TARGET_DROPPED_KEY] = result.dropped
             if result.dropped:
                 st.caption(
                     f"Dropped {len(result.dropped)} column(s) with no data at all: "
@@ -567,7 +578,15 @@ def render_summary() -> None:
         _render_awaiting_upload()
         return
 
-    _render_report(report, merged)
+    _render_report(report, merged, st.session_state.get(COMMITTED_DROPPED_KEY, []))
+
+
+def _dropped() -> list[str]:
+    """Columns either uploader dropped because they held no data at all."""
+    return [
+        *st.session_state.get(_TARGET_DROPPED_KEY, []),
+        *st.session_state.get(_SIGNAL_DROPPED_KEY, []),
+    ]
 
 
 # --- shared between the Data page and the Home summary ---------------------
@@ -588,11 +607,23 @@ def _render_awaiting_upload() -> None:
     st.markdown(rows, unsafe_allow_html=True)
 
 
-def _render_report(report: ValidationReport, merged: pd.DataFrame) -> None:
+def _render_report(report: ValidationReport, merged: pd.DataFrame, dropped: list[str]) -> None:
     _render_verdict(report)
     _render_coverage(report, merged)
+    _render_dropped(dropped)
     _render_completeness(report)
     _render_breakdown(report)
+
+
+def _render_dropped(dropped: list[str]) -> None:
+    if not dropped:
+        return
+    st.markdown(ui.eyebrow("Columns dropped at ingest"), unsafe_allow_html=True)
+    st.caption(
+        "These fields had no value on any date (the security has no data for that "
+        "field), so they were removed before merging."
+    )
+    st.dataframe([{"Column": name} for name in dropped], width="stretch", hide_index=True)
 
 
 def _flagged_count(report: ValidationReport) -> int:

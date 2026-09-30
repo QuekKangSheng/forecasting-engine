@@ -16,6 +16,7 @@ from forecasting_engine.store.uploads import recent_uploads
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PAGE = REPO_ROOT / "app" / "app_pages" / "1_Data.py"
+HOME_PAGE = REPO_ROOT / "app" / "app_pages" / "0_Home.py"
 APP_DIR = REPO_ROOT / "app"
 
 def export(security, rows, fields="PX_LAST"):
@@ -209,6 +210,26 @@ def test_a_column_with_no_data_at_all_is_dropped_and_noted(page):
     merged = result.session_state["signal_merged"]
     assert "JPMVXYGL_Index_PX_BID" not in merged.columns
     assert "Dropped 1 column" in texts(result.caption)
+
+
+def test_a_dropped_column_is_listed_in_the_home_data_quality_report(page):
+    rows = ["1/2/2020,6.5,#N/A N/A", "1/3/2020,6.6,#N/A N/A"]
+    csv = export("JPMVXYGL Index", rows, fields="PX_LAST,PX_BID")
+    result = upload(page, [("jpm.csv", csv, "text/csv")])
+    next(b for b in result.button if b.label == "Use Updated Data").click().run()
+
+    home = AppTest.from_file(str(HOME_PAGE), default_timeout=30)
+    for key in ("extraction_committed", "extraction_committed_report"):
+        home.session_state[key] = result.session_state[key]
+    home.session_state["extraction_committed_dropped"] = result.session_state[
+        "extraction_committed_dropped"
+    ]
+    home.run()
+
+    assert not home.exception
+    assert "Columns dropped at ingest" in texts(home.markdown)
+    (dropped,) = [d.value for d in home.dataframe if list(d.value.columns) == ["Column"]]
+    assert dropped["Column"].tolist() == ["JPMVXYGL_Index_PX_BID"]
 
 
 # --- explaining and excluding gap rows -------------------------------------
