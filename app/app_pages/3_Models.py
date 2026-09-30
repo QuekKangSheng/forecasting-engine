@@ -368,7 +368,8 @@ def _show_table(results: dict[str, ModelRunResult]) -> None:
         for row in rows
     )
     st.markdown(
-        f'<table class="fe-table"><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>',
+        f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{header}</tr>'
+        f"</thead><tbody>{body}</tbody></table></div>",
         unsafe_allow_html=True,
     )
 

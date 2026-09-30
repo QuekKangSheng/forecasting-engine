@@ -101,6 +101,9 @@ _CSS = """
 
   /* A plain table for cells needing an inline lozenge badge — st.dataframe
      can't render those. */
+  /* Every cell is nowrap, so a wide comparison scrolls inside its own box
+     rather than running off the page. */
+  .fe-table-wrap { overflow-x: auto; }
   .fe-table {
     width: 100%;
     border-collapse: collapse;
