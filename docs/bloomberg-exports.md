@@ -74,23 +74,22 @@ with none is read month first, Bloomberg's default. A file that mixes the two
 is refused rather than guessed. If a merged file's dates look a month out,
 check the terminal's date format setting.
 
-The merged Bloomberg CSV is downloadable directly. Fama-French factors are
-downloaded only when requested, cached by content hash, and can then be
-downloaded separately or alongside Bloomberg data in a workbook.
+The merged Bloomberg CSV is downloadable directly. Fama-French factors are not
+part of it: they are fetched when the Fama-French model is run on the Models
+page, and cached by content hash.
 
 ### What it does, and what it deliberately still doesn't
 
-**Signal gaps are filled automatically, capped, on the Data page** — not
-here. Different indices keep different trading calendars; across a real
-ten-year pull the union was 2,610 dates with all signals present on only
-2,499 of them. Each signal gap is carried forward from its last available
-value up to a configurable day limit; a gap longer than that is left blank
-and shown, since a gap that long is more likely a real problem than a
-calendar closure. Nothing is ever dropped — a row stays even if every one
-of its cells is still blank after filling.
+**Signal gaps are not filled here or on the Data page.** Different indices keep
+different trading calendars; across a real ten-year pull the union was 2,610
+dates with all signals present on only 2,499 of them. The merge keeps every
+row, and the Data page lists the rows missing a value. On the Models page each
+target's panel keeps only the dates that target has a price, and each signal
+takes its last value on or before each of those dates, for at most 3 rows
+(`ingest/align.py`).
 
-**Target columns are the one exception, and are never filled, at any gap
-length.** See "Target indices" above.
+**Target columns are never filled, at any gap length.** See "Target indices"
+above.
 
 **Range breaches are flagged, not corrected.** If almost every value in a column
 falls outside its documented range, the converter says so — that pattern means
