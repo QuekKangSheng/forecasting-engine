@@ -46,6 +46,7 @@ AGG = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
 #: blank user-supplied function.
 DEFAULT_SHARED = (5, 120, 20)
 DEFAULT_POLYNOMIAL = ("Enter a function", "")
+NAIVE = "Naive (training mean)"
 
 
 @pytest.fixture(autouse=True)
@@ -565,16 +566,25 @@ def test_run_fits_every_ticked_model_and_one_failure_does_not_stop_the_rest(
     app = _run_equity(_page())
 
     assert not app.exception
-    assert set(_stored_runs(app)) == {"Polynomial", "Machine Learning"}
+    assert set(_stored_runs(app)) == {NAIVE, "Polynomial", "Machine Learning"}
     assert "no route to host" in " ".join(e.value for e in app.error)
     assert len(stub_ml) == 1
+
+
+def test_the_naive_baseline_runs_every_time_on_the_polynomials_rows(stub_ml):
+    app = _run_equity(_untick(_page(), "Fama-French 5", "Machine learning"))
+
+    runs = _stored_runs(app)
+    assert runs[NAIVE].result.rows_scored == runs["Polynomial"].result.rows_scored
+    assert "**Naive (training mean)**: the baseline to beat — not gated." in _markdown(app)
+    assert "Naive (training mean)" in _table(app)
 
 
 def test_an_unticked_model_is_not_run(monkeypatch, stub_ml):
     monkeypatch.setattr(fama_french, "resolve", lambda: pytest.fail("FF5 was unticked"))
     app = _run_equity(_untick(_page(), "Fama-French 5", "Machine learning"))
 
-    assert set(_stored_runs(app)) == {"Polynomial"}
+    assert set(_stored_runs(app)) == {NAIVE, "Polynomial"}
     assert not stub_ml
 
 
@@ -587,7 +597,7 @@ def test_ff5_never_runs_on_the_bond_tab(monkeypatch, stub_ml):
     bond_run.click().run()
 
     assert not app.exception
-    assert set(_stored_runs(app, BOND)) == {"Polynomial", "Machine Learning"}
+    assert set(_stored_runs(app, BOND)) == {NAIVE, "Polynomial", "Machine Learning"}
 
 
 def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch, stub_ml):
@@ -610,7 +620,7 @@ def test_a_blank_function_fails_the_polynomial_but_the_rest_still_run(monkeypatc
     next(b for b in app.button if b.label == "Run").click().run()
 
     assert "enter a function above first" in " ".join(e.value for e in app.error)
-    assert set(_stored_runs(app)) == {"Machine Learning"}
+    assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
 
 
 def test_ml_results_show_shap_and_the_coarse_pbo_note(stub_ml):

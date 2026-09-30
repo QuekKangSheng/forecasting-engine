@@ -12,7 +12,12 @@ from dataclasses import dataclass, field
 from forecasting_engine.validation.crash import CrashDiagnostics
 from forecasting_engine.validation.gates import OOS_RANK_IC_GATE, PBO_GATE
 
-MODEL_ORDER: tuple[str, ...] = ("FF5 Benchmark", "Polynomial", "Machine Learning")
+MODEL_ORDER: tuple[str, ...] = (
+    "Naive (training mean)",
+    "FF5 Benchmark",
+    "Polynomial",
+    "Machine Learning",
+)
 """The order rows appear in; only models that ran get one."""
 
 NO_CONFIG_SEARCH = "N/A — no configuration search"

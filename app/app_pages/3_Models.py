@@ -41,6 +41,7 @@ from forecasting_engine.models.famafrench import (
     merge_factors,
     run_famafrench,
 )
+from forecasting_engine.models.naive import NaiveDataError, run_naive
 from forecasting_engine.models.polynomial import (
     CANDIDATE_CONFIGS,
     MAX_DEGREE,
@@ -69,7 +70,7 @@ from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
-FF5, POLYNOMIAL, ML = MODEL_ORDER
+NAIVE, FF5, POLYNOMIAL, ML = MODEL_ORDER
 
 ROLE_NAMES: dict[TargetRole, str] = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
 
@@ -312,6 +313,7 @@ def _run(models: list[str], runs: model_runs.TabRuns, *, run_one, target_name: s
                 FamaFrenchDataError,
                 BoostedConfigError,
                 FactorFetchError,
+                NaiveDataError,
             ) as exc:
                 runs.runs.pop(name, None)
                 message = str(exc)
@@ -361,6 +363,8 @@ def _show_table(results: dict[str, ModelRunResult]) -> None:
 
 
 def _gate_line(name: str, result: ModelRunResult) -> str:
+    if name == NAIVE:
+        return f"**{name}**: the baseline to beat — not gated."
     if result.pbo is None:
         return f"**{name}**: not gated — no configuration search, so no PBO."
     outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
@@ -530,7 +534,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     _show_alignment(panel, target_name)
 
     tab_runs = model_runs.tab(stored, role, _polynomial_settings(key, panel))
-    models = [POLYNOMIAL]
+    models = [NAIVE, POLYNOMIAL]
     # FF5 is an equity-factor benchmark, not designed to predict bond returns —
     # it would technically run and produce numbers, so it never runs here.
     if run_ff5 and role == TargetRole.EQUITY:
@@ -540,6 +544,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
 
     if st.button("Run", type="primary", key=f"run_{key}"):
         runners = {
+            NAIVE: lambda: model_runs.ModelRun(*run_naive(panel, splitter)),
             POLYNOMIAL: lambda: _run_polynomial(tab_runs.polynomial_settings, panel, price_col),
             FF5: lambda: _run_famafrench(price_col),
             ML: lambda: _run_ml(panel),
