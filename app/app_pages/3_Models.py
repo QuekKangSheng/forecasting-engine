@@ -93,6 +93,9 @@ TABLE_COLUMNS: tuple[str, ...] = (
     "Crash Precision",
     "Crash F1",
     "Rows scored",
+    "Rank IC within folds",
+    "Beyond 2 s.e.",
+    "Constant folds",
 )
 
 BADGE_LABELS = {"success": "Gate met", "danger": "Gate failed"}
@@ -107,6 +110,9 @@ COLUMN_TERMS = {
     "Crash Recall": "Crash diagnostics",
     "Crash Precision": "Crash diagnostics",
     "Crash F1": "Crash diagnostics",
+    "Rank IC within folds": "Rank IC within folds",
+    "Beyond 2 s.e.": "Beyond 2 s.e.",
+    "Constant folds": "Constant folds",
 }
 
 GATE_NAMES = {"oos_rank_ic": "OOS Rank IC", "pbo": "PBO"}
