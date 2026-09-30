@@ -39,6 +39,9 @@ CLIP_SD: float = 4.0
 standard deviations from the mean, so one extreme value can't be raised to a
 power into an extreme forecast."""
 
+INNER_CV_SPLITS: int = 5
+"""Most time-ordered folds LassoCV/ElasticNetCV validate the penalty on."""
+
 _MIN_TRAINING_ROWS: int = 10
 """Below this, a regularized multi-term fit is more noise than signal — reject
 with a clear message rather than let sklearn fail on a near-empty design matrix."""
@@ -288,9 +291,10 @@ class DerivedPolynomial:
 
 
 def _time_series_cv(n_rows: int, gap: int) -> TimeSeriesSplit:
-    """Up to five time-ordered folds, each validating after a ``gap`` of rows so
-    no training label overlaps it; fewer when the window is too short for five."""
-    for n_splits in range(5, 1, -1):
+    """Up to ``INNER_CV_SPLITS`` time-ordered folds, each validating after a
+    ``gap`` of rows so no training label overlaps it; fewer when the window is
+    too short."""
+    for n_splits in range(INNER_CV_SPLITS, 1, -1):
         test_size = n_rows // (n_splits + 1)
         if test_size >= 2 and n_rows - gap - n_splits * test_size >= 2:
             return TimeSeriesSplit(n_splits=n_splits, gap=gap)
@@ -302,10 +306,13 @@ def _time_series_cv(n_rows: int, gap: int) -> TimeSeriesSplit:
 
 # ── Bridging to the shared comparison view (ModelRunResult) ─────────────────
 
+CANDIDATE_DEGREES: tuple[int, ...] = (1, 2, 3)
+CANDIDATE_REGULARIZERS: tuple[str, ...] = ("lasso", "elasticnet")
+
 CANDIDATE_CONFIGS: tuple[DerivedPolynomial, ...] = tuple(
     DerivedPolynomial(degree=degree, regularizer=regularizer)
-    for degree in (1, 2, 3)
-    for regularizer in ("lasso", "elasticnet")
+    for degree in CANDIDATE_DEGREES
+    for regularizer in CANDIDATE_REGULARIZERS
 )
 """Working default (not sponsor-confirmed): the configuration grid PBO's CSCV
 compares against itself for the derived-fit path. Revisit once Alpha Norm gives

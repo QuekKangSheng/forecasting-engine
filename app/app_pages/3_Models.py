@@ -69,19 +69,19 @@ from forecasting_engine.reporting.polynomial_function import (
 )
 from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
+from model_settings import (
+    DEFAULT_HORIZON,
+    DEFAULT_MAX_TERMS,
+    DEFAULT_TEST_WINDOW,
+    DEFAULT_TRAIN_WINDOW,
+    EMBARGO_DAYS,
+    HORIZONS,
+)
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
 NAIVE, FF5, POLYNOMIAL, ML = MODEL_ORDER
 
 ROLE_NAMES: dict[TargetRole, str] = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
-
-#: The forecast horizons the validation framework asks for, reported separately
-#: and never averaged.
-HORIZONS: tuple[int, ...] = (1, 5)
-
-#: One embargo shared by every horizon, equal to the longest of them, rather than
-#: one per horizon. Picking h=1 used to drop the embargo to 1 as well.
-EMBARGO_DAYS: int = max(HORIZONS)
 
 TABLE_COLUMNS: tuple[str, ...] = (
     "Model",
@@ -162,7 +162,7 @@ with st.expander("Settings"):
     horizon = st.segmented_control(
         "Forecast horizon",
         HORIZONS,
-        default=max(HORIZONS),
+        default=DEFAULT_HORIZON,
         required=True,
         format_func=lambda days: f"{days} day" if days == 1 else f"{days} days",
         help=glossary.term("Forecast horizon"),
@@ -171,14 +171,14 @@ with st.expander("Settings"):
     train = cols[0].number_input(
         "Walk-forward train window (days)",
         min_value=10,
-        value=120,
+        value=DEFAULT_TRAIN_WINDOW,
         step=10,
         help=glossary.term("Walk-forward train window (days)"),
     )
     test = cols[1].number_input(
         "Walk-forward test window (days)",
         min_value=1,
-        value=20,
+        value=DEFAULT_TEST_WINDOW,
         step=5,
         help=glossary.term("Walk-forward test window (days)"),
     )
@@ -253,7 +253,11 @@ def _polynomial_settings(key: str, panel: FeaturePanel) -> tuple:
         )
         return (mode, formula.strip())
     max_terms = st.number_input(
-        "Max terms per candidate (optional cap)", min_value=1, value=10, step=1, key=f"terms_{key}"
+        "Max terms per candidate (optional cap)",
+        min_value=1,
+        value=DEFAULT_MAX_TERMS,
+        step=1,
+        key=f"terms_{key}",
     )
     st.caption(
         f"Tries a small grid of degrees (1-3, of up to {MAX_DEGREE} allowed) and "

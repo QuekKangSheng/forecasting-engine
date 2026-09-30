@@ -63,6 +63,25 @@ _FIXED_PARAMS: dict[str, dict] = {
 #: rows through the hessian (one per row for squared error), LightGBM directly.
 _LEAF_KEYS: dict[str, str] = {"xgboost": "min_child_weight", "lightgbm": "min_child_samples"}
 
+#: Optuna's search space: parameter -> (low, high, log scale). Shared by both
+#: libraries so PBO's comparison reflects the algorithm, not an unevenly-sized
+#: search; ``min_leaf`` is each library's minimum leaf size (``_LEAF_KEYS``).
+#: The sampling fractions, penalties and leaf size let the search trade fit for
+#: simplicity instead of only ever growing a bigger model.
+SEARCH_SPACE: dict[str, tuple[float, float, bool]] = {
+    "n_estimators": (20, 100, False),
+    "max_depth": (2, 4, False),
+    "learning_rate": (0.01, 0.3, True),
+    "subsample": (0.5, 1.0, False),
+    "colsample_bytree": (0.5, 1.0, False),
+    "reg_lambda": (1e-3, 10.0, True),
+    "reg_alpha": (1e-3, 10.0, True),
+    "min_leaf": (5, 100, True),
+}
+
+LEAF_CAP_SHARE: float = 0.25
+"""A tuned minimum leaf size is capped at this share of a fit's training rows."""
+
 N_TRIALS: int = 50
 """Optuna trials per library for the first tune."""
 
@@ -109,22 +128,13 @@ class TuningLog:
 
 
 def _search_space(trial: optuna.Trial, library: str) -> dict:
-    """Shared by both libraries so PBO's comparison reflects the algorithm, not an
-    unevenly-sized search.
-
-    Every parameter means the same thing in both libraries. The sampling
-    fractions, L1/L2 penalties and minimum leaf size are there so the search can
-    trade fit for simplicity instead of only ever growing a bigger model."""
-    return {
-        "n_estimators": trial.suggest_int("n_estimators", 20, 100),
-        "max_depth": trial.suggest_int("max_depth", 2, 4),
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-        "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-        "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
-        "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
-        _LEAF_KEYS[library]: trial.suggest_int(_LEAF_KEYS[library], 5, 100, log=True),
-    }
+    """One suggestion per ``SEARCH_SPACE`` entry, integer where its bounds are."""
+    params = {}
+    for name, (low, high, log) in SEARCH_SPACE.items():
+        key = _LEAF_KEYS[library] if name == "min_leaf" else name
+        suggest = trial.suggest_int if isinstance(low, int) else trial.suggest_float
+        params[key] = suggest(key, low, high, log=log)
+    return params
 
 
 def tune_hyperparameters(
@@ -203,7 +213,7 @@ class BoostedForecaster:
         leaf = _LEAF_KEYS[self.library]
         if leaf in params:
             # A leaf tuned on a longer window could leave a short one unsplittable.
-            params[leaf] = min(params[leaf], max(1, len(x) // 4))
+            params[leaf] = min(params[leaf], max(1, int(len(x) * LEAF_CAP_SHARE)))
         self._model = _LIBRARIES[self.library](**params).fit(x, y)
         self._signals = signals
         self._fit_x = x
