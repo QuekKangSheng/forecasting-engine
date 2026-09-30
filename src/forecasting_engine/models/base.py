@@ -11,6 +11,7 @@ model implementations are both callers.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -30,6 +31,9 @@ class ModelDescription:
     terms: tuple[str, ...]
     coefficients: tuple[float, ...]
     intercept: float | None = None
+    input_bounds: Mapping[str, tuple[float, float]] | None = None
+    """Per input, the ``(low, high)`` range it is clipped to before the terms
+    apply, for a model that clips; ``None`` if nothing is clipped."""
 
     def __post_init__(self) -> None:
         if len(self.terms) != len(self.coefficients):

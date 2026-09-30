@@ -274,3 +274,33 @@ def test_a_short_window_validates_on_fewer_folds_and_too_short_says_so():
     assert polynomial._time_series_cv(20, gap=5).n_splits < 5
     with pytest.raises(PolynomialConfigError, match="too short"):
         polynomial._time_series_cv(10, gap=5)
+
+
+# --- extreme inputs are clipped before they are raised to a power ---------------
+
+
+def test_an_extreme_input_forecasts_no_further_than_one_at_the_clip_bound():
+    panel = _scaled_panel(1.0)
+    model = DerivedPolynomial(degree=2, regularizer="lasso")
+    model.fit(panel, panel.frame.index)
+    x = panel.frame["x"]
+    bound = x.mean() + polynomial.CLIP_SD * x.std()
+
+    probes = panel.frame.iloc[:3].copy()
+    probes["x"] = [bound, bound * 10, bound * 1_000]
+    probe_panel = FeaturePanel(frame=probes, signals=("x",), targets=("target",), lag_days=1)
+    forecasts = model.predict(probe_panel, probes.index)
+
+    assert forecasts.iloc[1] == pytest.approx(forecasts.iloc[0])
+    assert forecasts.iloc[2] == pytest.approx(forecasts.iloc[0])
+
+
+def test_the_clip_bounds_are_reported_in_raw_units():
+    panel = _scaled_panel(1_000.0)
+    model = DerivedPolynomial(degree=2, regularizer="lasso")
+    model.fit(panel, panel.frame.index)
+
+    low, high = model.describe().input_bounds["x"]
+    x = panel.frame["x"]
+    assert low == pytest.approx(x.mean() - 4 * x.std())
+    assert high == pytest.approx(x.mean() + 4 * x.std())

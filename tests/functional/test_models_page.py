@@ -6,6 +6,7 @@ under test here is what the page shows, not the fitting. Tests that press Run
 stub the machine-learning fit and the factor download.
 """
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -421,6 +422,13 @@ def test_the_equation_is_typeset_with_labels():
     (latex,) = [lx.value for lx in _page({EQUITY: {"Polynomial": _polynomial_run()}}).latex]
     assert r"\hat{y} = 0.001234 + 0.0004521" in latex
     assert r"\text{VIX}^{2}" in latex
+
+
+def test_the_clip_bounds_are_shown_beside_the_equation():
+    clipped = replace(DERIVED, input_bounds={"VIX_Index_PX_LAST": (9.5, 31.25)})
+    app = _page({EQUITY: {"Polynomial": _polynomial_run(description=clipped)}})
+
+    assert "mean ± 4 standard deviations: VIX 9.5 to 31.25" in _captions(app)
 
 
 def test_the_term_table_uses_labels_not_raw_column_codes():

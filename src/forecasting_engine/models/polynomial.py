@@ -34,6 +34,11 @@ from forecasting_engine.validation.splitters import PurgedWalkForward
 MAX_DEGREE: int = 5
 """FYP-43's third acceptance criterion: a degree above this is rejected."""
 
+CLIP_SD: float = 4.0
+"""A derived polynomial's raw inputs are clipped to this many training-window
+standard deviations from the mean, so one extreme value can't be raised to a
+power into an extreme forecast."""
+
 _MIN_TRAINING_ROWS: int = 10
 """Below this, a regularized multi-term fit is more noise than signal — reject
 with a clear message rather than let sklearn fail on a near-empty design matrix."""
@@ -195,6 +200,7 @@ class DerivedPolynomial:
         self._columns: list[str] | None = None
         self._model = None
         self._intercept: float | None = None
+        self._bounds: tuple[pd.Series, pd.Series] | None = None
 
     def fit(self, panel: FeaturePanel, train: pd.DatetimeIndex) -> None:
         signals = list(panel.signals)
@@ -204,8 +210,13 @@ class DerivedPolynomial:
                 f"not enough complete training rows to fit a degree-{self.degree} "
                 f"polynomial (need at least {_MIN_TRAINING_ROWS}, got {len(frame)})."
             )
+        # Clipping each signal to its training mean ± CLIP_SD standard deviations
+        # is clipping its standardised value to ± CLIP_SD, done in raw units so
+        # the displayed equation stays exact inside these bounds.
+        mean, sd = frame[signals].mean(), frame[signals].std()
+        self._bounds = (mean - CLIP_SD * sd, mean + CLIP_SD * sd)
         x = pd.DataFrame(
-            self._poly.fit_transform(frame[signals]),
+            self._poly.fit_transform(self._clip(frame[signals])),
             columns=self._poly.get_feature_names_out(signals),
             index=frame.index,
         )
@@ -243,7 +254,7 @@ class DerivedPolynomial:
             return predicted
 
         expanded = pd.DataFrame(
-            self._poly.transform(raw),
+            self._poly.transform(self._clip(raw)),
             columns=self._poly.get_feature_names_out(signals),
             index=raw.index,
         )[self._columns]
@@ -262,12 +273,18 @@ class DerivedPolynomial:
             if coefficient != 0:
                 terms.append(term)
                 coefficients.append(float(coefficient))
+        low, high = self._bounds
         return ModelDescription(
             name=self.name,
             terms=tuple(terms),
             coefficients=tuple(coefficients),
             intercept=intercept,
+            input_bounds={s: (float(low[s]), float(high[s])) for s in low.index},
         )
+
+    def _clip(self, signals: pd.DataFrame) -> pd.DataFrame:
+        low, high = self._bounds
+        return signals.clip(lower=low, upper=high, axis=1)
 
 
 def _time_series_cv(n_rows: int, gap: int) -> TimeSeriesSplit:

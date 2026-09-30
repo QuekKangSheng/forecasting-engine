@@ -44,6 +44,7 @@ from forecasting_engine.models.famafrench import (
 from forecasting_engine.models.naive import NaiveDataError, run_naive
 from forecasting_engine.models.polynomial import (
     CANDIDATE_CONFIGS,
+    CLIP_SD,
     MAX_DEGREE,
     DerivedPolynomial,
     PolynomialConfigError,
@@ -440,6 +441,13 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
     st.markdown(ui.eyebrow(fn.origin, glossary.term("Fitted terms")), unsafe_allow_html=True)
     st.caption(f"Forecasts: {label(fn.target)}, {fn.horizon}-day return")
     st.latex(to_latex(fn, label))
+    bounds = run.description.input_bounds
+    if bounds:
+        ranges = "; ".join(f"{label(s)} {lo:.4g} to {hi:.4g}" for s, (lo, hi) in bounds.items())
+        st.caption(
+            f"Each input is first clipped to its latest training window's mean ± {CLIP_SD:g} "
+            f"standard deviations: {ranges}. Outside those, the equation applies at the bound."
+        )
     if fn.formula is not None:
         st.caption(
             "This function can't be written as separate terms and exponents (it divides "
