@@ -13,7 +13,6 @@ st.write(
     "Forecasts short-horizon returns for liquid equity and bond indices, "
     "validates them against overfitting, and reports tail risk."
 )
-st.caption("Built for Alpha Norm by Finlytics (IS484).")
 
 st.divider()
 bloomberg_extraction_panel.render_summary()

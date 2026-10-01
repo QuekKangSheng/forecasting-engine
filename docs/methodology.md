@@ -160,18 +160,20 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
   configuration search, so no PBO.
 - **Derived polynomial** (`models/polynomial.DerivedPolynomial`). The grid is
   every degree in `CANDIDATE_DEGREES` with every regularizer in
-  `CANDIDATE_REGULARIZERS` (LassoCV, ElasticNetCV); degree may never exceed
-  `MAX_DEGREE`. Per fold:
+  `CANDIDATE_REGULARIZERS` (Lasso, and ElasticNet with an L1 share of 0.5, as in
+  `_REGULARIZERS`); degree may never exceed `MAX_DEGREE`. Per fold:
   1. each raw signal is clipped to its training mean ± `CLIP_SD` standard
      deviations, and those bounds are shown beside the equation;
-  2. the clipped signals are expanded with `PolynomialFeatures`, keeping at most
-     `max_terms` terms (default `DEFAULT_MAX_TERMS`) ranked by absolute
-     correlation with the target;
-  3. the expanded terms are standardised with a scaler fitted on the training
-     window;
-  4. the penalty is chosen by time-ordered cross-validation (`TimeSeriesSplit`,
+  2. the clipped signals are expanded with `PolynomialFeatures`;
+  3. the penalty is chosen by time-ordered cross-validation (`TimeSeriesSplit`,
      up to `INNER_CV_SPLITS` folds, gap = `h`, fewer folds when the window is
-     short);
+     short) over `_N_ALPHAS` penalties spanning a factor of `_ALPHA_EPS`, by mean
+     squared error. Each split keeps at most `max_terms` terms (default
+     `DEFAULT_MAX_TERMS`) ranked by absolute correlation with the target and
+     standardises them, using that split's training rows only, so the rows that
+     judge a penalty never help choose the terms it is judged on;
+  4. the term pick and the scaler are redone on the whole training window, and
+     the model is refitted there with the chosen penalty;
   5. the coefficients are converted back to raw units for display, so the
      equation reproduces the predictions within the clip bounds.
 
@@ -212,6 +214,18 @@ values end to end, then computes once:
   and "s.e. (test-window lags)" uses as many lags as a test window has rows,
   allowing for errors shared within a fold's single fit.
 - **Rows scored**: test rows with both a prediction and an outcome.
+- **Rank IC within folds** (`validation/harness.within_fold_ranks`): the Rank IC
+  again, but with each fold's predictions first ranked within that fold, centred
+  on zero, then pooled, with its Newey-West standard error over test-window lags.
+  Pooling alone ranks predictions across folds, so a forecast whose level merely
+  shifts between folds can score there without ranking a single day — on the
+  live S&P data a forecast using no signal scored +0.10 that way. Within folds it
+  scores nothing. A fold that forecasts one value throughout contributes exactly
+  zero.
+- **Beyond 2 s.e.**: whether the pooled Rank IC is more than
+  `SIGNIFICANCE_SE_MULTIPLE` of the larger of its two standard errors from zero.
+- **Constant folds**: how many folds forecast a single value for their whole
+  test window.
 - **Crash diagnostics** (`validation/crash.py`, a diagnostic, never a gate). A
   day is flagged when its prediction is below the `FLAG_PERCENTILE` quantile of
   that fold's in-sample predictions. It is a true tail day when its return is
@@ -245,7 +259,9 @@ Optuna's trials, since tuning has its own period.
 
 A model with no configuration search (FF5, a user polynomial, the naive
 baseline) has no PBO; it is shown ungated rather than failing. The standard
-errors do not enter the gate.
+errors do not enter the gate, and nor do the Rank IC within folds, Beyond 2
+s.e. and Constant folds: those are shown beside it so a reader can see when a
+score that meets the gate could be luck or comes from forecast levels alone.
 
 ## 13. Naive baseline
 
@@ -372,6 +388,9 @@ Values are Python literals as the code holds them.
 | `CANDIDATE_REGULARIZERS` | `forecasting_engine.models.polynomial` | `("lasso", "elasticnet")` |
 | `CLIP_SD` | `forecasting_engine.models.polynomial` | `4.0` |
 | `INNER_CV_SPLITS` | `forecasting_engine.models.polynomial` | `5` |
+| `_REGULARIZERS` | `forecasting_engine.models.polynomial` | `{"lasso": 1.0, "elasticnet": 0.5}` |
+| `_N_ALPHAS` | `forecasting_engine.models.polynomial` | `100` |
+| `_ALPHA_EPS` | `forecasting_engine.models.polynomial` | `1e-3` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.polynomial` | `10` |
 | `_FIXED_PARAMS` | `forecasting_engine.models.boosted` | `{"xgboost": {"verbosity": 0}, "lightgbm": {"verbose": -1, "subsample_freq": 1}}` |
 | `_LEAF_KEYS` | `forecasting_engine.models.boosted` | `{"xgboost": "min_child_weight", "lightgbm": "min_child_samples"}` |
@@ -387,6 +406,7 @@ Values are Python literals as the code holds them.
 | `N_BLOCKS` | `forecasting_engine.validation.pbo` | `16` |
 | `OOS_RANK_IC_GATE` | `forecasting_engine.validation.gates` | `0.02` |
 | `PBO_GATE` | `forecasting_engine.validation.gates` | `0.5` |
+| `SIGNIFICANCE_SE_MULTIPLE` | `forecasting_engine.reporting.model_metrics` | `2.0` |
 | `TRADING_DAYS_PER_YEAR` | `forecasting_engine.portfolio.performance` | `252` |
 | `RISK_FREE_RATE` | `forecasting_engine.portfolio.performance` | `0.0` |
 | `BASELINE_WEIGHTS` | `forecasting_engine.portfolio.backtest` | `{"equity": 0.5, "bond": 0.5}` |

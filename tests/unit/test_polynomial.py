@@ -254,13 +254,14 @@ def test_the_fit_ignores_rows_outside_the_training_window():
 
 def test_the_inner_validation_is_time_ordered_with_a_horizon_gap(monkeypatch):
     seen = []
-    real = polynomial._REGULARIZERS["lasso"]
+    real = polynomial._time_series_cv
 
-    def recording(cv, **kwargs):
+    def recording(n_rows, gap):
+        cv = real(n_rows, gap)
         seen.append(cv)
-        return real(cv=cv, **kwargs)
+        return cv
 
-    monkeypatch.setitem(polynomial._REGULARIZERS, "lasso", recording)
+    monkeypatch.setattr(polynomial, "_time_series_cv", recording)
     panel = replace(_scaled_panel(1.0), horizon=5)
     DerivedPolynomial(degree=1, regularizer="lasso").fit(panel, panel.frame.index)
 
@@ -304,3 +305,68 @@ def test_the_clip_bounds_are_reported_in_raw_units():
     x = panel.frame["x"]
     assert low == pytest.approx(x.mean() - 4 * x.std())
     assert high == pytest.approx(x.mean() + 4 * x.std())
+
+
+# --- nothing from outside the training window reaches a forecast ---------------
+
+
+def test_a_forecast_does_not_depend_on_the_rows_predicted_alongside_it():
+    # Standardising (or clipping) with the rows being predicted, rather than the
+    # training window's statistics, makes a day's forecast depend on which other
+    # days are in the batch — and leaks the test window into every forecast.
+    panel = _scaled_panel(1.0)
+    train, test = panel.frame.index[:300], panel.frame.index[300:]
+    model = DerivedPolynomial(degree=2, regularizer="lasso")
+    model.fit(panel, train)
+
+    batch = model.predict(panel, test)
+    alone = pd.Series([model.predict(panel, test[i : i + 1]).iloc[0] for i in range(5)])
+
+    np.testing.assert_allclose(alone, batch.iloc[:5], rtol=1e-12)
+
+
+def test_the_fit_sees_each_signal_clipped_to_its_training_bounds(monkeypatch):
+    panel = _scaled_panel(1.0)
+    frame = panel.frame.copy()
+    frame.iloc[10, frame.columns.get_loc("x")] = 50.0  # ~50 SD out
+    panel = replace(panel, frame=frame)
+    model = DerivedPolynomial(degree=1, regularizer="lasso")
+
+    seen = []
+    real = model._poly.fit_transform
+
+    def recording(x, *args, **kwargs):
+        seen.append(x.copy())
+        return real(x, *args, **kwargs)
+
+    monkeypatch.setattr(model._poly, "fit_transform", recording)
+    model.fit(panel, panel.frame.index)
+
+    (fitted_on,) = seen
+    _, high = model.describe().input_bounds["x"]
+    assert fitted_on["x"].max() == pytest.approx(high)
+
+
+def test_term_selection_and_scaling_inside_validation_see_only_earlier_rows(monkeypatch):
+    # The penalty is chosen by validating on later rows of the training window.
+    # Picking the top terms, or fitting the scaler, on the whole window first
+    # would let those later rows shape what they then validate.
+    panel = _scaled_panel(1.0)
+    model = DerivedPolynomial(degree=3, regularizer="lasso", max_terms=2)
+    windows = []
+    real = polynomial._prepare
+
+    def recording(x, y, max_terms):
+        windows.append(x.index)
+        return real(x, y, max_terms)
+
+    monkeypatch.setattr(polynomial, "_prepare", recording)
+    model.fit(panel, panel.frame.index)
+
+    *inner, final = windows
+    assert inner, "validation must prepare each inner split itself"
+    everything = panel.frame.index
+    assert final.equals(everything)
+    for window in inner:
+        assert len(window) < len(everything)
+        assert window.equals(everything[: len(window)]), "an inner split trains on a prefix"

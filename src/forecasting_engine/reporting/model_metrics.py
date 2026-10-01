@@ -22,6 +22,10 @@ MODEL_ORDER: tuple[str, ...] = (
 
 NO_CONFIG_SEARCH = "N/A — no configuration search"
 
+SIGNIFICANCE_SE_MULTIPLE: float = 2.0
+"""A pooled OOS Rank IC further than this many standard errors from zero is shown
+as distinguishable from luck. Diagnostic only: it never enters the gate."""
+
 _COLUMNS: tuple[str, ...] = (
     "IC",
     "OOS Rank IC",
@@ -31,6 +35,9 @@ _COLUMNS: tuple[str, ...] = (
     "Crash Precision",
     "Crash F1",
     "Rows scored",
+    "Rank IC within folds",
+    "Beyond 2 s.e.",
+    "Constant folds",
 )
 
 
@@ -85,6 +92,19 @@ class FoldTerms:
 
 
 @dataclass(frozen=True)
+class ConstantForecasts:
+    """How many of a run's folds forecast a single value across their test window.
+
+    Such a fold ranks nothing, so it has no Rank IC of its own; pooled with the
+    other folds it still counts, through its level alone. The count says how much
+    of a run that describes.
+    """
+
+    folds: int
+    constant: int
+
+
+@dataclass(frozen=True)
 class ModelRunResult:
     """One model family's completed run. ``pbo`` is ``None`` for FF5 (no
     configuration search) — also the signal that row skips the gate badge."""
@@ -110,6 +130,13 @@ class ModelRunResult:
     rows_scored: int | None = None
     """Test rows with both a prediction and a realised value. Each model drops
     rows missing a signal it uses, so this can differ between models."""
+    oos_rank_ic_within: float | None = None
+    """Rank IC of each fold's forecasts ranked within that fold, pooled. A
+    forecast that only shifts level from fold to fold scores nothing here, while
+    it can score on ``oos_rank_ic``. Diagnostic; not gated."""
+    oos_rank_ic_within_se: float | None = None
+    """Newey-West standard error of ``oos_rank_ic_within`` over test-window lags."""
+    constant_forecasts: ConstantForecasts | None = None
 
 
 def build_metrics_rows(
@@ -156,7 +183,39 @@ def _row(name: str, result: ModelRunResult, decimals: int) -> dict[str, Cell]:
         "Crash Precision": Cell(_fmt(result.crash.precision, decimals)),
         "Crash F1": Cell(_fmt(result.crash.f1, decimals)),
         "Rows scored": Cell("—" if result.rows_scored is None else f"{result.rows_scored:,}"),
+        "Rank IC within folds": _within_cell(result, decimals),
+        "Beyond 2 s.e.": _significance_cell(result),
+        "Constant folds": Cell(
+            "—"
+            if result.constant_forecasts is None
+            else f"{result.constant_forecasts.constant} of {result.constant_forecasts.folds}"
+        ),
     }
+
+
+def _within_cell(result: ModelRunResult, decimals: int) -> Cell:
+    within = result.oos_rank_ic_within
+    if within is None or within != within:  # NaN: no fold's forecasts ranked any day
+        return Cell("—")
+    text = _fmt(within, decimals)
+    se = result.oos_rank_ic_within_se
+    if se is not None and se == se:
+        text += f" (s.e. {_fmt(se, decimals)})"
+    return Cell(text)
+
+
+def _significance_cell(result: ModelRunResult) -> Cell:
+    """Judged on the larger of the two standard errors: the test-window one also
+    allows for errors a fold's single fit shares, so it is the harder bar."""
+    errors = [
+        se
+        for se in (result.oos_rank_ic_se, result.oos_rank_ic_se_test)
+        if se is not None and se == se
+    ]
+    if not errors or result.oos_rank_ic != result.oos_rank_ic:
+        return Cell("—")
+    beyond = abs(result.oos_rank_ic) > SIGNIFICANCE_SE_MULTIPLE * max(errors)
+    return Cell("Yes" if beyond else "No")
 
 
 def _gated_cell(text: str, passed: bool) -> Cell:

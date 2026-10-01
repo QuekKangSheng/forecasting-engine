@@ -84,6 +84,26 @@ TERMS: Mapping[str, str] = {
         "allowing for overlapping labels, one for errors shared within a test "
         "window: a value within about two of the larger of zero may be luck."
     ),
+    "Rank IC within folds": (
+        "The OOS Rank IC again, but with each fold's forecasts ranked only against "
+        "each other before pooling. Pooling ranks forecasts across folds, so a model "
+        "can score there just because its forecast level shifts from fold to fold — "
+        "a model that uses no signal at all can pass the gate that way. Here it "
+        "can't: only ranking days within a fold counts. Far below the OOS Rank IC "
+        "means most of that score came from levels, not from the signals."
+    ),
+    "Beyond 2 s.e.": (
+        "Whether the OOS Rank IC is more than two standard errors from zero, "
+        "judged on the larger of the two standard errors. No means a score of "
+        "this size could easily be luck, even if it meets the gate. A diagnostic "
+        "only: it does not change whether the gate is met."
+    ),
+    "Constant folds": (
+        "How many walk-forward folds forecast a single value for their whole test "
+        "window. Such a fold ranks no day above another, so it adds nothing to "
+        "the Rank IC within folds, but it still counts towards the pooled score "
+        "through its level. The naive baseline is constant in every fold by design."
+    ),
     "RMSE": (
         "Root mean squared error: the typical size of a miss, in the same "
         "units as the return being predicted. Lower is better. It says how far "

@@ -29,6 +29,7 @@ from forecasting_engine.features.screening import screen_over_folds
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import Forecaster, ModelDescription
 from forecasting_engine.reporting.model_metrics import (
+    ConstantForecasts,
     FoldTerms,
     ModelRunResult,
     ScreeningSummary,
@@ -181,13 +182,13 @@ def summarize(
     knows what a portfolio manager should be told to fix.
     """
     predicted, realised = pooled(folds)
+    within = within_fold_ranks(folds)
+    test_window_lags = max(len(f.test) for f in folds)
     result = ModelRunResult(
         ic=metrics.ic(predicted, realised),
         oos_rank_ic=metrics.rank_ic(predicted, realised),
         oos_rank_ic_se=metrics.rank_ic_se(predicted, realised, lags=folds[0].horizon - 1),
-        oos_rank_ic_se_test=metrics.rank_ic_se(
-            predicted, realised, lags=max(len(f.test) for f in folds)
-        ),
+        oos_rank_ic_se_test=metrics.rank_ic_se(predicted, realised, lags=test_window_lags),
         rmse=metrics.rmse(predicted, realised),
         pbo=pbo,
         crash=_crash_over_folds(folds),
@@ -196,6 +197,12 @@ def summarize(
             folds=len(folds), with_terms=sum(1 for f in folds if f.description.terms)
         ),
         rows_scored=sum(int((f.predicted.notna() & f.realised.notna()).sum()) for f in folds),
+        oos_rank_ic_within=metrics.rank_ic(within, realised),
+        oos_rank_ic_within_se=metrics.rank_ic_se(within, realised, lags=test_window_lags),
+        constant_forecasts=ConstantForecasts(
+            folds=len(folds),
+            constant=sum(1 for f in folds if f.predicted.dropna().nunique() <= 1),
+        ),
     )
     # FYP-122's "deliverable artifact": the most recent fold's fitted terms
     # and coefficients — a fit can pick different terms fold to fold, so this
@@ -223,6 +230,24 @@ def select_best_candidate(
     scores = {name: _finite(metrics.rank_ic(*pair)) for name, pair in pooled_by_name.items()}
     best_name = max(scores, key=scores.__getitem__)
     return best_name, pbo_result.pbo
+
+
+def within_fold_ranks(folds: tuple[FoldResult, ...]) -> pd.Series:
+    """Every fold's test predictions as ranks within that fold, centred on zero
+    and scaled to [-0.5, 0.5], end to end.
+
+    Pooled Rank IC ranks forecasts across folds, so a forecast whose level merely
+    shifts between folds can score without ranking any day within one. These
+    ranks carry no level: a fold's forecasts only compete with each other. A fold
+    that forecasts one value throughout ranks every day equal, so its ranks are
+    exactly zero and it adds nothing.
+    """
+    parts = []
+    for f in folds:
+        ranks = f.predicted.rank()
+        n = int(ranks.notna().sum())
+        parts.append((ranks - (n + 1) / 2) / max(n, 1))
+    return pd.concat(parts)
 
 
 def pooled(folds: tuple[FoldResult, ...]) -> tuple[pd.Series, pd.Series]:
