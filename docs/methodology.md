@@ -26,7 +26,11 @@ flowchart TD
     K["11. Selection and PBO<br/>validation/harness, validation/pbo"] --> L
     L["12. Gates<br/>validation/gates"]
     J --> M["13. Naive baseline row<br/>models/naive"]
+    N["14. Portfolio backtest vs 50/50<br/>portfolio/backtest, portfolio/performance"]
 ```
+
+Step 14 consumes an optimiser's weight schedule rather than the steps above: it
+judges an allocation, not a forecast.
 
 ## 1. Ingestion and parsing
 
@@ -267,6 +271,63 @@ comparison is like for like. It is scored exactly like the other models, runs on
 every Run for both targets, and is not gated. A constant forecast never flags a
 crash day, so its crash recall is 0 and its precision is shown as "—".
 
+## 14. Portfolio backtest
+
+`portfolio/backtest.run_backtest` chains an optimised allocation and the
+`BASELINE_WEIGHTS` (50/50) baseline through the same days, gross and net of
+costs, and `portfolio/performance` scores both. The optimiser itself is not part
+of this step: the allocation arrives as a weight schedule, one row of equity and
+bond weights per rebalance date, decided at that day's close.
+
+**Decision, 1 Oct 2026** (ticket: Compare Optimised Portfolio Against
+Equal-Weight Baseline). The ticket's acceptance criteria held the optimised
+weights fixed for the whole period unless FYP-57 is enabled. They are instead
+re-derived at each rebalance, and the baseline is 50/50 rebalanced
+`REBALANCE_FREQUENCY`. The backtest supports either: a schedule that repeats the
+same weights at every rebalance is the fixed-weight case.
+
+1. **Calendar.** The joint calendar of both indices, from the first rebalance to
+   the last day both have a price. On a day one market is shut its last price
+   carries forward, so its return is 0 and the move lands the next day it
+   trades. A price older than `MAX_STALENESS` rows is refused as a data gap, the
+   same limit signals use (§2).
+2. **Chaining.** Between rebalances the holdings are left alone, so the weights
+   drift with returns; the day's portfolio return uses the drifted weights.
+   Holding the target weights every day would be a daily rebalance in disguise.
+   The chained returns match a unit-by-unit holdings simulation to rounding
+   error on the live data.
+3. **The baseline.** `BASELINE_WEIGHTS` at the first rebalance, then reset to
+   them on the last trading day of every month strictly inside the period.
+   Both portfolios therefore cover exactly the same days.
+4. **Turnover and costs.** At each rebalance, turnover is the sum of absolute
+   changes from the drifted weights to the targets; the first allocation is
+   bought from cash, a turnover of 1, for both portfolios. Each index is charged
+   its `DEFAULT_COSTS_BPS` rate on what was traded in it. The cost is compounded
+   into that day's net return, `(1 + gross) × (1 − cost) − 1`, and the first
+   allocation's into the first day's.
+5. **Metrics**, annualised over `TRADING_DAYS_PER_YEAR`, each gross and net, for
+   both portfolios:
+   - annual return: compounded growth, not the daily mean times a year;
+   - Sharpe: mean daily excess return over its sample standard deviation, times
+     √`TRADING_DAYS_PER_YEAR`. The excess is over `RISK_FREE_RATE` compounded
+     down to a day;
+   - Sortino: the same mean over the downside deviation, the root mean squared
+     shortfall below the risk-free rate across *every* day (a gain counts as no
+     shortfall), not across losing days alone;
+   - maximum drawdown: the worst fall from a running peak of the compounded
+     path, with the starting value as the first peak;
+   - Calmar: annual return over the size of the maximum drawdown;
+   - tracking error and information ratio of the optimised portfolio against the
+     baseline, from the daily difference in their returns.
+
+   A ratio whose denominator is zero (no variation, no losing day, no drawdown)
+   is undefined rather than infinite.
+
+The result is one `BacktestResult`: both daily return paths, gross and net, each
+rebalance's weights, turnover and cost, every metric, the period, the
+rebalance frequency and the active models. It is the input for display (FYP-19)
+and for the risk and significance checks (FYP-56, FYP-52).
+
 ## Parameters
 
 Values are Python literals as the code holds them.
@@ -322,3 +383,8 @@ Values are Python literals as the code holds them.
 | `OOS_RANK_IC_GATE` | `forecasting_engine.validation.gates` | `0.02` |
 | `PBO_GATE` | `forecasting_engine.validation.gates` | `0.5` |
 | `SIGNIFICANCE_SE_MULTIPLE` | `forecasting_engine.reporting.model_metrics` | `2.0` |
+| `TRADING_DAYS_PER_YEAR` | `forecasting_engine.portfolio.performance` | `252` |
+| `RISK_FREE_RATE` | `forecasting_engine.portfolio.performance` | `0.0` |
+| `BASELINE_WEIGHTS` | `forecasting_engine.portfolio.backtest` | `{"equity": 0.5, "bond": 0.5}` |
+| `DEFAULT_COSTS_BPS` | `forecasting_engine.portfolio.backtest` | `{"equity": 3.0, "bond": 5.0}` |
+| `REBALANCE_FREQUENCY` | `forecasting_engine.portfolio.backtest` | `"monthly"` |
