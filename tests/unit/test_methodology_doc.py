@@ -58,6 +58,11 @@ DOCUMENTED = {
     ("forecasting_engine.validation.pbo", "N_BLOCKS"),
     ("forecasting_engine.validation.gates", "OOS_RANK_IC_GATE"),
     ("forecasting_engine.validation.gates", "PBO_GATE"),
+    ("forecasting_engine.portfolio.performance", "TRADING_DAYS_PER_YEAR"),
+    ("forecasting_engine.portfolio.performance", "RISK_FREE_RATE"),
+    ("forecasting_engine.portfolio.backtest", "BASELINE_WEIGHTS"),
+    ("forecasting_engine.portfolio.backtest", "DEFAULT_COSTS_BPS"),
+    ("forecasting_engine.portfolio.backtest", "REBALANCE_FREQUENCY"),
 }
 
 
