@@ -36,6 +36,13 @@ uv run ruff check .
 
 Both run in CI on every pull request.
 
+## Deployment
+
+The dashboard is hosted on Streamlit Community Cloud, connected to this
+repo's `main` branch. Merging a pull request into `main` (which requires
+CI to pass) automatically redeploys the live app — no manual push or
+hosting step is needed.
+
 ## What works today
 
 The left edge of the pipeline: getting data in, and checking it.
