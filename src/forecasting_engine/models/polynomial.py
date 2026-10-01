@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import ElasticNetCV, LassoCV
+from sklearn.linear_model import ElasticNet, enet_path
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
@@ -40,7 +40,7 @@ standard deviations from the mean, so one extreme value can't be raised to a
 power into an extreme forecast."""
 
 INNER_CV_SPLITS: int = 5
-"""Most time-ordered folds LassoCV/ElasticNetCV validate the penalty on."""
+"""Most time-ordered folds the penalty is validated on."""
 
 _MIN_TRAINING_ROWS: int = 10
 """Below this, a regularized multi-term fit is more noise than signal — reject
@@ -172,9 +172,16 @@ class UserPolynomial:
         return ModelDescription(name=self.name, terms=(self.formula,), coefficients=(1.0,))
 
 
-# ── DerivedPolynomial: PolynomialFeatures + LassoCV/ElasticNetCV ────────────
+# ── DerivedPolynomial: PolynomialFeatures + Lasso/ElasticNet ─────────────────
 
-_REGULARIZERS = {"lasso": LassoCV, "elasticnet": ElasticNetCV}
+#: Regularizer -> its L1 share. Lasso is all L1; 0.5 is scikit-learn's
+#: ElasticNetCV default, kept so the regularizer means what it did before.
+_REGULARIZERS: dict[str, float] = {"lasso": 1.0, "elasticnet": 0.5}
+
+#: The penalty grid, as scikit-learn's LassoCV builds it: this many values,
+#: spanning from the smallest penalty that zeroes every term down by this factor.
+_N_ALPHAS: int = 100
+_ALPHA_EPS: float = 1e-3
 
 
 @dataclass
@@ -225,19 +232,17 @@ class DerivedPolynomial:
         )
         y = frame[panel.targets[0]]
 
-        if self.max_terms is not None and x.shape[1] > self.max_terms:
-            ranked = x.corrwith(y).abs().sort_values(ascending=False)
-            self._columns = list(ranked.index[: self.max_terms])
-            x = x[self._columns]
-        else:
-            self._columns = list(x.columns)
-
-        # The penalty acts on coefficients, whose size depends on each expanded
-        # term's units, so terms are standardised — on this window only.
-        scaled = self._scaler.fit_transform(x)
+        # The penalty is validated on later rows of this window, so the term
+        # pick and the scaler are redone inside every validation split, from its
+        # earlier rows alone; only then are they redone on the whole window for
+        # the final fit. Doing them once up front would let the rows that judge
+        # the penalty help choose what they are judging.
+        l1_ratio = _REGULARIZERS[self.regularizer]
         cv = _time_series_cv(len(x), gap=panel.horizon)
-        model = _REGULARIZERS[self.regularizer](cv=cv, max_iter=10_000)
-        model.fit(scaled, y)
+        alpha = _choose_alpha(x, y, cv, self.max_terms, l1_ratio)
+        self._columns, self._scaler = _prepare(x, y, self.max_terms)
+        model = ElasticNet(alpha=alpha, l1_ratio=l1_ratio, max_iter=10_000)
+        model.fit(self._scaler.transform(x[self._columns]), y)
         self._model = model
         self._intercept = float(model.intercept_)
 
@@ -288,6 +293,62 @@ class DerivedPolynomial:
     def _clip(self, signals: pd.DataFrame) -> pd.DataFrame:
         low, high = self._bounds
         return signals.clip(lower=low, upper=high, axis=1)
+
+
+def _prepare(
+    x: pd.DataFrame, y: pd.Series, max_terms: int | None
+) -> tuple[list[str], StandardScaler]:
+    """The terms to keep, at most ``max_terms`` by absolute correlation with the
+    target, and a scaler fitted to them — both from ``x``'s rows only.
+
+    The penalty acts on coefficients, whose size depends on each term's units,
+    so terms are standardised before fitting."""
+    if max_terms is not None and x.shape[1] > max_terms:
+        ranked = x.corrwith(y).abs().sort_values(ascending=False)
+        columns = list(ranked.index[:max_terms])
+    else:
+        columns = list(x.columns)
+    return columns, StandardScaler().fit(x[columns])
+
+
+def _choose_alpha(
+    x: pd.DataFrame,
+    y: pd.Series,
+    cv: TimeSeriesSplit,
+    max_terms: int | None,
+    l1_ratio: float,
+) -> float:
+    """The penalty with the lowest mean squared error over ``cv``'s time-ordered
+    splits, each split preparing its terms from its own training rows."""
+    alphas = _alpha_grid(x, y, l1_ratio)
+    errors = np.zeros(len(alphas))
+    for train, validate in cv.split(x):
+        x_train, y_train = x.iloc[train], y.iloc[train]
+        columns, scaler = _prepare(x_train, y_train, max_terms)
+        centre = float(y_train.mean())
+        _, coefs, _ = enet_path(
+            scaler.transform(x_train[columns]),
+            y_train.to_numpy() - centre,
+            l1_ratio=l1_ratio,
+            alphas=alphas,
+            max_iter=10_000,
+        )
+        forecast = scaler.transform(x.iloc[validate][columns]) @ coefs + centre
+        errors += ((forecast - y.iloc[validate].to_numpy()[:, None]) ** 2).mean(axis=0)
+    return float(alphas[int(np.argmin(errors))])
+
+
+def _alpha_grid(x: pd.DataFrame, y: pd.Series, l1_ratio: float) -> np.ndarray:
+    """``_N_ALPHAS`` penalties, largest first, from the smallest that zeroes every
+    standardised term down by ``_ALPHA_EPS``.
+
+    Set from the whole window, as LassoCV sets its grid. That fixes only the
+    range searched; which penalty wins is decided by the validation splits."""
+    scaled = StandardScaler().fit_transform(x)
+    largest = float(np.abs(scaled.T @ (y.to_numpy() - y.mean())).max()) / (len(y) * l1_ratio)
+    if not largest > 0:  # a flat target: every penalty gives the same (empty) fit
+        return np.array([1.0])
+    return np.geomspace(largest, largest * _ALPHA_EPS, _N_ALPHAS)
 
 
 def _time_series_cv(n_rows: int, gap: int) -> TimeSeriesSplit:

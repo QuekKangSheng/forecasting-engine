@@ -1,5 +1,23 @@
 # Validation review — 18 Sep 2026
 
+> **Status, 1 Oct 2026.** Several findings below have since been acted on; read
+> this as the record of what was measured on 18 Sep, and `docs/methodology.md`
+> for how the pipeline works now.
+>
+> - *Open item 1 (gate inside the noise):* metrics are now pooled with two
+>   Newey-West standard errors shown beside the OOS Rank IC, and the table marks
+>   whether it clears two of them ("Beyond 2 s.e."). The gate itself stays at
+>   pooled OOS Rank IC > 0.02, as confirmed with the sponsor, so a no-skill model
+>   still meets it about a third of the time — now visibly.
+> - *Pooling adds a new way to score:* a forecast whose level only shifts between
+>   folds can earn pooled Rank IC without ranking any day; on the live S&P data a
+>   forecast using no signal scored +0.10. "Rank IC within folds" is shown beside
+>   the gate so this is visible. See methodology §10.
+> - *Open item 2 (screening):* unchanged by decision — the sponsor confirmed
+>   strict |Rank IC| > 0.02.
+> - *Open item 3 (Fama-French in percent):* still open.
+> - *The "averaged across folds" wording* in item 1 no longer describes the code.
+
 A correctness review of the modelling and validation pipeline: the walk-forward
 split, the metrics reported on the Models and Model Metrics pages, screening,
 and the promotion gates. Extraction and data-quality checks were not re-examined

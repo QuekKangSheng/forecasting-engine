@@ -138,9 +138,21 @@ def test_the_comparison_table_explains_every_column_it_can(models_page):
     for column in ("IC", "OOS Rank IC", "RMSE", "PBO", "Crash Recall"):
         assert "<th title=" in table
         assert column in table
-    assert table.count('class="fe-eyebrow-help"') == len(
-        ["IC", "OOS Rank IC", "RMSE", "PBO", "Crash Recall", "Crash Precision", "Crash F1"]
-    )
+    explained = [
+        "IC",
+        "OOS Rank IC",
+        "RMSE",
+        "PBO",
+        "Crash Recall",
+        "Crash Precision",
+        "Crash F1",
+        "Rank IC within folds",
+        "Beyond 2 s.e.",
+        "Constant folds",
+    ]
+    for column in explained:
+        assert column in table
+    assert table.count('class="fe-eyebrow-help"') == len(explained)
 
 
 def test_a_tooltip_is_escaped_so_it_cannot_break_the_table(models_page):

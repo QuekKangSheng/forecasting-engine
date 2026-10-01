@@ -1,6 +1,8 @@
 from dataclasses import replace
 
+import numpy as np
 import pandas as pd
+import pytest
 
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
@@ -10,6 +12,7 @@ from forecasting_engine.validation.harness import (
     evaluate,
     select_best_candidate,
     summarize,
+    within_fold_ranks,
 )
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
@@ -425,3 +428,78 @@ def test_rows_scored_counts_test_rows_with_a_prediction_and_a_realised_value():
 
     tested = sum(len(f.test) for f in folds)
     assert result.rows_scored == tested - 1
+
+
+# --- a score a forecast's level alone can't earn -----------------------------
+
+
+def _fold(i: int, predicted: list[float], realised: list[float]) -> FoldResult:
+    """One fold on its own dates, so folds concatenate end to end."""
+    start = pd.Timestamp("2024-01-01") + pd.offsets.BDay(100 * i)
+    train = pd.bdate_range(start, periods=5)
+    idx = pd.bdate_range(start + pd.offsets.BDay(10), periods=len(predicted))
+    return FoldResult(
+        fold=i,
+        train=train,
+        test=idx,
+        predicted=pd.Series(predicted, index=idx),
+        predicted_train=pd.Series(0.0, index=train),
+        realised=pd.Series(realised, index=idx),
+        realised_train=pd.Series(0.0, index=train),
+        description=ModelDescription(name="Test", terms=(), coefficients=()),
+        horizon=1,
+    )
+
+
+def _level_only_folds() -> tuple[FoldResult, ...]:
+    # Each fold forecasts one constant, and the higher constant lands on the fold
+    # whose returns happened to be higher. Pooled, that ranks well; within any
+    # fold it says nothing, because it never varies.
+    rng = np.random.default_rng(0)
+    return tuple(
+        _fold(i, [level] * 20, list(level + rng.normal(0, 0.01, 20)))
+        for i, level in enumerate([-0.02, -0.01, 0.0, 0.01, 0.02])
+    )
+
+
+def test_a_forecast_that_only_shifts_level_between_folds_scores_nothing_within_them():
+    result, _ = summarize(_level_only_folds())
+
+    assert result.oos_rank_ic > 0.5, "pooling rewards the level shifts"
+    assert result.oos_rank_ic_within != result.oos_rank_ic_within  # NaN: no ranking to score
+
+
+def test_within_fold_ranking_is_scored_whatever_each_folds_level():
+    rng = np.random.default_rng(1)
+    outcomes = [rng.normal(0, 0.01, 30) for _ in range(4)]
+    skill = [realised * 100 + rng.normal(0, 0.5, 30) for realised in outcomes]
+
+    def run(levels):
+        folds = tuple(
+            _fold(i, list(level + forecast), list(realised))
+            for i, (level, forecast, realised) in enumerate(
+                zip(levels, skill, outcomes, strict=True)
+            )
+        )
+        return summarize(folds)[0]
+
+    flat, shifted = run([0.0] * 4), run([5.0, -3.0, 0.5, 9.0])
+
+    assert shifted.oos_rank_ic != pytest.approx(flat.oos_rank_ic), "levels move the pooled score"
+    assert shifted.oos_rank_ic_within == pytest.approx(flat.oos_rank_ic_within)
+    assert flat.oos_rank_ic_within > 0.5
+    assert shifted.oos_rank_ic_within_se is not None
+
+
+def test_within_fold_ranks_are_centred_so_a_constant_fold_is_exactly_neutral():
+    ranks = within_fold_ranks(_level_only_folds())
+
+    assert (ranks == 0.0).all()
+
+
+def test_summarize_counts_the_folds_whose_forecast_never_varies():
+    varying = _fold(9, [0.1, 0.2, 0.3], [0.0, 0.1, 0.2])
+    result, _ = summarize((*_level_only_folds(), varying))
+
+    assert result.constant_forecasts is not None
+    assert (result.constant_forecasts.folds, result.constant_forecasts.constant) == (6, 5)
