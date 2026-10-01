@@ -15,6 +15,7 @@ from forecasting_engine.portfolio.backtest import (
     month_end_rebalance_dates,
     run_backtest,
 )
+from forecasting_engine.risk.tail import historical_var
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 
@@ -283,3 +284,20 @@ def test_chain_is_usable_on_its_own_returns():
     path = chain(returns, _schedule([days[0]], [0.5]), NO_COSTS)
 
     assert list(path.gross) == pytest.approx([0.05, 0.0])
+
+
+def test_each_path_carries_its_historical_tail_risk_beside_its_drawdown():
+    rng = np.random.default_rng(4)
+    prices = _prices(rng.normal(0, 0.01, 300), rng.normal(0, 0.003, 300))
+    result = run_backtest(prices, _schedule([prices[EQUITY].index[0]], [0.7]))
+
+    assert set(result.tail_risk) == set(result.metrics)
+    for key, risk in result.tail_risk.items():
+        portfolio, basis = key
+        path = getattr(getattr(result, portfolio), basis)
+        assert risk.method == "Historical"
+        assert risk.max_drawdown == result.metrics[key].max_drawdown
+        assert risk.days == len(path)
+        assert [level.var for level in risk.levels] == [
+            historical_var(path, level.confidence)[0] for level in risk.levels
+        ]
