@@ -36,3 +36,8 @@ def evaluate_candidate(oos_rank_ic: float, pbo: float | None) -> ValidationOutco
     if pbo is not None and not (pbo <= PBO_GATE):
         failed.append("pbo")
     return ValidationOutcome(promoted=not failed, failed_gates=tuple(failed))
+
+
+def is_high_risk(outcome: ValidationOutcome) -> bool:
+    """Working default, not sponsor-confirmed: high risk means both gates failed."""
+    return len(outcome.failed_gates) == 2

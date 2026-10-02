@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+import pandas as pd
+
 from forecasting_engine.validation.crash import CrashDiagnostics
 from forecasting_engine.validation.gates import OOS_RANK_IC_GATE, PBO_GATE
 
@@ -137,6 +139,9 @@ class ModelRunResult:
     oos_rank_ic_within_se: float | None = None
     """Newey-West standard error of ``oos_rank_ic_within`` over test-window lags."""
     constant_forecasts: ConstantForecasts | None = None
+    forecast: pd.Series | None = None
+    """Every fold's out-of-sample prediction, pooled end to end and indexed by
+    date — captured here so a consumer can read it without re-running the model."""
 
 
 def build_metrics_rows(

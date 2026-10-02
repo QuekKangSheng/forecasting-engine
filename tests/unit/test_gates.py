@@ -1,6 +1,6 @@
 import math
 
-from forecasting_engine.validation.gates import evaluate_candidate
+from forecasting_engine.validation.gates import evaluate_candidate, is_high_risk
 
 
 def test_promoted_when_both_gates_pass():
@@ -58,3 +58,21 @@ def test_pbo_none_still_lets_the_ic_gate_fail():
     outcome = evaluate_candidate(oos_rank_ic=0.01, pbo=None)
     assert outcome.promoted is False
     assert outcome.failed_gates == ("oos_rank_ic",)
+
+
+def test_high_risk_when_both_gates_fail():
+    assert is_high_risk(evaluate_candidate(oos_rank_ic=0.01, pbo=0.6)) is True
+
+
+def test_not_high_risk_when_only_one_gate_fails():
+    assert is_high_risk(evaluate_candidate(oos_rank_ic=0.01, pbo=0.4)) is False
+    assert is_high_risk(evaluate_candidate(oos_rank_ic=0.03, pbo=0.6)) is False
+
+
+def test_not_high_risk_when_promoted():
+    assert is_high_risk(evaluate_candidate(oos_rank_ic=0.03, pbo=0.4)) is False
+
+
+def test_not_high_risk_when_pbo_gate_is_skipped():
+    # pbo=None can only ever fail the one gate, never both.
+    assert is_high_risk(evaluate_candidate(oos_rank_ic=0.01, pbo=None)) is False

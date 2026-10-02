@@ -34,11 +34,12 @@ from forecasting_engine.reporting.polynomial_function import (
     dataset_fingerprint,
     from_description,
 )
+from forecasting_engine.store import active_model
 from forecasting_engine.validation import splitters
 from forecasting_engine.validation.crash import CrashDiagnostics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PAGE = REPO_ROOT / "app" / "app_pages" / "3_Models.py"
+PAGE = REPO_ROOT / "app" / "app_pages" / "2_Models.py"
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 SPX = "SPX_Index_PX_LAST"
@@ -54,6 +55,12 @@ NAIVE = "Naive (training mean)"
 def short_tuning_period(monkeypatch):
     """The fixture data is 200 rows, far short of the real 504-row tuning period."""
     monkeypatch.setattr(splitters, "TUNING_ROWS", 40)
+
+
+@pytest.fixture(autouse=True)
+def isolated_active_model_db(monkeypatch, tmp_path):
+    """The active-model picker reads/writes DuckDB at a default, cwd-relative path."""
+    monkeypatch.chdir(tmp_path)
 
 
 def _committed(*, bond: bool = False) -> pd.DataFrame:
@@ -351,6 +358,94 @@ def test_each_targets_results_stay_in_its_own_tab():
     assert not app.exception
     assert "Results · S&P 500" in [s.value for s in app.subheader]
     assert "Nothing has run for US Aggregate Bond" in _captions(app)
+
+
+# --- active model ------------------------------------------------------------------
+
+
+def test_no_active_model_shows_a_guiding_caption():
+    app = _page({EQUITY: {"Polynomial": _polynomial_run()}})
+
+    assert not app.exception
+    assert "No active model set yet for S&P 500." in _captions(app)
+    assert active_model.get_active_model(EQUITY) is None
+
+
+def test_setting_a_model_active_persists_it_and_shows_it():
+    app = _page({EQUITY: {"Polynomial": _polynomial_run()}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert not app.exception
+    assert "Active model · S&P 500" in _markdown(app)
+    assert "Polynomial" in _markdown(app)
+    stored = active_model.get_active_model(EQUITY)
+    assert stored.model_name == "Polynomial"
+    assert stored.high_risk is False
+
+
+def test_setting_a_new_active_model_replaces_the_prior_one():
+    app = _page({EQUITY: {"Polynomial": _polynomial_run(), "Machine Learning": _ml_run()}})
+    (select,) = app.selectbox
+    select.select("Machine Learning").run()
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert active_model.get_active_model(EQUITY).model_name == "Machine Learning"
+
+    select = app.selectbox[0]
+    select.select("Polynomial").run()
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert active_model.get_active_model(EQUITY).model_name == "Polynomial"
+
+
+def test_the_active_model_picker_excludes_benchmarks():
+    benchmark = model_runs.ModelRun(
+        _result(pbo=None),
+        ModelDescription("FamaFrench5", FACTOR_COLUMNS, (0.1,) * 5),
+        coverage=FactorCoverage(pd.Timestamp("2024-01-01"), pd.Timestamp("2024-08-30"), 150, 5),
+    )
+    app = _page(
+        {
+            EQUITY: {
+                NAIVE: model_runs.ModelRun(_result(), ModelDescription("Naive", (), ())),
+                "FF5 Benchmark": benchmark,
+                "Polynomial": _polynomial_run(),
+            }
+        }
+    )
+
+    (select,) = app.selectbox
+    assert list(select.options) == ["Polynomial"]
+
+
+def test_with_no_forecasting_model_run_the_picker_shows_a_caption_instead():
+    naive_run = model_runs.ModelRun(_result(), ModelDescription("Naive", (), ()))
+    app = _page({EQUITY: {NAIVE: naive_run}})
+
+    assert not app.exception
+    assert not app.selectbox
+    assert "No forecasting model (Polynomial or ML) has run yet for S&P 500." in _captions(app)
+
+
+def test_a_high_risk_model_asks_for_confirmation_before_being_set_active():
+    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    app = _page({EQUITY: {"Polynomial": _polynomial_run(failing)}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert not app.exception
+    assert any("failed both promotion gates" in w.value for w in app.warning)
+    assert any(b.label == "Set active anyway" for b in app.button)
+    assert active_model.get_active_model(EQUITY) is None
+
+
+def test_a_model_that_only_fails_one_gate_is_not_treated_as_high_risk():
+    one_gate_failing = _result(oos_rank_ic=0.01, pbo=0.3)
+    app = _page({EQUITY: {"Polynomial": _polynomial_run(one_gate_failing)}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert not app.exception
+    assert not any("promotion gates" in w.value for w in app.warning)
+    assert active_model.get_active_model(EQUITY).model_name == "Polynomial"
 
 
 # --- signal screening -------------------------------------------------------------

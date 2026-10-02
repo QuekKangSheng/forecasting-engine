@@ -203,6 +203,7 @@ def summarize(
             folds=len(folds),
             constant=sum(1 for f in folds if f.predicted.dropna().nunique() <= 1),
         ),
+        forecast=predicted,
     )
     # FYP-122's "deliverable artifact": the most recent fold's fitted terms
     # and coefficients — a fit can pick different terms fold to fold, so this

@@ -165,6 +165,22 @@ TERMS: Mapping[str, str] = {
         "separately, so a model that scores well but overfits is visibly not "
         "promotable."
     ),
+    "Active model": (
+        "Which model's forecast feeds portfolio evaluation for this target, "
+        "set independently for equity and bond. Setting a new one replaces "
+        "the prior one immediately. A model that failed both promotion gates "
+        "can still be set active, but asks for confirmation first."
+    ),
+    "Risk aversion (λ)": (
+        "How heavily risk is weighed against expected return when splitting "
+        "between equity and bond. Higher pulls the allocation toward whichever "
+        "is less volatile; lower chases the forecast with the better return."
+    ),
+    "Weight bounds": (
+        "The minimum and maximum either asset may be allocated, so a small, "
+        "noisy difference between the two forecasts can't swing the portfolio "
+        "to one extreme."
+    ),
 }
 
 

@@ -21,7 +21,7 @@ from forecasting_engine.reporting.polynomial_function import (
 from forecasting_engine.validation.crash import CrashDiagnostics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MODELS_PAGE = REPO_ROOT / "app" / "app_pages" / "3_Models.py"
+MODELS_PAGE = REPO_ROOT / "app" / "app_pages" / "2_Models.py"
 
 
 def _committed() -> pd.DataFrame:

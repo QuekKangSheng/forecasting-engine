@@ -67,7 +67,8 @@ from forecasting_engine.reporting.polynomial_function import (
     term_rows,
     to_latex,
 )
-from forecasting_engine.validation.gates import evaluate_candidate
+from forecasting_engine.store import active_model
+from forecasting_engine.validation.gates import evaluate_candidate, is_high_risk
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 from model_settings import (
     DEFAULT_HORIZON,
@@ -80,6 +81,8 @@ from model_settings import (
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
 NAIVE, FF5, POLYNOMIAL, ML = MODEL_ORDER
+
+ACTIVE_MODEL_CANDIDATES = (POLYNOMIAL, ML)
 
 ROLE_NAMES: dict[TargetRole, str] = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
 
@@ -217,6 +220,13 @@ splitter = PurgedWalkForward(
 stored = model_runs.stored(
     st.session_state, (dataset_fingerprint(merged), horizon, int(train), int(test))
 )
+
+ACTIVE_SETTINGS: dict[str, int | str] = {
+    "horizon": horizon,
+    "train_window": int(train),
+    "test_window": int(test),
+    "dataset_fingerprint": str(dataset_fingerprint(merged)),
+}
 
 
 def _show_alignment(panel: FeaturePanel, target_name: str) -> None:
@@ -542,9 +552,89 @@ def _show_ml(run: model_runs.ModelRun) -> None:
     )
 
 
+def _show_active_status(role: TargetRole, target_name: str) -> None:
+    current = active_model.get_active_model(role)
+    if current is None:
+        st.caption(
+            f"No active model set yet for {target_name}.", help=glossary.term("Active model")
+        )
+        return
+    tone = "danger" if current.high_risk else "success"
+    note = " · set despite failing both gates" if current.high_risk else ""
+    st.markdown(
+        ui.status_row(
+            f"Active model · {target_name}",
+            ui.lozenge(current.model_name, tone),
+            f"set {current.set_at:%d %b %Y}{note}",
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+@st.dialog("Confirm high-risk model")
+def _confirm_high_risk(
+    role: TargetRole,
+    model_name: str,
+    result: ModelRunResult,
+    failed: tuple[str, ...],
+    target_name: str,
+) -> None:
+    failed_text = " and ".join(GATE_NAMES[g] for g in failed)
+    st.warning(
+        f"{model_name} failed both promotion gates ({failed_text}) for {target_name}. "
+        "Setting it active anyway means portfolio evaluation will use a model that "
+        "hasn't cleared validation.",
+        icon=":material/warning:",
+    )
+    cols = st.columns(2)
+    if cols[0].button("Set active anyway", type="primary", key=f"confirm_{role.value}"):
+        active_model.set_active_model(
+            role, model_name, result, high_risk=True, **ACTIVE_SETTINGS
+        )
+        st.rerun()
+    if cols[1].button("Cancel", key=f"cancel_{role.value}"):
+        st.rerun()
+
+
+def _show_active_picker(
+    role: TargetRole, runs: dict[str, model_runs.ModelRun], target_name: str
+) -> None:
+    key = role.value
+    options = [n for n in ACTIVE_MODEL_CANDIDATES if n in runs]
+    if not options:
+        st.caption(f"No forecasting model (Polynomial or ML) has run yet for {target_name}.")
+        return
+    current = active_model.get_active_model(role)
+    default_index = (
+        options.index(current.model_name) if current and current.model_name in options else 0
+    )
+    st.markdown(
+        ui.eyebrow("Set active model", glossary.term("Active model")), unsafe_allow_html=True
+    )
+    cols = st.columns([3, 1])
+    selected = cols[0].selectbox(
+        "Model to set active",
+        options,
+        index=default_index,
+        key=f"active_select_{key}",
+        label_visibility="collapsed",
+    )
+    if cols[1].button("Set as active", key=f"set_active_{key}"):
+        result = runs[selected].result
+        outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
+        if is_high_risk(outcome):
+            _confirm_high_risk(role, selected, result, outcome.failed_gates, target_name)
+        else:
+            active_model.set_active_model(
+                role, selected, result, high_risk=False, **ACTIVE_SETTINGS
+            )
+            st.rerun()
+
+
 def _render_tab(role: TargetRole, price_col: str) -> None:
     target_name = label(price_col)
     key = role.value
+    _show_active_status(role, target_name)
     if not signal_cols:
         st.info("Need at least one other signal column, alongside the target, to model.")
         return
@@ -580,6 +670,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         if name in runs:
             st.markdown(_gate_line(name, runs[name].result))
     _show_table({name: run.result for name, run in runs.items()})
+    _show_active_picker(role, runs, target_name)
 
     _show_screening(runs, target_name)
     if POLYNOMIAL in runs:
