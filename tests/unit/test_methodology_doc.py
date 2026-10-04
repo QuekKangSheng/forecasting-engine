@@ -47,6 +47,7 @@ DOCUMENTED = {
     ("forecasting_engine.models.polynomial", "_REGULARIZERS"),
     ("forecasting_engine.models.polynomial", "_N_ALPHAS"),
     ("forecasting_engine.models.polynomial", "_ALPHA_EPS"),
+    ("forecasting_engine.models.polynomial", "_PATH_CHUNK"),
     ("forecasting_engine.models.polynomial", "_MIN_TRAINING_ROWS"),
     ("forecasting_engine.models.boosted", "_FIXED_PARAMS"),
     ("forecasting_engine.models.boosted", "_LEAF_KEYS"),

@@ -248,6 +248,10 @@ _REGULARIZERS: dict[str, float] = {"lasso": 1.0, "elasticnet": 0.5}
 _N_ALPHAS: int = 100
 _ALPHA_EPS: float = 1e-3
 
+#: Penalties fitted at a time when walking a capped path, so the walk can stop
+#: soon after the cap is first exceeded.
+_PATH_CHUNK: int = 10
+
 
 @dataclass
 class DerivedPolynomial:
@@ -391,33 +395,69 @@ def _choose_alpha(
     splits, and the whole window's fit at it (coefficients of the standardised
     terms).
 
-    ``max_terms`` caps the terms through the penalty: only penalties whose
-    whole-window fit has at most that many non-zero coefficients are eligible.
-    If none on the grid is, the largest penalty is used."""
+    ``max_terms`` caps the terms through the penalty. The whole window's path is
+    walked from the largest penalty down, and the penalties before the first
+    whose fit has more than ``max_terms`` non-zero coefficients are eligible.
+    The path stops there, so the small penalties a cap rules out, which are
+    also the slowest to fit, are never computed. If the largest penalty already
+    exceeds the cap, it is used."""
     alphas = _alpha_grid(x, y, l1_ratio)
+    _, scaler = _prepare(x)
+    alphas, path = _capped_path(scaler.transform(x), y, alphas, l1_ratio, max_terms)
     errors = np.zeros(len(alphas))
     for train, validate in cv.split(x):
         x_train, y_train = x.iloc[train], y.iloc[train]
-        _, scaler = _prepare(x_train)
-        coefs = _path(scaler.transform(x_train), y_train, alphas, l1_ratio)
-        forecast = scaler.transform(x.iloc[validate]) @ coefs + float(y_train.mean())
+        _, split_scaler = _prepare(x_train)
+        coefs = _path(split_scaler.transform(x_train), y_train, alphas, l1_ratio)
+        forecast = split_scaler.transform(x.iloc[validate]) @ coefs + float(y_train.mean())
         errors += ((forecast - y.iloc[validate].to_numpy()[:, None]) ** 2).mean(axis=0)
-
-    _, scaler = _prepare(x)
-    path = _path(scaler.transform(x), y, alphas, l1_ratio)
-    eligible = np.arange(len(alphas))
-    if max_terms is not None:
-        eligible = np.flatnonzero((path != 0).sum(axis=0) <= max_terms)
-        if not len(eligible):
-            eligible = np.array([0])  # the grid runs largest first
-    best = int(eligible[np.argmin(errors[eligible])])
+    best = int(np.argmin(errors))
     return float(alphas[best]), path[:, best]
 
 
-def _path(x: np.ndarray, y: pd.Series, alphas: np.ndarray, l1_ratio: float) -> np.ndarray:
+def _capped_path(
+    x: np.ndarray, y: pd.Series, alphas: np.ndarray, l1_ratio: float, max_terms: int | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """The penalties a cap leaves eligible, largest first, and the fit at each.
+
+    Fitted ``_PATH_CHUNK`` penalties at a time, each chunk warm-started from the
+    last fit, stopping at the first penalty whose fit keeps more than
+    ``max_terms`` terms."""
+    if max_terms is None or x.shape[1] <= max_terms:  # the cap can't bind
+        return alphas, _path(x, y, alphas, l1_ratio)
+    kept, fits = [], []
+    coef = None
+    for start in range(0, len(alphas), _PATH_CHUNK):
+        chunk = alphas[start : start + _PATH_CHUNK]
+        coefs = _path(x, y, chunk, l1_ratio, coef_init=coef)
+        counts = (coefs != 0).sum(axis=0)
+        over = np.flatnonzero(counts > max_terms)
+        stop = int(over[0]) if len(over) else len(chunk)
+        kept.extend(chunk[:stop])
+        fits.extend(coefs[:, :stop].T)
+        if len(over):
+            break
+        coef = coefs[:, -1]
+    if not kept:  # even the largest penalty keeps too many terms
+        return alphas[:1], _path(x, y, alphas[:1], l1_ratio)
+    return np.array(kept), np.array(fits).T
+
+
+def _path(
+    x: np.ndarray,
+    y: pd.Series,
+    alphas: np.ndarray,
+    l1_ratio: float,
+    coef_init: np.ndarray | None = None,
+) -> np.ndarray:
     """The fit at every penalty in ``alphas``, one column each, on centred ``y``."""
     _, coefs, _ = enet_path(
-        x, y.to_numpy() - float(y.mean()), l1_ratio=l1_ratio, alphas=alphas, max_iter=10_000
+        x,
+        y.to_numpy() - float(y.mean()),
+        l1_ratio=l1_ratio,
+        alphas=alphas,
+        max_iter=10_000,
+        coef_init=coef_init,
     )
     return coefs
 

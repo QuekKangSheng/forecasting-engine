@@ -536,36 +536,51 @@ def test_a_cap_no_fit_reaches_changes_nothing():
     assert fits[0] == fits[1]
 
 
-def test_a_cap_can_only_raise_the_penalty_on_the_same_grid(monkeypatch):
+def _cap_inputs():
     panel = _many_signals_panel()
     x = pd.DataFrame(
         panel.frame[list(panel.signals)].to_numpy(), columns=panel.signals, index=panel.frame.index
     )
-    y = panel.frame["target"]
-    cv = polynomial._time_series_cv(len(x), gap=1)
-    seen = []
-    real = polynomial._path
+    return x, panel.frame["target"], polynomial._time_series_cv(len(x), gap=1)
 
-    def recording(x_, y_, alphas, l1_ratio):
-        seen.append(alphas)
-        return real(x_, y_, alphas, l1_ratio)
 
-    monkeypatch.setattr(polynomial, "_path", recording)
+def test_a_cap_can_only_raise_the_penalty_on_the_same_grid(monkeypatch):
+    x, y, cv = _cap_inputs()
+    grids = []
+    real = polynomial._alpha_grid
+
+    def recording(*args):
+        grids.append(real(*args))
+        return grids[-1]
+
+    monkeypatch.setattr(polynomial, "_alpha_grid", recording)
     capped, _ = polynomial._choose_alpha(x, y, cv, 1, 1.0)
     free, _ = polynomial._choose_alpha(x, y, cv, None, 1.0)
 
-    alphas = seen[0]
-    assert free in alphas and capped in alphas
+    assert free in grids[1] and capped in grids[0]
     assert capped >= free  # a cap can only push the penalty up
 
 
+def test_a_capped_path_never_fits_the_penalties_past_the_cap(monkeypatch):
+    # The small penalties are the slowest to fit and a cap rules them out, so
+    # the walk down the path stops soon after the cap is first exceeded.
+    x, y, cv = _cap_inputs()
+    grid = polynomial._alpha_grid(x, y, 1.0)
+    fitted = []
+    real = polynomial._path
+
+    def recording(x_, y_, alphas, l1_ratio, coef_init=None):
+        fitted.extend(alphas)
+        return real(x_, y_, alphas, l1_ratio, coef_init=coef_init)
+
+    monkeypatch.setattr(polynomial, "_path", recording)
+    polynomial._choose_alpha(x, y, cv, 1, 1.0)
+
+    assert min(fitted) > grid[-1]
+
+
 def test_when_no_penalty_meets_the_cap_the_largest_is_used(monkeypatch):
-    panel = _many_signals_panel()
-    x = pd.DataFrame(
-        panel.frame[list(panel.signals)].to_numpy(), columns=panel.signals, index=panel.frame.index
-    )
-    y = panel.frame["target"]
-    cv = polynomial._time_series_cv(len(x), gap=1)
+    x, y, cv = _cap_inputs()
     # Penalties far too small to zero anything: every one keeps all five signals.
     monkeypatch.setattr(polynomial, "_alpha_grid", lambda *_: np.array([1e-6, 1e-7, 1e-8]))
 

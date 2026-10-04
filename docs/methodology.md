@@ -208,10 +208,13 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
      it is judged on. No term is pre-selected: the penalty alone decides which
      survive;
   4. the term cap `max_terms` (default `DEFAULT_MAX_TERMS`) works through the
-     penalty. The penalty path is fitted on the whole training window, and only
-     penalties whose fit has at most `max_terms` non-zero coefficients are
-     eligible; the cross-validated best among them is chosen, or the largest
-     penalty if none qualifies. The model is that whole-window fit at the chosen
+     penalty. The whole training window's penalty path is walked from the
+     largest penalty down, `_PATH_CHUNK` penalties at a time, and stops at the
+     first penalty whose fit has more than `max_terms` non-zero coefficients; the
+     penalties before it are eligible, and the cross-validated best among them
+     is chosen, or the largest penalty if even that exceeds the cap. The small
+     penalties a cap rules out are also the slowest to fit, so they are never
+     computed. The model is that whole-window fit at the chosen
      penalty; no coefficient is set to zero by hand;
   5. the coefficients are converted back from the scaled terms for display, so
      the equation, written in the standardised signals (e.g.
@@ -465,6 +468,7 @@ Values are Python literals as the code holds them.
 | `_REGULARIZERS` | `forecasting_engine.models.polynomial` | `{"lasso": 1.0, "elasticnet": 0.5}` |
 | `_N_ALPHAS` | `forecasting_engine.models.polynomial` | `100` |
 | `_ALPHA_EPS` | `forecasting_engine.models.polynomial` | `1e-3` |
+| `_PATH_CHUNK` | `forecasting_engine.models.polynomial` | `10` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.polynomial` | `10` |
 | `_FIXED_PARAMS` | `forecasting_engine.models.boosted` | `{"xgboost": {"verbosity": 0}, "lightgbm": {"verbose": -1, "subsample_freq": 1}}` |
 | `_LEAF_KEYS` | `forecasting_engine.models.boosted` | `{"xgboost": "min_child_weight", "lightgbm": "min_child_samples"}` |
