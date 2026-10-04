@@ -30,10 +30,22 @@ Date,PX_LAST,PX_BID
 Trailing empty metadata cells, such as `Security,SPX Index,`, are accepted.
 Placeholder-only fields are removed after merging because they carry no data.
 
-**An `.xlsx` export** is a workbook with a `Data` sheet (`Date` plus one
-column per field, same shape as the CSV table above) and a `Metadata` sheet
-naming what was pulled — the security is read from the `Metadata` sheet, not
-guessed from the filename, since a filename has been observed to disagree
+**An `.xlsx` export** from Spreadsheet Builder is one sheet laid out exactly
+like the CSV export: the `Security` / `Start Date` / `End Date` / `Period`
+(optionally `Currency`) rows, a blank row, then a table headed `Date`. The
+reader takes the workbook's **first sheet** and parses it with the CSV reader,
+so the same export gives the same columns and values in either format. Cell A1
+must read `Security`; anything else is refused with the expected layout named.
+
+Only the values Excel **saved** are read. A sheet built from `BDH` formulas
+works once Excel has loaded the data and the file was saved; dates may be
+stored as dates or as Excel serial numbers. If a formula has no saved value, or
+a cell still reads `#N/A Requesting Data`, the file is refused: open it in
+Excel on the Bloomberg PC, let the data load, save, and upload again.
+
+Older workbooks with a `Data` sheet (`Date` plus one column per field) and a
+`Metadata` sheet still load. For those the security is read from `Metadata`,
+not guessed from the filename, since a filename has been observed to disagree
 with what a file actually contains.
 
 ### Target indices

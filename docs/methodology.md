@@ -41,8 +41,11 @@ a target is decided at ingestion, never inferred later.
 
 - **Reading.** A CSV export is a metadata block then a table headed `Date,...`,
   found by scanning rather than at a fixed row (`extraction/bloomberg_csv.py`).
-  An `.xlsx` export is a `Data` sheet and a `Metadata` sheet
-  (`extraction/bloomberg_xlsx.py`). Every data column is renamed
+  An `.xlsx` export is read from its first sheet, laid out like the CSV export:
+  its rows become CSV lines and go through the same parser
+  (`extraction/bloomberg_xlsx.py`). Only saved values are read; a formula with no
+  saved value refuses the file. A workbook with a `Data` sheet is read the older
+  way, from `Data` and `Metadata`. Every data column is renamed
   `{security}_{field}`, e.g. `VIX_Index_PX_LAST`. Files over `MAX_UPLOAD_BYTES`
   are refused (`ingest/upload.py`).
 - **Per-file schema.** Each file is checked on its own before merging
