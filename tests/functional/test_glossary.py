@@ -24,6 +24,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MODELS_PAGE = REPO_ROOT / "app" / "app_pages" / "2_Models.py"
 
 
+@pytest.fixture(autouse=True)
+def isolated_active_model_db(monkeypatch, tmp_path):
+    """The active-model picker reads/writes DuckDB at a default, cwd-relative
+    path — without this, these tests hit the same file a live session has open."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _committed() -> pd.DataFrame:
     rng = np.random.default_rng(0)
     n = 200

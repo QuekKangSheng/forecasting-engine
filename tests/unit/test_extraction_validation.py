@@ -112,6 +112,16 @@ def test_a_non_price_column_uses_the_generic_sane_range_not_positivity():
     assert not report.schema_errors
 
 
+def test_a_known_non_price_ticker_can_go_negative_despite_its_px_field():
+    # USYC2Y10 (the 2s10s Treasury spread) genuinely inverts; PX_LAST here
+    # names a spread, not a price, so it must not be forced positive.
+    data = frame(
+        ["2024-01-01", "2024-01-02"], USYC2Y10_Index_PX_LAST=[-108.714, -97.309]
+    )
+    report = validate(data)
+    assert not report.schema_errors
+
+
 def test_an_out_of_range_non_price_value_is_a_schema_error():
     data = frame(["2024-01-01", "2024-01-02"], A_Index_SPREAD=[1.0, 50_000.0])
     report = validate(data)

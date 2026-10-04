@@ -37,7 +37,9 @@ _MAD_TO_SIGMA = 0.6745
 
 #: Generic bound for every other column. Loose on purpose — it is
 #: a sanity net against a badly wrong export, not a documented per-signal range.
-SANE_RANGE: tuple[float, float] = (-100.0, 10_000.0)
+#: The lower bound allows for a deep yield-curve inversion quoted in basis
+#: points (2s10s has gone below -100 bps), not just small negative spreads.
+SANE_RANGE: tuple[float, float] = (-300.0, 10_000.0)
 
 #: How many offending dates a report names outright. ``duplicate_dates`` and
 #: ``weekend_rows`` stay exact counts; a file with thousands of weekend rows

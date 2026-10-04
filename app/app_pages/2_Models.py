@@ -219,13 +219,6 @@ with st.expander("Settings"):
         "on them, so machine learning's tuning never touches a reported result."
     )
 
-check_cols = st.columns(3)
-run_poly = check_cols[0].checkbox("Polynomial", value=True)
-run_ff5 = check_cols[1].checkbox(
-    "Fama-French 5", value=True, help="An equity-factor benchmark, so it runs on Equity only."
-)
-run_ml = check_cols[2].checkbox("Machine learning", value=True)
-
 horizon = int(horizon)
 splitter = PurgedWalkForward(
     train=int(train), test=int(test), embargo=EMBARGO_DAYS, tuning_rows=TUNING_ROWS
@@ -283,7 +276,9 @@ def _keep(widget_key: str, value: object) -> None:
     st.session_state[f"{widget_key}_kept"] = value
 
 
-def _polynomial_settings(key: str, panel: FeaturePanel) -> tuple[str | None, dict[str, object]]:
+def _polynomial_settings(
+    key: str, panel: FeaturePanel, run_poly: bool
+) -> tuple[str | None, dict[str, object]]:
     """Which polynomial runs, if any, and each polynomial row's own setting.
 
     Only the chosen source's input is shown. Each row depends only on its own
@@ -889,6 +884,13 @@ def _show_directional(
 def _render_tab(role: TargetRole, price_col: str) -> None:
     target_name = label(price_col)
     key = role.value
+    # FF5 is an equity-factor benchmark, so only the Equity tab offers it.
+    check_cols = st.columns([3, 4, 4, 7] if role == TargetRole.EQUITY else [3, 4, 11])
+    run_poly = check_cols[0].checkbox("Polynomial", value=True, key=f"run_poly_{key}")
+    run_ff5 = role == TargetRole.EQUITY and check_cols[1].checkbox(
+        "Fama-French 5", value=True, key=f"run_ff5_{key}"
+    )
+    run_ml = check_cols[-2].checkbox("Machine learning", value=True, key=f"run_ml_{key}")
     _show_active_status(role, target_name)
     if not signal_cols:
         st.info("Need at least one other signal column, alongside the target, to model.")
@@ -897,15 +899,13 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     panel = align_and_lag(indexed, signal_cols, price_col, horizon=horizon, transforms=transforms)
     _show_alignment(panel, target_name)
 
-    polynomial, settings = _polynomial_settings(key, panel)
+    polynomial, settings = _polynomial_settings(key, panel, run_poly)
     tab_runs = model_runs.tab(stored, role, settings)
     models = [NAIVE]
     user_formula, user_bindings = settings[USER]
     if polynomial == DERIVED or (polynomial == USER and user_formula and user_bindings is not None):
         models.append(polynomial)
-    # FF5 is an equity-factor benchmark, not designed to predict bond returns —
-    # it would technically run and produce numbers, so it never runs here.
-    if run_ff5 and role == TargetRole.EQUITY:
+    if run_ff5:
         models.append(FF5)
     if run_ml:
         models.append(ML)
@@ -944,8 +944,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         if name in runs:
             st.markdown(_gate_line(name, runs[name].result))
     _show_table({name: run.result for name, run in runs.items()})
-    _show_active_picker(role, runs, target_name)
     _show_directional(role, runs, target_name)
+    _show_active_picker(role, runs, target_name)
 
     _show_screening(runs, target_name)
     for name in (DERIVED, USER):

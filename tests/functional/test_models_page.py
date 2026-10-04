@@ -793,12 +793,20 @@ def test_run_is_disabled_with_nothing_but_the_baseline_ticked():
     assert "Tick a model besides the naive baseline to run" in _captions(app)
 
 
-def test_run_is_disabled_on_the_bond_tab_with_only_ff5_ticked():
-    app = _untick(_page(bond=True), "Polynomial", "Machine learning")
+def test_only_the_equity_tab_offers_ff5():
+    app = _page(bond=True)
+
+    labels = [c.label for c in app.checkbox]
+    assert labels.count("Fama-French 5") == 1
+    assert labels.count("Polynomial") == labels.count("Machine learning") == 2
+
+
+def test_each_tab_has_its_own_model_checkboxes():
+    app = _untick(_page(bond=True), "Polynomial", "Fama-French 5", "Machine learning")
 
     (equity_run, bond_run) = [b for b in app.button if b.label == "Run"]
-    assert not equity_run.disabled
-    assert bond_run.disabled
+    assert equity_run.disabled
+    assert not bond_run.disabled
 
 
 @pytest.mark.parametrize(("source", "ran"), [("derive", POLY), ("own", USER_POLY)])

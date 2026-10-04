@@ -405,7 +405,7 @@ Values are Python literals as the code holds them.
 | `MAX_UPLOAD_BYTES` | `forecasting_engine.ingest.upload` | `25_000_000` |
 | `POSITIVE_FIELD_MARKERS` | `forecasting_engine.extraction.validation` | `("TOT_RETURN",)` |
 | `NUMERIC_FIELD_MARKERS` | `forecasting_engine.extraction.validation` | `("PX_",)` |
-| `SANE_RANGE` | `forecasting_engine.extraction.validation` | `(-100.0, 10_000.0)` |
+| `SANE_RANGE` | `forecasting_engine.extraction.validation` | `(-300.0, 10_000.0)` |
 | `MAD_THRESHOLD` | `forecasting_engine.extraction.validation` | `8.0` |
 | `TARGET_TICKERS` | `forecasting_engine.extraction.targets` | `{"SPX Index": "equity", "LBUSTRUU Index": "bond"}` |
 | `PREFERRED_FIELD` | `forecasting_engine.extraction.targets` | `"TOT_RETURN_INDEX_GROSS_DVDS"` |
