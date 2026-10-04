@@ -197,12 +197,16 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
   3. the penalty is chosen by time-ordered cross-validation (`TimeSeriesSplit`,
      up to `INNER_CV_SPLITS` folds, gap = `h`, fewer folds when the window is
      short) over `_N_ALPHAS` penalties spanning a factor of `_ALPHA_EPS`, by mean
-     squared error. Each split keeps at most `max_terms` terms (default
-     `DEFAULT_MAX_TERMS`) ranked by absolute correlation with the target and
-     standardises them, using that split's training rows only, so the rows that
-     judge a penalty never help choose the terms it is judged on;
-  4. the term pick and the scaler are redone on the whole training window, and
-     the model is refitted there with the chosen penalty;
+     squared error. Each split standardises every expanded term using its own
+     training rows only, so the rows that judge a penalty never help shape what
+     it is judged on. No term is pre-selected: the penalty alone decides which
+     survive;
+  4. the term cap `max_terms` (default `DEFAULT_MAX_TERMS`) works through the
+     penalty. The penalty path is fitted on the whole training window, and only
+     penalties whose fit has at most `max_terms` non-zero coefficients are
+     eligible; the cross-validated best among them is chosen, or the largest
+     penalty if none qualifies. The model is that whole-window fit at the chosen
+     penalty; no coefficient is set to zero by hand;
   5. the coefficients are converted back from the scaled terms for display, so
      the equation, written in the standardised signals (e.g.
      `0.0012 + 0.0004·z_VIX − 0.0002·z_VIX²`), reproduces the predictions. Each

@@ -475,26 +475,107 @@ def test_the_fit_sees_each_signal_clipped_then_standardised(monkeypatch):
     assert fitted_on["x"].max() == pytest.approx(polynomial.CLIP_SD)
 
 
-def test_term_selection_and_scaling_inside_validation_see_only_earlier_rows(monkeypatch):
+def test_scaling_inside_validation_sees_only_earlier_rows(monkeypatch):
     # The penalty is chosen by validating on later rows of the training window.
-    # Picking the top terms, or fitting the scaler, on the whole window first
-    # would let those later rows shape what they then validate.
+    # Fitting the scaler on the whole window first would let those later rows
+    # shape what they then validate.
     panel = _scaled_panel(1.0)
     model = DerivedPolynomial(degree=3, regularizer="lasso", max_terms=2)
     windows = []
     real = polynomial._prepare
 
-    def recording(x, y, max_terms):
+    def recording(x):
         windows.append(x.index)
-        return real(x, y, max_terms)
+        return real(x)
 
     monkeypatch.setattr(polynomial, "_prepare", recording)
     model.fit(panel, panel.frame.index)
 
-    *inner, final = windows
-    assert inner, "validation must prepare each inner split itself"
     everything = panel.frame.index
-    assert final.equals(everything)
+    inner = [w for w in windows if len(w) < len(everything)]
+    assert inner, "validation must prepare each inner split itself"
+    assert windows[-1].equals(everything)
     for window in inner:
-        assert len(window) < len(everything)
         assert window.equals(everything[: len(window)]), "an inner split trains on a prefix"
+
+
+# --- the term cap works through the penalty, never a separate ranking ----------
+
+
+def _many_signals_panel(n: int = 200) -> FeaturePanel:
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    rng = np.random.default_rng(3)
+    frame = pd.DataFrame({f"x{i}": rng.normal(size=n) for i in range(5)}, index=idx)
+    frame["target"] = (
+        frame["x0"] - 0.8 * frame["x1"] + 0.6 * frame["x2"] ** 2 + 0.4 * frame["x3"] * frame["x4"]
+        + rng.normal(scale=0.3, size=n)
+    )
+    return FeaturePanel(
+        frame=frame, signals=tuple(f"x{i}" for i in range(5)), targets=("target",), lag_days=1
+    )
+
+
+@pytest.mark.parametrize("cap", [1, 2, 3, 5])
+def test_the_fit_never_keeps_more_terms_than_the_cap(cap):
+    panel = _many_signals_panel()
+    model = DerivedPolynomial(degree=2, regularizer="lasso", max_terms=cap)
+
+    model.fit(panel, panel.frame.index)
+
+    assert 1 <= len(model.describe().terms) <= cap
+
+
+def test_a_cap_no_fit_reaches_changes_nothing():
+    panel = _many_signals_panel()
+    fits = []
+    for cap in (None, 10_000):
+        model = DerivedPolynomial(degree=2, regularizer="elasticnet", max_terms=cap)
+        model.fit(panel, panel.frame.index)
+        fits.append(model.describe())
+
+    assert fits[0] == fits[1]
+
+
+def test_a_cap_can_only_raise_the_penalty_on_the_same_grid(monkeypatch):
+    panel = _many_signals_panel()
+    x = pd.DataFrame(
+        panel.frame[list(panel.signals)].to_numpy(), columns=panel.signals, index=panel.frame.index
+    )
+    y = panel.frame["target"]
+    cv = polynomial._time_series_cv(len(x), gap=1)
+    seen = []
+    real = polynomial._path
+
+    def recording(x_, y_, alphas, l1_ratio):
+        seen.append(alphas)
+        return real(x_, y_, alphas, l1_ratio)
+
+    monkeypatch.setattr(polynomial, "_path", recording)
+    capped, _ = polynomial._choose_alpha(x, y, cv, 1, 1.0)
+    free, _ = polynomial._choose_alpha(x, y, cv, None, 1.0)
+
+    alphas = seen[0]
+    assert free in alphas and capped in alphas
+    assert capped >= free  # a cap can only push the penalty up
+
+
+def test_when_no_penalty_meets_the_cap_the_largest_is_used(monkeypatch):
+    panel = _many_signals_panel()
+    x = pd.DataFrame(
+        panel.frame[list(panel.signals)].to_numpy(), columns=panel.signals, index=panel.frame.index
+    )
+    y = panel.frame["target"]
+    cv = polynomial._time_series_cv(len(x), gap=1)
+    # Penalties far too small to zero anything: every one keeps all five signals.
+    monkeypatch.setattr(polynomial, "_alpha_grid", lambda *_: np.array([1e-6, 1e-7, 1e-8]))
+
+    alpha, coef = polynomial._choose_alpha(x, y, cv, 1, 1.0)
+
+    assert alpha == 1e-6
+    assert (coef != 0).sum() == 5
+
+
+def test_no_term_is_ranked_by_correlation_before_the_penalty():
+    import inspect
+
+    assert "corrwith" not in inspect.getsource(polynomial)

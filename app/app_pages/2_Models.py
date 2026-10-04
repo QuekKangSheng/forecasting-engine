@@ -311,6 +311,7 @@ def _polynomial_settings(key: str, panel: FeaturePanel) -> tuple[str | None, dic
             value=settings[DERIVED],
             step=1,
             key=terms_key,
+            help=glossary.term("Max terms"),
         )
         _keep(terms_key, int(max_terms))
         settings[DERIVED] = int(max_terms)

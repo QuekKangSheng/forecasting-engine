@@ -36,6 +36,12 @@ TERMS: Mapping[str, str] = {
         "under the same settings as every other model. Each gets its own row, "
         "named for which kind it is."
     ),
+    "Max terms": (
+        "The most terms the derived equation may keep. The cap works through the "
+        "regularization itself: only penalty strengths whose fit keeps this many "
+        "terms or fewer are considered, and the best of those by time-ordered "
+        "validation is used. No term is picked out in advance."
+    ),
     "Forecast horizon": (
         "How many trading days ahead to predict. Each horizon is run and "
         "reported separately — the two are never averaged, because a signal "

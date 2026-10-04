@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import ElasticNet, enet_path
+from sklearn.linear_model import enet_path
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
@@ -279,7 +279,7 @@ class DerivedPolynomial:
         self._poly = PolynomialFeatures(degree=self.degree, include_bias=False)
         self._scaler = StandardScaler()
         self._columns: list[str] | None = None
-        self._model = None
+        self._coef: np.ndarray | None = None
         self._intercept: float | None = None
         self._bounds: tuple[pd.Series, pd.Series] | None = None
         self._centre: tuple[pd.Series, pd.Series] | None = None
@@ -306,22 +306,18 @@ class DerivedPolynomial:
         )
         y = frame[panel.targets[0]]
 
-        # The penalty is validated on later rows of this window, so the term
-        # pick and the scaler are redone inside every validation split, from its
-        # earlier rows alone; only then are they redone on the whole window for
-        # the final fit. Doing them once up front would let the rows that judge
-        # the penalty help choose what they are judging.
+        # The penalty is validated on later rows of this window, so the scaler
+        # is refitted inside every validation split from its earlier rows alone.
+        # Fitting it once up front would let the rows that judge the penalty
+        # help shape what they are judging.
         l1_ratio = _REGULARIZERS[self.regularizer]
         cv = _time_series_cv(len(x), gap=panel.horizon)
-        alpha = _choose_alpha(x, y, cv, self.max_terms, l1_ratio)
-        self._columns, self._scaler = _prepare(x, y, self.max_terms)
-        model = ElasticNet(alpha=alpha, l1_ratio=l1_ratio, max_iter=10_000)
-        model.fit(self._scaler.transform(x[self._columns]), y)
-        self._model = model
-        self._intercept = float(model.intercept_)
+        _, self._coef = _choose_alpha(x, y, cv, self.max_terms, l1_ratio)
+        self._columns, self._scaler = _prepare(x)
+        self._intercept = float(y.mean())
 
     def predict(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> pd.Series:
-        if self._model is None or self._columns is None:
+        if self._coef is None or self._columns is None:
             raise RuntimeError("predict() called before fit()")
         signals = list(panel.signals)
         predicted = pd.Series(np.nan, index=idx, dtype=float)
@@ -340,15 +336,17 @@ class DerivedPolynomial:
             columns=self._poly.get_feature_names_out(signals),
             index=raw.index,
         )[self._columns]
-        predicted.loc[expanded.index] = self._model.predict(self._scaler.transform(expanded))
+        predicted.loc[expanded.index] = (
+            self._scaler.transform(expanded) @ self._coef + self._intercept
+        )
         return predicted
 
     def describe(self) -> ModelDescription:
-        if self._model is None or self._columns is None:
+        if self._coef is None or self._columns is None:
             raise RuntimeError("describe() called before fit()")
         # Undo the expanded terms' scaling, so the displayed equation in the
         # standardised signals reproduces predict().
-        raw = self._model.coef_ / self._scaler.scale_
+        raw = self._coef / self._scaler.scale_
         intercept = self._intercept - float(np.dot(raw, self._scaler.mean_))
         terms, coefficients = [], []
         for term, coefficient in zip(self._columns, raw, strict=True):
@@ -373,20 +371,13 @@ class DerivedPolynomial:
         return (signals.clip(lower=low, upper=high, axis=1) - mean) / sd
 
 
-def _prepare(
-    x: pd.DataFrame, y: pd.Series, max_terms: int | None
-) -> tuple[list[str], StandardScaler]:
-    """The terms to keep, at most ``max_terms`` by absolute correlation with the
-    target, and a scaler fitted to them — both from ``x``'s rows only.
+def _prepare(x: pd.DataFrame) -> tuple[list[str], StandardScaler]:
+    """Every term, and a scaler fitted to them from ``x``'s rows only.
 
     The penalty acts on coefficients, whose size depends on each term's units,
-    so terms are standardised before fitting."""
-    if max_terms is not None and x.shape[1] > max_terms:
-        ranked = x.corrwith(y).abs().sort_values(ascending=False)
-        columns = list(ranked.index[:max_terms])
-    else:
-        columns = list(x.columns)
-    return columns, StandardScaler().fit(x[columns])
+    so terms are standardised before fitting. No term is dropped here: the
+    penalty alone decides which survive."""
+    return list(x.columns), StandardScaler().fit(x)
 
 
 def _choose_alpha(
@@ -395,25 +386,40 @@ def _choose_alpha(
     cv: TimeSeriesSplit,
     max_terms: int | None,
     l1_ratio: float,
-) -> float:
+) -> tuple[float, np.ndarray]:
     """The penalty with the lowest mean squared error over ``cv``'s time-ordered
-    splits, each split preparing its terms from its own training rows."""
+    splits, and the whole window's fit at it (coefficients of the standardised
+    terms).
+
+    ``max_terms`` caps the terms through the penalty: only penalties whose
+    whole-window fit has at most that many non-zero coefficients are eligible.
+    If none on the grid is, the largest penalty is used."""
     alphas = _alpha_grid(x, y, l1_ratio)
     errors = np.zeros(len(alphas))
     for train, validate in cv.split(x):
         x_train, y_train = x.iloc[train], y.iloc[train]
-        columns, scaler = _prepare(x_train, y_train, max_terms)
-        centre = float(y_train.mean())
-        _, coefs, _ = enet_path(
-            scaler.transform(x_train[columns]),
-            y_train.to_numpy() - centre,
-            l1_ratio=l1_ratio,
-            alphas=alphas,
-            max_iter=10_000,
-        )
-        forecast = scaler.transform(x.iloc[validate][columns]) @ coefs + centre
+        _, scaler = _prepare(x_train)
+        coefs = _path(scaler.transform(x_train), y_train, alphas, l1_ratio)
+        forecast = scaler.transform(x.iloc[validate]) @ coefs + float(y_train.mean())
         errors += ((forecast - y.iloc[validate].to_numpy()[:, None]) ** 2).mean(axis=0)
-    return float(alphas[int(np.argmin(errors))])
+
+    _, scaler = _prepare(x)
+    path = _path(scaler.transform(x), y, alphas, l1_ratio)
+    eligible = np.arange(len(alphas))
+    if max_terms is not None:
+        eligible = np.flatnonzero((path != 0).sum(axis=0) <= max_terms)
+        if not len(eligible):
+            eligible = np.array([0])  # the grid runs largest first
+    best = int(eligible[np.argmin(errors[eligible])])
+    return float(alphas[best]), path[:, best]
+
+
+def _path(x: np.ndarray, y: pd.Series, alphas: np.ndarray, l1_ratio: float) -> np.ndarray:
+    """The fit at every penalty in ``alphas``, one column each, on centred ``y``."""
+    _, coefs, _ = enet_path(
+        x, y.to_numpy() - float(y.mean()), l1_ratio=l1_ratio, alphas=alphas, max_iter=10_000
+    )
+    return coefs
 
 
 def _alpha_grid(x: pd.DataFrame, y: pd.Series, l1_ratio: float) -> np.ndarray:
