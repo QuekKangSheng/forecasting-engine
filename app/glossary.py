@@ -186,12 +186,9 @@ TERMS: Mapping[str, str] = {
         "What you would have earned by holding this index only when the model "
         "forecast a rise, and sitting in cash otherwise, compared with simply "
         "holding it. Only the forecast's direction is used, never its size, so "
-        "it is a plain check of whether the up/down call is worth acting on."
-    ),
-    "Window (trading days)": (
-        "How many of the most recent out-of-sample trading days to replay. "
-        "Only days the model was graded on are used, never days it trained on, "
-        "so the result is what following it live would have looked like."
+        "it is a plain check of whether the up/down call is worth acting on. "
+        "Every day the model was graded on is replayed, never a day it trained "
+        "on, so the result is what following it live would have looked like."
     ),
     "Long/cash strategy": (
         "Compounded return of holding the index on every call where the "
@@ -199,9 +196,9 @@ TERMS: Mapping[str, str] = {
         "transaction costs, and cash earns nothing."
     ),
     "Buy and hold": (
-        "Compounded return of holding the index for the whole window, whatever "
-        "the forecast said. The strategy has to beat this for the forecast's "
-        "direction to have been worth following."
+        "Compounded return of holding the index over the whole out-of-sample "
+        "period, whatever the forecast said. The strategy has to beat this for "
+        "the forecast's direction to have been worth following."
     ),
     "Hit rate": (
         "How often the forecast's direction matched what the index actually "

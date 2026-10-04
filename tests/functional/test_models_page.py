@@ -838,29 +838,29 @@ def test_the_directional_check_shows_strategy_buy_and_hold_hit_rate_and_days_inv
     assert not app.exception
     assert "Would the forecast's direction have paid?" in _markdown(app)
     # Calls alternate rise/fall and the forecast is right every time: in on each of
-    # the 6 rises (+2%), out on each of the 6 falls (-3%).
+    # the 10 rises (+2%), out on each of the 10 falls (-3%).
     assert _metric(app, "Hit rate") == "100%"
     assert _metric(app, "Days invested") == "50%"
-    assert _metric(app, "Long/cash strategy") == f"{1.02**6 - 1:+.2%}"
-    assert _metric(app, "Buy and hold") == f"{1.02**6 * 0.97**6 - 1:+.2%}"
+    assert _metric(app, "Long/cash strategy") == f"{1.02**10 - 1:+.2%}"
+    assert _metric(app, "Buy and hold") == f"{1.02**10 * 0.97**10 - 1:+.2%}"
 
 
 def test_the_directional_check_steps_five_days_at_a_time_at_h5():
     app = _directional_page()
 
     captions = _captions(app)
-    assert "the last 60 out-of-sample trading days, 12 calls" in captions
+    assert "all 100 out-of-sample trading days, 20 calls" in captions
     assert "one call every 5 days, never overlapping" in captions
     assert "Gross of transaction costs" in captions
 
 
-def test_the_directional_window_can_be_changed():
+def test_the_directional_check_replays_the_whole_period_with_no_window_to_set():
     app = _directional_page()
-    (window,) = [n for n in app.number_input if n.label == "Window (trading days)"]
-    assert window.value == 60
-    window.set_value(20).run()
 
-    assert "the last 20 out-of-sample trading days, 4 calls" in _captions(app)
+    assert not [n for n in app.number_input if "Window" in n.label]
+    captions = _captions(app)
+    assert "all 100 out-of-sample trading days" in captions
+    assert "scroll to zoom, drag to pan and double-click to reset" in captions
 
 
 def test_the_directional_check_says_how_to_see_the_other_horizon():

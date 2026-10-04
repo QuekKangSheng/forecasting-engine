@@ -351,9 +351,10 @@ out-of-sample forecasts and the realised forward returns they were scored
 against (`ModelRunResult.forecast`, `.realised`), so every day replayed is one
 the model never trained on.
 
-1. **Window.** The last `DEFAULT_WINDOW` out-of-sample dates with a realised
-   return, configurable on the page. A run's last `h` dates have none yet.
-2. **Steps.** At `h` = 1, one call per date. At `h` = 5 the window is stepped
+1. **Period.** Every out-of-sample date the run produced that has a realised
+   return; there is no window to set. A run's last `h` dates have none yet. The
+   chart can be zoomed and panned.
+2. **Steps.** At `h` = 1, one call per date. At `h` = 5 the dates are stepped
    every 5 dates from its first, so each step's 5-day return ends where the next
    begins and compounding never counts a day twice. Each horizon is reported
    separately; the page shows the one its results were run under.
@@ -429,4 +430,3 @@ Values are Python literals as the code holds them.
 | `BASELINE_WEIGHTS` | `forecasting_engine.portfolio.backtest` | `{"equity": 0.5, "bond": 0.5}` |
 | `DEFAULT_COSTS_BPS` | `forecasting_engine.portfolio.backtest` | `{"equity": 3.0, "bond": 5.0}` |
 | `REBALANCE_FREQUENCY` | `forecasting_engine.portfolio.backtest` | `"monthly"` |
-| `DEFAULT_WINDOW` | `forecasting_engine.portfolio.directional` | `60` |

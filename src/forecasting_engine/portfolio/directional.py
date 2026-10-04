@@ -8,8 +8,9 @@ enters. Cash earns nothing and no trading cost is charged: every figure is gross
 
 Forecasts and realised returns are the run's out-of-sample series, indexed by the
 date the forecast was made, with each realised value the ``horizon``-day forward
-return from that date. At ``horizon`` above 1 neighbouring rows' returns overlap,
-so the window is stepped through ``horizon`` rows at a time: each step's return
+return from that date. Every out-of-sample date the run produced is replayed. At
+``horizon`` above 1 neighbouring rows' returns overlap, so the dates are stepped
+through ``horizon`` rows at a time: each step's return
 ends where the next one starts, and compounding them never counts a day twice.
 """
 
@@ -20,9 +21,6 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-DEFAULT_WINDOW: int = 60
-"""Trading days shown by default: about a quarter, the most recent ones."""
-
 
 class DirectionalDataError(ValueError):
     """The message is written for a portfolio manager, like the models' errors."""
@@ -30,12 +28,12 @@ class DirectionalDataError(ValueError):
 
 @dataclass(frozen=True)
 class DirectionalResult:
-    """One index's long/cash strategy against buy-and-hold over one window."""
+    """One index's long/cash strategy against buy-and-hold over a run's
+    out-of-sample period."""
 
     horizon: int
-    window: int
-    """Trading days the window spans; may be fewer than asked for if the run
-    produced fewer out-of-sample days."""
+    days: int
+    """Out-of-sample trading days replayed: every one with a realised return."""
     strategy: pd.Series
     """Per step, the strategy's return: the realised return when invested, else 0."""
     buy_and_hold: pd.Series
@@ -51,7 +49,7 @@ class DirectionalResult:
 
     @property
     def calls(self) -> int:
-        """Steps in the window: the number of in-or-out decisions made."""
+        """Steps replayed: the number of in-or-out decisions made."""
         return len(self.strategy)
 
     @property
@@ -80,18 +78,15 @@ def directional_pnl(
     realised: pd.Series,
     *,
     horizon: int,
-    window: int = DEFAULT_WINDOW,
 ) -> DirectionalResult:
-    """The long/cash strategy and buy-and-hold over the last ``window`` trading days
-    of ``forecast``'s out-of-sample dates, stepped every ``horizon`` days.
+    """The long/cash strategy and buy-and-hold over every one of ``forecast``'s
+    out-of-sample dates, stepped every ``horizon`` days.
 
     Only dates with a realised return count: the last ``horizon`` dates of a run
     have none yet. A date with a realised return but no forecast is held in cash.
     """
     if horizon < 1:
         raise DirectionalDataError(f"The horizon must be at least 1 day, got {horizon}.")
-    if window < 1:
-        raise DirectionalDataError(f"The window must be at least 1 day, got {window}.")
     frame = pd.DataFrame(
         {"forecast": forecast, "realised": realised.reindex(forecast.index)}
     ).sort_index()
@@ -101,8 +96,7 @@ def directional_pnl(
             "This run has no out-of-sample day with a realised return to compare against."
         )
 
-    recent = frame.iloc[-window:]
-    steps = recent.iloc[::horizon]
+    steps = frame.iloc[::horizon]
     invested = steps["forecast"] > 0
     strategy = steps["realised"].where(invested, 0.0)
 
@@ -112,7 +106,7 @@ def directional_pnl(
 
     return DirectionalResult(
         horizon=horizon,
-        window=len(recent),
+        days=len(frame),
         strategy=strategy.astype(float),
         buy_and_hold=steps["realised"].astype(float),
         invested=invested,

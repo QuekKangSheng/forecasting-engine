@@ -53,7 +53,6 @@ from forecasting_engine.models.polynomial import (
     run_user_polynomial,
 )
 from forecasting_engine.portfolio.directional import (
-    DEFAULT_WINDOW,
     DirectionalDataError,
     directional_pnl,
 )
@@ -667,7 +666,7 @@ def _show_directional(
     role: TargetRole, runs: dict[str, model_runs.ModelRun], target_name: str
 ) -> None:
     """FYP-162: holding the index only when the forecast says it will rise, against
-    holding it throughout, over a recent out-of-sample window."""
+    holding it throughout, over the run's whole out-of-sample period."""
     options = [
         n
         for n in MODEL_ORDER
@@ -680,24 +679,15 @@ def _show_directional(
         ui.eyebrow("Would the forecast's direction have paid?", glossary.term("Directional P&L")),
         unsafe_allow_html=True,
     )
-    cols = st.columns([3, 1])
-    name = cols[0].selectbox(
+    name = st.selectbox(
         "Forecasts from",
         options,
         index=_directional_default(role, options, runs),
         key=f"pnl_model_{key}",
     )
-    window = cols[1].number_input(
-        "Window (trading days)",
-        min_value=horizon,
-        value=max(DEFAULT_WINDOW, horizon),
-        step=5,
-        key=f"pnl_window_{key}",
-        help=glossary.term("Window (trading days)"),
-    )
     result = runs[name].result
     try:
-        pnl = directional_pnl(result.forecast, result.realised, horizon=horizon, window=int(window))
+        pnl = directional_pnl(result.forecast, result.realised, horizon=horizon)
     except DirectionalDataError as exc:
         st.info(str(exc), icon=":material/info:")
         return
@@ -706,9 +696,10 @@ def _show_directional(
         "one call per day" if horizon == 1 else f"one call every {horizon} days, never overlapping"
     )
     st.caption(
-        f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: the last {pnl.window} "
+        f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: all {pnl.days} "
         f"out-of-sample trading days, {pnl.calls} calls ({steps}). "
-        "Gross of transaction costs; cash earns nothing."
+        "Gross of transaction costs; cash earns nothing. On the chart, scroll to zoom, "
+        "drag to pan and double-click to reset."
     )
     metric_cols = st.columns(4)
     metric_cols[0].metric(
