@@ -212,10 +212,6 @@ with st.expander("Settings"):
         "on them, so machine learning's tuning never touches a reported result."
     )
 
-check_cols = st.columns(2)
-check_cols[0].checkbox("Polynomial", value=True, disabled=True)
-run_ml = check_cols[1].checkbox("Machine learning", value=True)
-
 horizon = int(horizon)
 splitter = PurgedWalkForward(
     train=int(train), test=int(test), embargo=EMBARGO_DAYS, tuning_rows=TUNING_ROWS
@@ -265,9 +261,8 @@ def _show_alignment(panel: FeaturePanel, target_name: str) -> None:
 def _polynomial_settings(key: str, panel: FeaturePanel) -> dict[str, object]:
     """The derived polynomial always runs; a function entered here runs beside it
     as its own row. Each row depends only on its own setting."""
-    st.markdown(
-        ui.eyebrow("Polynomial", glossary.term("Function source")), unsafe_allow_html=True
-    )
+    st.markdown(ui.eyebrow("Polynomial"), unsafe_allow_html=True)
+    st.caption(glossary.term("Function source"))
     max_terms = st.number_input(
         "Max terms per candidate (optional cap)",
         min_value=1,
@@ -751,6 +746,15 @@ def _show_directional(
 def _render_tab(role: TargetRole, price_col: str) -> None:
     target_name = label(price_col)
     key = role.value
+    # FF5 only exists on the Equity tab, so Bond gets one fewer column.
+    check_cols = st.columns([3, 4, 4, 7] if role == TargetRole.EQUITY else [3, 4, 9])
+    check_cols[0].checkbox("Polynomial", value=True, disabled=True, key=f"poly_{key}")
+    run_ff5 = False
+    if role == TargetRole.EQUITY:
+        run_ff5 = check_cols[1].checkbox(
+            "Fama-French 5", value=True, key=f"run_ff5_{key}"
+        )
+    run_ml = check_cols[-2].checkbox("Machine learning", value=True, key=f"run_ml_{key}")
     _show_active_status(role, target_name)
     if not signal_cols:
         st.info("Need at least one other signal column, alongside the target, to model.")
@@ -764,17 +768,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     models = [NAIVE, DERIVED]
     if settings[USER]:
         models.append(USER)
-    # FF5 is an equity-factor benchmark, not designed to predict bond returns —
-    # the checkbox itself only exists on the Equity tab, so Bond never offers it.
-    if role == TargetRole.EQUITY:
-        run_ff5 = st.checkbox(
-            "Fama-French 5",
-            value=True,
-            key=f"run_ff5_{key}",
-            help="An equity-factor benchmark, so it only runs here.",
-        )
-        if run_ff5:
-            models.append(FF5)
+    if run_ff5:
+        models.append(FF5)
     if run_ml:
         models.append(ML)
 

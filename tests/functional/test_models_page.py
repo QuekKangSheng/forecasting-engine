@@ -610,7 +610,7 @@ def test_changing_the_term_cap_clears_only_that_tabs_derived_row():
 
 def test_ticking_or_unticking_a_model_clears_nothing():
     app = _page(_two_tabs(), bond=True)
-    (ml,) = [c for c in app.checkbox if c.label == "Machine learning"]
+    ml = next(c for c in app.checkbox if c.label == "Machine learning")
     ml.uncheck().run()
 
     assert POLY in _stored_runs(app, EQUITY)
