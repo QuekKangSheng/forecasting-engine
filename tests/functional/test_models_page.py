@@ -927,8 +927,8 @@ def test_the_example_uses_the_first_two_real_signals():
     app = _choose_own(_page())
     formula = next(t for t in app.text_input if t.label.startswith("Function"))
 
-    assert formula.placeholder == f"e.g. x - 0.5 * y ** 2, with x = {VIX} and y = {IG}"
-    assert "credit_spread_hy" not in formula.placeholder
+    assert formula.placeholder == "e.g. x - 0.5 * y ** 2"
+    assert "x and y would start as VIX and US IG credit spread" in _captions(app)
 
 
 def test_the_signal_table_lists_every_signal_with_its_transform_and_lag():
@@ -940,6 +940,7 @@ def test_the_signal_table_lists_every_signal_with_its_transform_and_lag():
 
     table = next(d.value for d in app.dataframe if "Latest value" in d.value.columns)
     assert table["Column"].tolist() == [VIX, IG]
+    assert table["Signal"].tolist() == ["VIX", "US IG credit spread"]
     assert table["Security"].tolist() == ["VIX Index", "LUACOAS Index"]
     assert table["Transform"].tolist() == ["level", "level"]
     assert set(table["Lag"]) == {"1 day"}

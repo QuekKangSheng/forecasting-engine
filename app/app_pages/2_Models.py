@@ -317,28 +317,29 @@ def _polynomial_settings(
             "one with the best out-of-sample rank IC."
         )
         return DERIVED, settings
-    inputs, table = st.columns([2, 3])
-    with inputs:
-        formula = st.text_input(
-            "Function — write its shape with placeholders, then pick each one's signal",
-            value=str(_kept(formula_key, "")),
-            placeholder=_example(panel),
-            key=formula_key,
-            help=glossary.term("Function source"),
-        )
-        _keep(formula_key, formula)
-        settings[USER] = _user_function(key, formula, panel, show=True)
-    with table:
-        _show_signal_table(panel)
+    formula = st.text_input(
+        "Function — write its shape with placeholders, then pick each one's signal",
+        value=str(_kept(formula_key, "")),
+        placeholder="e.g. x - 0.5 * y ** 2",
+        key=formula_key,
+        help=glossary.term("Function source"),
+    )
+    _keep(formula_key, formula)
+    st.caption(_example(panel))
+    settings[USER] = _user_function(key, formula, panel, show=True)
+    _show_signal_table(panel)
     return USER, settings
 
 
 def _example(panel: FeaturePanel) -> str:
-    """An example formula, and the first two real signals its placeholders would mean."""
-    first, *rest = panel.signals
+    """How the example's placeholders would start out: the first two real signals."""
+    first, *rest = (label(s) for s in panel.signals)
     if not rest:
-        return f"e.g. 2 * x, with x = {first}"
-    return f"e.g. x - 0.5 * y ** 2, with x = {first} and y = {rest[0]}"
+        return f"In the example, x would start as {first}; change it below."
+    return (
+        f"In the example, x and y would start as {first} and {rest[0]}; change either "
+        "below. Only a scale and an intercept are fitted to the shape you write."
+    )
 
 
 def _user_function(
@@ -386,6 +387,7 @@ def _show_signal_table(panel: FeaturePanel) -> None:
     st.dataframe(
         [
             {
+                "Signal": label(signal),
                 "Column": signal,
                 "Security": sources[signal].security if signal in sources else "—",
                 "Field": sources[signal].field if signal in sources else "—",
