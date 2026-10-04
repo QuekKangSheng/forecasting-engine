@@ -27,10 +27,12 @@ flowchart TD
     L["12. Gates<br/>validation/gates"]
     J --> M["13. Naive baseline row<br/>models/naive"]
     N["14. Portfolio backtest vs 50/50<br/>portfolio/backtest, portfolio/performance"]
+    J --> O["15. Directional P&L vs buy-and-hold<br/>portfolio/directional"]
 ```
 
 Step 14 consumes an optimiser's weight schedule rather than the steps above: it
-judges an allocation, not a forecast.
+judges an allocation, not a forecast. Step 15 replays one model's out-of-sample
+forecasts for one index.
 
 ## 1. Ingestion and parsing
 
@@ -141,6 +143,14 @@ fit on all of them instead. The Models page shows each signal's transform, its
 latest-fold in/out and IC, and how many folds kept it.
 
 ## 9. Model families
+
+Every family on a target tab runs in one Run under the same shared settings —
+horizon, lag, walk-forward windows, embargo and so folds — and the results table
+states those settings above its rows. Changing any of them clears every tab's
+rows together (`app/model_runs.py`); a model's own setting (the derived
+polynomial's term cap, the user's formula) clears only that model's row. The
+derived polynomial always runs; a user polynomial runs beside it, as its own row,
+only when a formula has been entered.
 
 Each family is fit per fold on the training window and predicts the test window.
 A row missing any signal a model uses is left out of that model's fitting and
@@ -328,6 +338,31 @@ rebalance's weights, turnover and cost, every metric, the period, the
 rebalance frequency and the active models. It is the input for display (FYP-19)
 and for the risk and significance checks (FYP-56, FYP-52).
 
+## 15. Directional P&L
+
+`portfolio/directional.directional_pnl` asks whether a forecast's direction would
+have paid, per index, for one model's run (FYP-162). It uses the run's pooled
+out-of-sample forecasts and the realised forward returns they were scored
+against (`ModelRunResult.forecast`, `.realised`), so every day replayed is one
+the model never trained on.
+
+1. **Window.** The last `DEFAULT_WINDOW` out-of-sample dates with a realised
+   return, configurable on the page. A run's last `h` dates have none yet.
+2. **Steps.** At `h` = 1, one call per date. At `h` = 5 the window is stepped
+   every 5 dates from its first, so each step's 5-day return ends where the next
+   begins and compounding never counts a day twice. Each horizon is reported
+   separately; the page shows the one its results were run under.
+3. **Strategy.** Fully invested in the index on a step whose forecast is above
+   zero, in cash otherwise, earning that step's realised return or nothing. The
+   forecast's size is never used. A step with no forecast (a signal missing) is
+   held in cash.
+4. **Buy and hold.** The realised return on every step.
+5. **Hit rate** is the share of steps with a forecast whose direction matched the
+   realised return's (a forecast at or below zero counts as a fall); **share
+   invested** is the share of steps in the index.
+
+Everything is gross: no trading cost is charged and cash earns nothing.
+
 ## Parameters
 
 Values are Python literals as the code holds them.
@@ -388,3 +423,4 @@ Values are Python literals as the code holds them.
 | `BASELINE_WEIGHTS` | `forecasting_engine.portfolio.backtest` | `{"equity": 0.5, "bond": 0.5}` |
 | `DEFAULT_COSTS_BPS` | `forecasting_engine.portfolio.backtest` | `{"equity": 3.0, "bond": 5.0}` |
 | `REBALANCE_FREQUENCY` | `forecasting_engine.portfolio.backtest` | `"monthly"` |
+| `DEFAULT_WINDOW` | `forecasting_engine.portfolio.directional` | `60` |

@@ -1,5 +1,6 @@
 """Portfolio Optimizer page: combine the active equity and bond models' saved
-forecasts into a mean-variance weight schedule.
+forecasts into a mean-variance weight schedule, then backtest that schedule
+against the equal-weight benchmark (FYP-19).
 
 Reads whichever settings (horizon, walk-forward windows) produced the active
 models on the Models page — it never lets the two be re-chosen here, since
@@ -8,6 +9,8 @@ own parameters (risk aversion, weight bounds) are configurable on this page.
 """
 
 from __future__ import annotations
+
+import html
 
 import altair as alt
 import streamlit as st
@@ -18,7 +21,17 @@ import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio import optimize
+from forecasting_engine.portfolio.backtest import (
+    REBALANCE_FREQUENCY,
+    BacktestDataError,
+    run_backtest,
+)
 from forecasting_engine.reporting.factor_labels import labeller
+from forecasting_engine.reporting.portfolio_comparison import (
+    PORTFOLIO_LABELS,
+    comparison_rows,
+    cumulative_paths,
+)
 from forecasting_engine.store import active_model
 from model_settings import EMBARGO_DAYS
 
@@ -40,7 +53,8 @@ missing = [
 if missing:
     st.info(
         f"Set an active model for {' and '.join(missing)} on the Models page before "
-        "running the optimiser.",
+        "running the optimiser. Once both are set, the optimised allocation and its "
+        "performance against the equal-weight benchmark appear here.",
         icon=":material/info:",
     )
     st.stop()
@@ -160,3 +174,75 @@ chart = (
     .properties(height=600)
 )
 st.altair_chart(chart, use_container_width=True)
+
+
+# --- FYP-19: the optimised allocation against the equal-weight benchmark -----------
+
+BASES = {"After costs": "net", "Before costs": "gross"}
+
+st.markdown(
+    ui.eyebrow(
+        "Performance vs equal-weight benchmark", glossary.term("Equal-weight benchmark")
+    ),
+    unsafe_allow_html=True,
+)
+try:
+    backtest = run_backtest(
+        prices,
+        schedule,
+        active_models=(
+            f"{equity_name}: {equity_active.model_name}",
+            f"{bond_name}: {bond_active.model_name}",
+        ),
+    )
+except BacktestDataError as exc:
+    st.warning(f"The allocation could not be backtested: {exc}", icon=":material/warning:")
+    st.stop()
+
+costs = backtest.costs_bps
+st.caption(
+    f"Backtest {backtest.start:%d %b %Y} to {backtest.end:%d %b %Y}. The optimised "
+    f"portfolio is rebalanced at each of the {len(schedule)} rebalances above (every "
+    f"{equity_active.test_window} trading days); the benchmark is reset to 50/50 "
+    f"{REBALANCE_FREQUENCY}. Trading costs: {costs[EQUITY]:g} bp equity, "
+    f"{costs[BOND]:g} bp bond. Forecasts from {'; '.join(backtest.active_models)}."
+)
+basis_label = st.segmented_control(
+    "Returns",
+    list(BASES),
+    default="After costs",
+    required=True,
+    key="backtest_basis",
+)
+basis = BASES[basis_label]
+
+
+def _metric_cell(metric: str) -> str:
+    hint = html.escape(glossary.term(metric), quote=True)
+    return (
+        f'<td title="{hint}">{html.escape(metric)}'
+        f'<span class="fe-eyebrow-help" title="{hint}">i</span></td>'
+    )
+
+
+header = "".join(
+    f"<th>{html.escape(h)}</th>"
+    for h in ("Metric", PORTFOLIO_LABELS["optimised"], PORTFOLIO_LABELS["baseline"], "Difference")
+)
+body = "".join(
+    f"<tr>{_metric_cell(row.metric)}<td>{row.optimised}</td><td>{row.baseline}</td>"
+    f"<td>{row.difference}</td></tr>"
+    for row in comparison_rows(backtest, basis)
+)
+st.markdown(
+    f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{header}</tr></thead>'
+    f"<tbody>{body}</tbody></table></div>",
+    unsafe_allow_html=True,
+)
+st.caption(
+    "Difference is optimised minus benchmark: positive favours the optimised portfolio "
+    "on every row, drawdown included."
+)
+
+paths = cumulative_paths(backtest, basis) * 100
+st.line_chart(paths, x_label="Date", y_label="Cumulative return (%)")

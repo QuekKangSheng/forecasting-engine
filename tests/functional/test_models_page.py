@@ -44,10 +44,12 @@ PAGE = REPO_ROOT / "app" / "app_pages" / "2_Models.py"
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 SPX = "SPX_Index_PX_LAST"
 AGG = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
-#: The page's defaults: 5-day horizon, 120/20 walk-forward windows, and a
-#: blank user-supplied function.
+POLY = "Polynomial (derived)"
+USER_POLY = "Polynomial (user-supplied)"
+#: The page's defaults: 5-day horizon, 120/20 walk-forward windows, a 10-term
+#: cap on the derived polynomial and a blank user-supplied function.
 DEFAULT_SHARED = (5, 120, 20)
-DEFAULT_POLYNOMIAL = ("Enter a function", "")
+DEFAULT_MODEL_SETTINGS = {POLY: 10, USER_POLY: ""}
 NAIVE = "Naive (training mean)"
 
 
@@ -137,7 +139,7 @@ def _page(
     if tabs:
         stored = model_runs.StoredRuns((dataset_fingerprint(committed), *DEFAULT_SHARED))
         for role, runs in tabs.items():
-            stored.tabs[role] = model_runs.TabRuns(DEFAULT_POLYNOMIAL, dict(runs))
+            stored.tabs[role] = model_runs.TabRuns(dict(DEFAULT_MODEL_SETTINGS), dict(runs))
         app.session_state[model_runs.RUNS_KEY] = stored
     return app.run()
 
@@ -313,27 +315,27 @@ def test_nothing_run_yet_shows_no_results():
 
 
 def test_results_render_only_for_the_models_that_ran():
-    app = _page({EQUITY: {"Polynomial": _polynomial_run()}})
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
 
     assert not app.exception
     table = _table(app)
     assert table.count("<tr>") == 2  # header + one model
     assert "Polynomial" in table and "Machine Learning" not in table
     labels = _expander_labels(app)
-    assert "Polynomial · S&P 500" in labels
+    assert "Polynomial (derived) · S&P 500" in labels
     assert not [e for e in labels if e.startswith(("Fama-French 5", "Machine learning"))]
 
 
 def test_every_results_header_names_the_target():
-    app = _page({EQUITY: {"Polynomial": _polynomial_run(), "Machine Learning": _ml_run()}})
+    app = _page({EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run()}})
 
     assert "Results · S&P 500" in [s.value for s in app.subheader]
-    for heading in ("Signal screening", "Polynomial", "Machine learning"):
+    for heading in ("Signal screening", POLY, "Machine learning"):
         assert f"{heading} · S&P 500" in _expander_labels(app)
 
 
 def test_the_table_shows_rows_scored():
-    table = _table(_page({EQUITY: {"Polynomial": _polynomial_run()}}))
+    table = _table(_page({EQUITY: {POLY: _polynomial_run()}}))
     assert "Rows scored" in table
     assert "<td>180</td>" in table
 
@@ -345,15 +347,15 @@ def test_each_model_gets_a_one_line_gate_summary():
         ModelDescription("FamaFrench5", FACTOR_COLUMNS, (0.1,) * 5),
         coverage=FactorCoverage(pd.Timestamp("2024-01-01"), pd.Timestamp("2024-08-30"), 150, 5),
     )
-    app = _page({EQUITY: {"Polynomial": _polynomial_run(failing), "FF5 Benchmark": benchmark}})
+    app = _page({EQUITY: {POLY: _polynomial_run(failing), "FF5 Benchmark": benchmark}})
 
     text = _markdown(app)
-    assert "**Polynomial**: gate failed on OOS Rank IC and PBO." in text
+    assert "**Polynomial (derived)**: gate failed on OOS Rank IC and PBO." in text
     assert "**FF5 Benchmark**: not gated" in text
 
 
 def test_each_targets_results_stay_in_its_own_tab():
-    app = _page({EQUITY: {"Polynomial": _polynomial_run()}}, bond=True)
+    app = _page({EQUITY: {POLY: _polynomial_run()}}, bond=True)
 
     assert not app.exception
     assert "Results · S&P 500" in [s.value for s in app.subheader]
@@ -364,7 +366,7 @@ def test_each_targets_results_stay_in_its_own_tab():
 
 
 def test_no_active_model_shows_a_guiding_caption():
-    app = _page({EQUITY: {"Polynomial": _polynomial_run()}})
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
 
     assert not app.exception
     assert "No active model set yet for S&P 500." in _captions(app)
@@ -372,19 +374,19 @@ def test_no_active_model_shows_a_guiding_caption():
 
 
 def test_setting_a_model_active_persists_it_and_shows_it():
-    app = _page({EQUITY: {"Polynomial": _polynomial_run()}})
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
     next(b for b in app.button if b.label == "Set as active").click().run()
 
     assert not app.exception
     assert "Active model · S&P 500" in _markdown(app)
     assert "Polynomial" in _markdown(app)
     stored = active_model.get_active_model(EQUITY)
-    assert stored.model_name == "Polynomial"
+    assert stored.model_name == POLY
     assert stored.high_risk is False
 
 
 def test_setting_a_new_active_model_replaces_the_prior_one():
-    app = _page({EQUITY: {"Polynomial": _polynomial_run(), "Machine Learning": _ml_run()}})
+    app = _page({EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run()}})
     (select,) = app.selectbox
     select.select("Machine Learning").run()
     next(b for b in app.button if b.label == "Set as active").click().run()
@@ -392,10 +394,10 @@ def test_setting_a_new_active_model_replaces_the_prior_one():
     assert active_model.get_active_model(EQUITY).model_name == "Machine Learning"
 
     select = app.selectbox[0]
-    select.select("Polynomial").run()
+    select.select(POLY).run()
     next(b for b in app.button if b.label == "Set as active").click().run()
 
-    assert active_model.get_active_model(EQUITY).model_name == "Polynomial"
+    assert active_model.get_active_model(EQUITY).model_name == POLY
 
 
 def test_the_active_model_picker_excludes_benchmarks():
@@ -409,13 +411,13 @@ def test_the_active_model_picker_excludes_benchmarks():
             EQUITY: {
                 NAIVE: model_runs.ModelRun(_result(), ModelDescription("Naive", (), ())),
                 "FF5 Benchmark": benchmark,
-                "Polynomial": _polynomial_run(),
+                POLY: _polynomial_run(),
             }
         }
     )
 
     (select,) = app.selectbox
-    assert list(select.options) == ["Polynomial"]
+    assert list(select.options) == [POLY]
 
 
 def test_with_no_forecasting_model_run_the_picker_shows_a_caption_instead():
@@ -429,7 +431,7 @@ def test_with_no_forecasting_model_run_the_picker_shows_a_caption_instead():
 
 def test_a_high_risk_model_asks_for_confirmation_before_being_set_active():
     failing = _result(oos_rank_ic=0.01, pbo=0.7)
-    app = _page({EQUITY: {"Polynomial": _polynomial_run(failing)}})
+    app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
     next(b for b in app.button if b.label == "Set as active").click().run()
 
     assert not app.exception
@@ -440,12 +442,12 @@ def test_a_high_risk_model_asks_for_confirmation_before_being_set_active():
 
 def test_a_model_that_only_fails_one_gate_is_not_treated_as_high_risk():
     one_gate_failing = _result(oos_rank_ic=0.01, pbo=0.3)
-    app = _page({EQUITY: {"Polynomial": _polynomial_run(one_gate_failing)}})
+    app = _page({EQUITY: {POLY: _polynomial_run(one_gate_failing)}})
     next(b for b in app.button if b.label == "Set as active").click().run()
 
     assert not app.exception
     assert not any("promotion gates" in w.value for w in app.warning)
-    assert active_model.get_active_model(EQUITY).model_name == "Polynomial"
+    assert active_model.get_active_model(EQUITY).model_name == POLY
 
 
 # --- signal screening -------------------------------------------------------------
@@ -467,7 +469,7 @@ def _screening_table(app: AppTest) -> pd.DataFrame:
 
 
 def test_screening_shows_transform_latest_fold_and_folds_included(screened):
-    app = _page({EQUITY: {"Polynomial": _polynomial_run(_result(screened))}})
+    app = _page({EQUITY: {POLY: _polynomial_run(_result(screened))}})
 
     table = _screening_table(app).set_index("Signal")
     assert table.loc["VIX_Index_PX_LAST", "Transform"] == "difference"
@@ -479,7 +481,7 @@ def test_screening_shows_transform_latest_fold_and_folds_included(screened):
 
 def test_screening_is_taken_from_ml_when_the_polynomial_did_not_screen(screened):
     app = _page(
-        {EQUITY: {"Polynomial": _polynomial_run(), "Machine Learning": _ml_run(_result(screened))}}
+        {EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run(_result(screened))}}
     )
     assert _screening_table(app)["Signal"].tolist() == [
         "VIX_Index_PX_LAST",
@@ -489,12 +491,12 @@ def test_screening_is_taken_from_ml_when_the_polynomial_did_not_screen(screened)
 
 def test_folds_that_fell_back_to_every_signal_are_called_out():
     screening = ScreeningSummary(folds=8, fell_back=3, counts=(("VIX_Index_PX_LAST", 8),))
-    app = _page({EQUITY: {"Polynomial": _polynomial_run(_result(screening))}})
+    app = _page({EQUITY: {POLY: _polynomial_run(_result(screening))}})
     assert "3 of 8 folds kept no signal" in _captions(app)
 
 
 def test_nothing_screened_says_so():
-    app = _page({EQUITY: {"Polynomial": _polynomial_run()}})
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
 
     assert "Nothing was screened" in _captions(app)
     assert all("Included in" not in d.value.columns for d in app.dataframe)
@@ -508,26 +510,26 @@ def _terms_table(app: AppTest) -> pd.DataFrame:
 
 
 def test_the_function_says_what_it_forecasts():
-    app = _page({EQUITY: {"Polynomial": _polynomial_run()}})
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
     assert "Forecasts: S&P 500, 5-day return" in _captions(app)
     assert "Derived Function" in _markdown(app)
 
 
 def test_the_equation_is_typeset_with_labels():
-    (latex,) = [lx.value for lx in _page({EQUITY: {"Polynomial": _polynomial_run()}}).latex]
+    (latex,) = [lx.value for lx in _page({EQUITY: {POLY: _polynomial_run()}}).latex]
     assert r"\hat{y} = 0.001234 + 0.0004521" in latex
     assert r"\text{VIX}^{2}" in latex
 
 
 def test_the_clip_bounds_are_shown_beside_the_equation():
     clipped = replace(DERIVED, input_bounds={"VIX_Index_PX_LAST": (9.5, 31.25)})
-    app = _page({EQUITY: {"Polynomial": _polynomial_run(description=clipped)}})
+    app = _page({EQUITY: {POLY: _polynomial_run(description=clipped)}})
 
     assert "mean ± 4 standard deviations: VIX 9.5 to 31.25" in _captions(app)
 
 
 def test_the_term_table_uses_labels_not_raw_column_codes():
-    table = _terms_table(_page({EQUITY: {"Polynomial": _polynomial_run()}}))
+    table = _terms_table(_page({EQUITY: {POLY: _polynomial_run()}}))
 
     assert table["Factor"].tolist() == ["(intercept)", "VIX", "US IG credit spread × VIX"]
     assert table["Coefficient"].tolist() == ["0.001234", "0.0004521", "−0.0002310"]
@@ -535,7 +537,7 @@ def test_the_term_table_uses_labels_not_raw_column_codes():
 
 def test_a_run_whose_folds_mostly_kept_nothing_says_so():
     run = _polynomial_run(_result(terms=FoldTerms(folds=10, with_terms=4)))
-    captions = _captions(_page({EQUITY: {"Polynomial": run}}))
+    captions = _captions(_page({EQUITY: {POLY: run}}))
 
     assert "4 of 10 walk-forward folds kept any term at all" in captions
     assert "most recent fold's fit" in captions
@@ -543,7 +545,7 @@ def test_a_run_whose_folds_mostly_kept_nothing_says_so():
 
 def test_a_run_where_every_fold_kept_terms_says_that_instead():
     run = _polynomial_run(_result(terms=FoldTerms(folds=10, with_terms=10)))
-    captions = _captions(_page({EQUITY: {"Polynomial": run}}))
+    captions = _captions(_page({EQUITY: {POLY: run}}))
 
     assert "Every one of the 10 walk-forward folds kept at least one term." in captions
 
@@ -551,7 +553,7 @@ def test_a_run_where_every_fold_kept_terms_says_that_instead():
 def test_an_empty_equation_still_explains_itself():
     empty = ModelDescription(name="DerivedPolynomial", terms=(), coefficients=(), intercept=0.002)
     run = _polynomial_run(_result(terms=FoldTerms(folds=10, with_terms=3)), empty)
-    captions = _captions(_page({EQUITY: {"Polynomial": run}}))
+    captions = _captions(_page({EQUITY: {POLY: run}}))
 
     assert "No terms survived fitting" in captions
     assert "3 of 10 walk-forward folds kept any term at all" in captions
@@ -561,7 +563,7 @@ def test_an_empty_equation_still_explains_itself():
 
 
 def _two_tabs() -> dict:
-    return {EQUITY: {"Polynomial": _polynomial_run()}, BOND: {"Polynomial": _polynomial_run()}}
+    return {EQUITY: {POLY: _polynomial_run()}, BOND: {POLY: _polynomial_run()}}
 
 
 def test_changing_a_shared_setting_clears_every_tabs_results():
@@ -584,13 +586,26 @@ def test_changing_the_horizon_clears_every_tabs_results():
     assert _stored_runs(app, BOND) == {}
 
 
-def test_changing_one_tabs_polynomial_settings_clears_only_that_tab():
-    app = _page(_two_tabs(), bond=True)
+def test_changing_a_function_clears_only_that_tabs_user_supplied_row():
+    tabs = {
+        EQUITY: {POLY: _polynomial_run(), USER_POLY: _polynomial_run()},
+        BOND: {POLY: _polynomial_run(), USER_POLY: _polynomial_run()},
+    }
+    app = _page(tabs, bond=True)
     (formula, _bond_formula) = [t for t in app.text_input if t.label.startswith("Function")]
     formula.set_value("2 * VIX_Index_PX_LAST").run()
 
-    assert _stored_runs(app, EQUITY) == {}
-    assert "Polynomial" in _stored_runs(app, BOND)
+    assert set(_stored_runs(app, EQUITY)) == {POLY}
+    assert set(_stored_runs(app, BOND)) == {POLY, USER_POLY}
+
+
+def test_changing_the_term_cap_clears_only_that_tabs_derived_row():
+    tabs = {EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run()}}
+    app = _page(tabs)
+    (cap,) = [n for n in app.number_input if n.label.startswith("Max terms")]
+    cap.set_value(5).run()
+
+    assert set(_stored_runs(app)) == {"Machine Learning"}
 
 
 def test_ticking_or_unticking_a_model_clears_nothing():
@@ -598,8 +613,8 @@ def test_ticking_or_unticking_a_model_clears_nothing():
     (ml,) = [c for c in app.checkbox if c.label == "Machine learning"]
     ml.uncheck().run()
 
-    assert "Polynomial" in _stored_runs(app, EQUITY)
-    assert "Polynomial" in _stored_runs(app, BOND)
+    assert POLY in _stored_runs(app, EQUITY)
+    assert POLY in _stored_runs(app, BOND)
 
 
 def test_committing_a_new_dataset_clears_everything():
@@ -669,7 +684,7 @@ def test_run_fits_every_ticked_model_and_one_failure_does_not_stop_the_rest(
     app = _run_equity(_page())
 
     assert not app.exception
-    assert set(_stored_runs(app)) == {NAIVE, "Polynomial", "Machine Learning"}
+    assert set(_stored_runs(app)) == {NAIVE, POLY, USER_POLY, "Machine Learning"}
     assert "no route to host" in " ".join(e.value for e in app.error)
     assert len(stub_ml) == 1
 
@@ -678,7 +693,7 @@ def test_the_naive_baseline_runs_every_time_on_the_polynomials_rows(stub_ml):
     app = _run_equity(_untick(_page(), "Fama-French 5", "Machine learning"))
 
     runs = _stored_runs(app)
-    assert runs[NAIVE].result.rows_scored == runs["Polynomial"].result.rows_scored
+    assert runs[NAIVE].result.rows_scored == runs[POLY].result.rows_scored
     assert "**Naive (training mean)**: the baseline to beat — not gated." in _markdown(app)
     assert "Naive (training mean)" in _table(app)
 
@@ -687,7 +702,7 @@ def test_an_unticked_model_is_not_run(monkeypatch, stub_ml):
     monkeypatch.setattr(fama_french, "resolve", lambda: pytest.fail("FF5 was unticked"))
     app = _run_equity(_untick(_page(), "Fama-French 5", "Machine learning"))
 
-    assert set(_stored_runs(app)) == {NAIVE, "Polynomial"}
+    assert set(_stored_runs(app)) == {NAIVE, POLY, USER_POLY}
     assert not stub_ml
 
 
@@ -700,7 +715,7 @@ def test_ff5_never_runs_on_the_bond_tab(monkeypatch, stub_ml):
     bond_run.click().run()
 
     assert not app.exception
-    assert set(_stored_runs(app, BOND)) == {NAIVE, "Polynomial", "Machine Learning"}
+    assert set(_stored_runs(app, BOND)) == {NAIVE, POLY, USER_POLY, "Machine Learning"}
 
 
 def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch, stub_ml):
@@ -718,12 +733,20 @@ def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch, stub_
     assert "10 target dates have no factor row" in _captions(app)
 
 
-def test_a_blank_function_fails_the_polynomial_but_the_rest_still_run(monkeypatch, stub_ml):
+def test_a_blank_function_runs_only_the_derived_polynomial(stub_ml):
     app = _untick(_page(), "Fama-French 5")
     next(b for b in app.button if b.label == "Run").click().run()
 
-    assert "enter a function above first" in " ".join(e.value for e in app.error)
-    assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
+    assert not app.exception
+    assert not app.error
+    assert set(_stored_runs(app)) == {NAIVE, POLY, "Machine Learning"}
+
+
+def test_a_broken_function_fails_its_own_row_but_the_rest_still_run(stub_ml):
+    app = _run_equity(_untick(_page(), "Fama-French 5"), formula="2 * NOT_A_SIGNAL")
+
+    assert USER_POLY in " ".join(e.value for e in app.error)
+    assert set(_stored_runs(app)) == {NAIVE, POLY, "Machine Learning"}
 
 
 def test_ml_results_show_shap_and_the_coarse_pbo_note(stub_ml):
@@ -742,3 +765,132 @@ def test_ml_results_show_which_tune_each_fold_used_and_the_latest_settings(stub_
     settings = next(d.value for d in app.dataframe if "Setting" in d.value.columns)
     assert dict(zip(settings["Setting"], settings["Value"], strict=True))["max_depth"] == "4"
     assert "latest tune (xgboost)" in _captions(app)
+
+
+# --- FYP-161: one run, one set of settings, stated beside the results ---------------
+
+
+def test_the_results_state_the_settings_every_row_was_run_under():
+    captions = _captions(_page({EQUITY: {POLY: _polynomial_run()}}))
+
+    assert (
+        "Every row was run under: 5-day horizon · walk-forward train 120 / test 20 days · "
+        "embargo 5 days · signals lagged 1 day"
+    ) in captions
+
+
+def test_the_derived_and_user_supplied_polynomials_get_a_row_each():
+    app = _page({EQUITY: {POLY: _polynomial_run(), USER_POLY: _polynomial_run()}})
+
+    table = _table(app)
+    assert table.count("<tr>") == 3  # header + two models
+    assert POLY in table and USER_POLY in table
+    labels = _expander_labels(app)
+    assert f"{POLY} · S&P 500" in labels
+    assert f"{USER_POLY} · S&P 500" in labels
+
+
+def test_a_user_supplied_function_can_be_set_active():
+    app = _page({EQUITY: {POLY: _polynomial_run(), USER_POLY: _polynomial_run()}})
+
+    (select,) = [s for s in app.selectbox if s.label == "Model to set active"]
+    assert list(select.options) == [POLY, USER_POLY]
+
+
+def test_a_shared_change_says_why_the_results_went():
+    app = _page(_two_tabs(), bond=True)
+    (train,) = [n for n in app.number_input if n.label.startswith("Walk-forward train")]
+    train.set_value(130).run()
+
+    assert "were cleared because the data or a shared setting changed" in _captions(app)
+
+
+def test_a_fresh_page_does_not_claim_anything_was_cleared():
+    assert "were cleared" not in _captions(_page())
+
+
+# --- FYP-162: would the forecast's direction have paid? ------------------------------
+
+
+def _oos(values, start="2024-06-03") -> pd.Series:
+    return pd.Series(values, index=pd.bdate_range(start, periods=len(values)), dtype=float)
+
+
+def _with_forecast(forecast: pd.Series, realised: pd.Series, **kwargs) -> ModelRunResult:
+    return replace(_result(**kwargs), forecast=forecast, realised=realised)
+
+
+def _directional_page(**kwargs) -> AppTest:
+    forecast = _oos([0.01, -0.01] * 50)
+    realised = _oos([0.02, -0.03] * 50)
+    return _page(
+        {EQUITY: {POLY: _polynomial_run(_with_forecast(forecast, realised, **kwargs))}}
+    )
+
+
+def _metric(app: AppTest, label: str) -> str:
+    return next(m.value for m in app.metric if m.label == label)
+
+
+def test_the_directional_check_shows_strategy_buy_and_hold_hit_rate_and_days_invested():
+    app = _directional_page()
+
+    assert not app.exception
+    assert "Would the forecast's direction have paid?" in _markdown(app)
+    # Calls alternate rise/fall and the forecast is right every time: in on each of
+    # the 6 rises (+2%), out on each of the 6 falls (-3%).
+    assert _metric(app, "Hit rate") == "100%"
+    assert _metric(app, "Days invested") == "50%"
+    assert _metric(app, "Long/cash strategy") == f"{1.02**6 - 1:+.2%}"
+    assert _metric(app, "Buy and hold") == f"{1.02**6 * 0.97**6 - 1:+.2%}"
+
+
+def test_the_directional_check_steps_five_days_at_a_time_at_h5():
+    app = _directional_page()
+
+    captions = _captions(app)
+    assert "the last 60 out-of-sample trading days, 12 calls" in captions
+    assert "one call every 5 days, never overlapping" in captions
+    assert "Gross of transaction costs" in captions
+
+
+def test_the_directional_window_can_be_changed():
+    app = _directional_page()
+    (window,) = [n for n in app.number_input if n.label == "Window (trading days)"]
+    assert window.value == 60
+    window.set_value(20).run()
+
+    assert "the last 20 out-of-sample trading days, 4 calls" in _captions(app)
+
+
+def test_the_directional_check_says_how_to_see_the_other_horizon():
+    assert "switch to 1 day in Settings and run again" in _captions(_directional_page())
+
+
+def test_the_directional_check_defaults_to_the_active_model():
+    forecast, realised = _oos([0.01] * 30), _oos([0.01] * 30)
+    runs = {
+        POLY: _polynomial_run(_with_forecast(forecast, realised)),
+        "Machine Learning": _ml_run(_with_forecast(forecast, realised)),
+    }
+    active_model.set_active_model(
+        EQUITY,
+        "Machine Learning",
+        runs["Machine Learning"].result,
+        high_risk=False,
+        horizon=5,
+        train_window=120,
+        test_window=20,
+        dataset_fingerprint="fp",
+    )
+    app = _page({EQUITY: runs})
+
+    (picker,) = [s for s in app.selectbox if s.label == "Forecasts from"]
+    assert picker.value == "Machine Learning"
+
+
+def test_a_run_without_saved_forecasts_shows_no_directional_check():
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
+
+    assert "Would the forecast's direction have paid?" not in _markdown(app)
+    assert not [s for s in app.selectbox if s.label == "Forecasts from"]

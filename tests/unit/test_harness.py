@@ -146,6 +146,16 @@ def test_summarize_reports_newey_west_ses_over_the_horizon_and_the_test_window()
     assert result.oos_rank_ic_se_test == metrics.rank_ic_se(predicted, realised, lags=7)
 
 
+def test_summarize_keeps_every_folds_forecast_and_realised_return_end_to_end():
+    panel = _panel_with_varying_folds()
+    folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=10, test=3, embargo=2))
+
+    result, _description = summarize(folds, pbo=None)
+
+    pd.testing.assert_series_equal(result.forecast, pd.concat([f.predicted for f in folds]))
+    pd.testing.assert_series_equal(result.realised, pd.concat([f.realised for f in folds]))
+
+
 def test_summarize_passes_pbo_through_unchanged():
     panel = _panel()
     splitter = PurgedWalkForward(train=10, test=3, embargo=2)

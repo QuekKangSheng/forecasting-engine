@@ -32,12 +32,18 @@ def test_only_models_that_ran_get_a_row():
 def test_row_order_is_fixed_regardless_of_input_order():
     results = {
         "Machine Learning": _result(0.03, 0.03, 0.02, 0.3),
+        "Polynomial (user-supplied)": _result(0.01, 0.01, 0.02, None),
         "FF5 Benchmark": _result(0.02, 0.025, 0.02, None),
-        "Polynomial": _result(0.03, 0.03, 0.015, 0.4),
+        "Polynomial (derived)": _result(0.03, 0.03, 0.015, 0.4),
     }
     rows = build_metrics_rows(results)
     names = [row["Model"].text for row in rows]
-    assert names == ["FF5 Benchmark", "Polynomial", "Machine Learning"]
+    assert names == [
+        "FF5 Benchmark",
+        "Polynomial (derived)",
+        "Polynomial (user-supplied)",
+        "Machine Learning",
+    ]
 
 
 def test_ff5_gets_no_gate_badge_and_na_pbo():

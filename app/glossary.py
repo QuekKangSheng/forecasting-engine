@@ -26,11 +26,12 @@ TERMS: Mapping[str, str] = {
         "a setting changed."
     ),
     "Function source": (
-        "**Enter a function** fits the exact formula you write, and nothing "
-        "else — use it to test a view you already hold.\n\n"
-        "**Derive automatically** searches a small grid of polynomial degrees "
+        "**Derived** always runs: it searches a small grid of polynomial degrees "
         "and regularizers and reports the best one. Regularization pushes weak "
-        "terms to exactly zero, so the result stays short enough to read."
+        "terms to exactly zero, so the result stays short enough to read.\n\n"
+        "**Your own function** is optional. It applies the exact formula you "
+        "write and gets its own row, so a view you already hold is judged "
+        "beside the derived one under the same settings."
     ),
     "Forecast horizon": (
         "How many trading days ahead to predict. Each horizon is run and "
@@ -180,6 +181,67 @@ TERMS: Mapping[str, str] = {
         "The minimum and maximum either asset may be allocated, so a small, "
         "noisy difference between the two forecasts can't swing the portfolio "
         "to one extreme."
+    ),
+    "Directional P&L": (
+        "What you would have earned by holding this index only when the model "
+        "forecast a rise, and sitting in cash otherwise, compared with simply "
+        "holding it. Only the forecast's direction is used, never its size, so "
+        "it is a plain check of whether the up/down call is worth acting on."
+    ),
+    "Window (trading days)": (
+        "How many of the most recent out-of-sample trading days to replay. "
+        "Only days the model was graded on are used, never days it trained on, "
+        "so the result is what following it live would have looked like."
+    ),
+    "Long/cash strategy": (
+        "Compounded return of holding the index on every call where the "
+        "forecast was positive and holding cash on every other. Before "
+        "transaction costs, and cash earns nothing."
+    ),
+    "Buy and hold": (
+        "Compounded return of holding the index for the whole window, whatever "
+        "the forecast said. The strategy has to beat this for the forecast's "
+        "direction to have been worth following."
+    ),
+    "Hit rate": (
+        "How often the forecast's direction matched what the index actually "
+        "did: a forecast rise followed by a rise, or a forecast fall followed by "
+        "a fall. 50% is a coin toss."
+    ),
+    "Days invested": (
+        "The share of calls on which the strategy held the index. A low share "
+        "with a good return means the model avoided the market's bad patches; a "
+        "share near 100% means it behaves almost like buy and hold."
+    ),
+    "Annual return": (
+        "The yearly growth rate that, compounded, turns the starting value into "
+        "the ending value. It is the headline figure, but says nothing about the "
+        "risk taken to earn it — read it with the ratios below."
+    ),
+    "Sharpe": (
+        "Average return above the risk-free rate per unit of total volatility, "
+        "annualised. Higher means more return for the ups and downs endured; it "
+        "is the standard way to compare two portfolios with different risk."
+    ),
+    "Sortino": (
+        "Like Sharpe, but only counts downside volatility, so a portfolio is not "
+        "penalised for large gains. Higher is better; it matters most when "
+        "returns are lopsided."
+    ),
+    "Calmar": (
+        "Annual return divided by the size of the worst drawdown. Higher means "
+        "the return was earned without deep losses along the way — the measure "
+        "closest to how painful a portfolio was to hold."
+    ),
+    "Max drawdown": (
+        "The worst fall from a previous high before recovering, as a percentage. "
+        "It is the loss an investor who bought at the worst moment would have "
+        "sat through, so a smaller (less negative) figure is better."
+    ),
+    "Equal-weight benchmark": (
+        "Half in the equity index and half in the bond index, reset to 50/50 on "
+        "the last trading day of each month. The optimised portfolio has to beat "
+        "this simple allocation to justify the forecasting behind it."
     ),
 }
 

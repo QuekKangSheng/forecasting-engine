@@ -59,8 +59,8 @@ def models_page() -> AppTest:
     fn = from_description(description, origin=Origin.DERIVED, target="SPX_Index_PX_LAST", horizon=5)
     stored = model_runs.StoredRuns((dataset_fingerprint(committed), 5, 120, 20))
     stored.tabs[TargetRole.EQUITY] = model_runs.TabRuns(
-        ("Enter a function", ""),
-        {"Polynomial": model_runs.ModelRun(_result(), description, function=fn)},
+        {"Polynomial (derived)": 10, "Polynomial (user-supplied)": ""},
+        {"Polynomial (derived)": model_runs.ModelRun(_result(), description, function=fn)},
     )
     app = AppTest.from_file(str(MODELS_PAGE), default_timeout=30)
     app.session_state["extraction_committed"] = committed
@@ -77,6 +77,7 @@ def _helps(app: AppTest) -> dict[str, str]:
         *((w.label, w.help) for w in app.selectbox),
         *((w.label, w.help) for w in app.radio),
         *((w.label, w.help) for w in app.number_input),
+        *((w.label, w.help) for w in app.text_input),
         *((w.label, w.help) for w in app.metric),
         *((w.label, w.help) for w in app.segmented_control),
         *((w.value, w.help) for w in app.subheader),
@@ -85,9 +86,15 @@ def _helps(app: AppTest) -> dict[str, str]:
     return {label: help_text for label, help_text in labelled if help_text}
 
 
-@pytest.mark.parametrize("label", ["Forecast horizon", "Function source"])
+@pytest.mark.parametrize("label", ["Forecast horizon"])
 def test_the_controls_that_name_a_concept_explain_it(models_page, label):
     assert label in _helps(models_page)
+
+
+def test_the_user_supplied_function_box_explains_both_polynomials(models_page):
+    helps = _helps(models_page)
+    (function_help,) = [h for label, h in helps.items() if label.startswith("Function")]
+    assert function_help == glossary.term("Function source")
 
 
 @pytest.mark.parametrize("metric", ["IC", "OOS Rank IC", "RMSE", "PBO"])

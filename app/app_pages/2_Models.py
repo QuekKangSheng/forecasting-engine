@@ -1,6 +1,7 @@
 """Models page: FYP-42's Fama-French benchmark, FYP-43's polynomial forecasting
-function and FYP-44's machine-learning models, run together per target through
-one walk-forward harness and compared side by side.
+functions and FYP-44's machine-learning models, run together per target through
+one walk-forward harness under one set of settings and compared side by side
+(FYP-161), with FYP-162's check of whether a forecast's direction would have paid.
 
 Reads the dataset committed via "Use Updated Data" on the Data page. No maths
 lives here — fitting is in forecasting_engine.models.polynomial / famafrench /
@@ -51,6 +52,11 @@ from forecasting_engine.models.polynomial import (
     run_derived_polynomial,
     run_user_polynomial,
 )
+from forecasting_engine.portfolio.directional import (
+    DEFAULT_WINDOW,
+    DirectionalDataError,
+    directional_pnl,
+)
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import (
     MODEL_ORDER,
@@ -80,9 +86,9 @@ from model_settings import (
 )
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
-NAIVE, FF5, POLYNOMIAL, ML = MODEL_ORDER
+NAIVE, FF5, DERIVED, USER, ML = MODEL_ORDER
 
-ACTIVE_MODEL_CANDIDATES = (POLYNOMIAL, ML)
+ACTIVE_MODEL_CANDIDATES = (DERIVED, USER, ML)
 
 ROLE_NAMES: dict[TargetRole, str] = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
 
@@ -217,8 +223,15 @@ horizon = int(horizon)
 splitter = PurgedWalkForward(
     train=int(train), test=int(test), embargo=EMBARGO_DAYS, tuning_rows=TUNING_ROWS
 )
-stored = model_runs.stored(
-    st.session_state, (dataset_fingerprint(merged), horizon, int(train), int(test))
+shared_settings = (dataset_fingerprint(merged), horizon, int(train), int(test))
+cleared = model_runs.cleared_by(st.session_state, shared_settings)
+stored = model_runs.stored(st.session_state, shared_settings)
+
+#: What every row on the page was run under, stated beside the results (FYP-161).
+SETTINGS_STAMP = (
+    f"{horizon}-day horizon · walk-forward train {int(train)} / test {int(test)} days · "
+    f"embargo {EMBARGO_DAYS} days · signals lagged {PRODUCTION_LAG_DAYS} day · "
+    f"first {TUNING_ROWS} dates kept for tuning"
 )
 
 ACTIVE_SETTINGS: dict[str, int | str] = {
@@ -252,22 +265,12 @@ def _show_alignment(panel: FeaturePanel, target_name: str) -> None:
         )
 
 
-def _polynomial_settings(key: str, panel: FeaturePanel) -> tuple:
-    st.markdown(ui.eyebrow("Polynomial"), unsafe_allow_html=True)
-    mode = st.radio(
-        "Function source",
-        ["Enter a function", "Derive automatically"],
-        horizontal=True,
-        help=glossary.term("Function source"),
-        key=f"mode_{key}",
+def _polynomial_settings(key: str, panel: FeaturePanel) -> dict[str, object]:
+    """The derived polynomial always runs; a function entered here runs beside it
+    as its own row. Each row depends only on its own setting."""
+    st.markdown(
+        ui.eyebrow("Polynomial", glossary.term("Function source")), unsafe_allow_html=True
     )
-    if mode == "Enter a function":
-        st.caption(f"Available signal columns: {', '.join(panel.signals)}")
-        formula = st.text_input(
-            "Function (arithmetic on signal columns only — e.g. `2 * vix + credit_spread_hy ** 2`)",
-            key=f"formula_{key}",
-        )
-        return (mode, formula.strip())
     max_terms = st.number_input(
         "Max terms per candidate (optional cap)",
         min_value=1,
@@ -276,29 +279,44 @@ def _polynomial_settings(key: str, panel: FeaturePanel) -> tuple:
         key=f"terms_{key}",
     )
     st.caption(
-        f"Tries a small grid of degrees (1-3, of up to {MAX_DEGREE} allowed) and "
-        "regularizers (Lasso, ElasticNet), compares them via PBO, and reports the one "
-        "with the best out-of-sample rank IC."
+        f"The derived function always runs: it tries a small grid of degrees (1-3, of up "
+        f"to {MAX_DEGREE} allowed) and regularizers (Lasso, ElasticNet), compares them "
+        "via PBO, and reports the one with the best out-of-sample rank IC."
     )
-    return (mode, int(max_terms))
+    st.caption(f"Available signal columns: {', '.join(panel.signals)}")
+    formula = st.text_input(
+        "Function (optional) — arithmetic on signal columns only, e.g. "
+        "`2 * vix + credit_spread_hy ** 2`",
+        key=f"formula_{key}",
+        help=glossary.term("Function source"),
+    )
+    return {DERIVED: int(max_terms), USER: formula.strip()}
 
 
-def _run_polynomial(settings: tuple, panel: FeaturePanel, price_col: str) -> model_runs.ModelRun:
-    mode, value = settings
-    if mode == "Enter a function":
-        if not value:
-            raise PolynomialConfigError("enter a function above first.")
-        result, description = run_user_polynomial(value, panel, splitter)
-        origin = Origin.USER_SUPPLIED
-    else:
-        candidates = tuple(
-            DerivedPolynomial(degree=c.degree, regularizer=c.regularizer, max_terms=value)
-            for c in CANDIDATE_CONFIGS
-        )
-        result, description = run_derived_polynomial(panel, splitter, candidates=candidates)
-        origin = Origin.DERIVED
+def _run_derived(max_terms: int, panel: FeaturePanel, price_col: str) -> model_runs.ModelRun:
+    candidates = tuple(
+        DerivedPolynomial(degree=c.degree, regularizer=c.regularizer, max_terms=max_terms)
+        for c in CANDIDATE_CONFIGS
+    )
+    result, description = run_derived_polynomial(panel, splitter, candidates=candidates)
     fn = from_description(
-        description, origin=origin, target=price_col, horizon=horizon, columns=panel.signals
+        description,
+        origin=Origin.DERIVED,
+        target=price_col,
+        horizon=horizon,
+        columns=panel.signals,
+    )
+    return model_runs.ModelRun(result, description, function=fn)
+
+
+def _run_user(formula: str, panel: FeaturePanel, price_col: str) -> model_runs.ModelRun:
+    result, description = run_user_polynomial(formula, panel, splitter)
+    fn = from_description(
+        description,
+        origin=Origin.USER_SUPPLIED,
+        target=price_col,
+        horizon=horizon,
+        columns=panel.signals,
     )
     return model_runs.ModelRun(result, description, function=fn)
 
@@ -399,7 +417,7 @@ def _gate_line(name: str, result: ModelRunResult) -> str:
 def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> None:
     """Shared by the derived polynomial and ML: both screen the same panel on the
     same folds, so their screening is the same and shown once."""
-    screenings = [runs[n].result.screening for n in (POLYNOMIAL, ML) if n in runs]
+    screenings = [runs[n].result.screening for n in (DERIVED, ML) if n in runs]
     screening = next((s for s in screenings if s is not None), None)
     with st.expander(f"Signal screening · {target_name}"):
         if screening is None:
@@ -631,6 +649,108 @@ def _show_active_picker(
             st.rerun()
 
 
+def _directional_default(role: TargetRole, options: list[str], runs) -> int:
+    """The active model if it ran here, else the first that met its gate, else the
+    first forecasting model — the one a portfolio manager would act on."""
+    current = active_model.get_active_model(role)
+    if current is not None and current.model_name in options:
+        return options.index(current.model_name)
+    for i, name in enumerate(options):
+        result = runs[name].result
+        if result.pbo is not None and evaluate_candidate(result.oos_rank_ic, result.pbo).promoted:
+            return i
+    forecasting = [i for i, name in enumerate(options) if name in ACTIVE_MODEL_CANDIDATES]
+    return forecasting[0] if forecasting else 0
+
+
+def _show_directional(
+    role: TargetRole, runs: dict[str, model_runs.ModelRun], target_name: str
+) -> None:
+    """FYP-162: holding the index only when the forecast says it will rise, against
+    holding it throughout, over a recent out-of-sample window."""
+    options = [
+        n
+        for n in MODEL_ORDER
+        if n in runs and runs[n].result.forecast is not None and runs[n].result.realised is not None
+    ]
+    if not options:
+        return
+    key = role.value
+    st.markdown(
+        ui.eyebrow("Would the forecast's direction have paid?", glossary.term("Directional P&L")),
+        unsafe_allow_html=True,
+    )
+    cols = st.columns([3, 1])
+    name = cols[0].selectbox(
+        "Forecasts from",
+        options,
+        index=_directional_default(role, options, runs),
+        key=f"pnl_model_{key}",
+    )
+    window = cols[1].number_input(
+        "Window (trading days)",
+        min_value=horizon,
+        value=max(DEFAULT_WINDOW, horizon),
+        step=5,
+        key=f"pnl_window_{key}",
+        help=glossary.term("Window (trading days)"),
+    )
+    result = runs[name].result
+    try:
+        pnl = directional_pnl(result.forecast, result.realised, horizon=horizon, window=int(window))
+    except DirectionalDataError as exc:
+        st.info(str(exc), icon=":material/info:")
+        return
+
+    steps = (
+        "one call per day" if horizon == 1 else f"one call every {horizon} days, never overlapping"
+    )
+    st.caption(
+        f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: the last {pnl.window} "
+        f"out-of-sample trading days, {pnl.calls} calls ({steps}). "
+        "Gross of transaction costs; cash earns nothing."
+    )
+    metric_cols = st.columns(4)
+    metric_cols[0].metric(
+        "Long/cash strategy",
+        f"{pnl.strategy_cumulative.iloc[-1]:+.2%}",
+        help=glossary.term("Long/cash strategy"),
+    )
+    metric_cols[1].metric(
+        "Buy and hold",
+        f"{pnl.buy_and_hold_cumulative.iloc[-1]:+.2%}",
+        help=glossary.term("Buy and hold"),
+    )
+    metric_cols[2].metric(
+        "Hit rate",
+        "—" if pnl.hit_rate != pnl.hit_rate else f"{pnl.hit_rate:.0%}",
+        help=glossary.term("Hit rate"),
+    )
+    metric_cols[3].metric(
+        "Days invested", f"{pnl.share_invested:.0%}", help=glossary.term("Days invested")
+    )
+    st.line_chart(
+        {
+            "Long/cash strategy": pnl.strategy_cumulative * 100,
+            "Buy and hold": pnl.buy_and_hold_cumulative * 100,
+        },
+        x_label="Forecast date",
+        y_label="Cumulative return (%)",
+    )
+    if pnl.no_forecast:
+        st.caption(
+            f"{pnl.no_forecast} of {pnl.calls} calls had no forecast (a signal was "
+            "missing that day), so the strategy stayed in cash and the hit rate leaves them out."
+        )
+    other = next(h for h in HORIZONS if h != horizon) if len(HORIZONS) > 1 else None
+    if other is not None:
+        st.caption(
+            f"This is the {horizon}-day horizon. Each horizon is reported separately: "
+            f"switch to {other} {'day' if other == 1 else 'days'} in Settings and run "
+            "again to see it."
+        )
+
+
 def _render_tab(role: TargetRole, price_col: str) -> None:
     target_name = label(price_col)
     key = role.value
@@ -642,8 +762,11 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     panel = align_and_lag(indexed, signal_cols, price_col, horizon=horizon, transforms=transforms)
     _show_alignment(panel, target_name)
 
-    tab_runs = model_runs.tab(stored, role, _polynomial_settings(key, panel))
-    models = [NAIVE, POLYNOMIAL]
+    settings = _polynomial_settings(key, panel)
+    tab_runs = model_runs.tab(stored, role, settings)
+    models = [NAIVE, DERIVED]
+    if settings[USER]:
+        models.append(USER)
     # FF5 is an equity-factor benchmark, not designed to predict bond returns —
     # it would technically run and produce numbers, so it never runs here.
     if run_ff5 and role == TargetRole.EQUITY:
@@ -654,7 +777,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if st.button("Run", type="primary", key=f"run_{key}"):
         runners = {
             NAIVE: lambda: model_runs.ModelRun(*run_naive(panel, splitter)),
-            POLYNOMIAL: lambda: _run_polynomial(tab_runs.polynomial_settings, panel, price_col),
+            DERIVED: lambda: _run_derived(settings[DERIVED], panel, price_col),
+            USER: lambda: _run_user(settings[USER], panel, price_col),
             FF5: lambda: _run_famafrench(price_col),
             ML: lambda: _run_ml(panel),
         }
@@ -662,20 +786,28 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
 
     runs = tab_runs.runs
     if not runs:
+        if cleared:
+            st.caption(
+                f"Earlier results for {target_name} were cleared because the data or a shared "
+                "setting changed, so a table never mixes rows run under different settings."
+            )
         st.caption(f"Nothing has run for {target_name} with these settings yet.")
         return
 
     st.subheader(f"Results · {target_name}")
+    st.caption(f"Every row was run under: {SETTINGS_STAMP}.")
     for name in MODEL_ORDER:
         if name in runs:
             st.markdown(_gate_line(name, runs[name].result))
     _show_table({name: run.result for name, run in runs.items()})
     _show_active_picker(role, runs, target_name)
+    _show_directional(role, runs, target_name)
 
     _show_screening(runs, target_name)
-    if POLYNOMIAL in runs:
-        with st.expander(f"Polynomial · {target_name}"):
-            _show_polynomial(runs[POLYNOMIAL])
+    for name in (DERIVED, USER):
+        if name in runs:
+            with st.expander(f"{name} · {target_name}"):
+                _show_polynomial(runs[name])
     if FF5 in runs and role == TargetRole.EQUITY:
         with st.expander(f"Fama-French 5 · {target_name}"):
             _show_famafrench(runs[FF5])

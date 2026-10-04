@@ -17,7 +17,8 @@ from forecasting_engine.validation.gates import OOS_RANK_IC_GATE, PBO_GATE
 MODEL_ORDER: tuple[str, ...] = (
     "Naive (training mean)",
     "FF5 Benchmark",
-    "Polynomial",
+    "Polynomial (derived)",
+    "Polynomial (user-supplied)",
     "Machine Learning",
 )
 """The order rows appear in; only models that ran get one."""
@@ -142,6 +143,9 @@ class ModelRunResult:
     forecast: pd.Series | None = None
     """Every fold's out-of-sample prediction, pooled end to end and indexed by
     date — captured here so a consumer can read it without re-running the model."""
+    realised: pd.Series | None = None
+    """The realised forward return on each of ``forecast``'s dates — what each
+    forecast is scored against."""
 
 
 def build_metrics_rows(

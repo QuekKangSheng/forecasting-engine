@@ -146,3 +146,69 @@ def test_the_happy_path_shows_latest_weights_summing_to_one():
     assert len(app.metric) == 2
     values = [float(m.value.strip("%")) / 100 for m in app.metric]
     assert sum(values) == pytest.approx(1.0, abs=1e-6)
+
+
+# --- FYP-19: performance against the equal-weight benchmark -------------------------
+
+
+def _happy_page() -> AppTest:
+    committed = _committed()
+    _set_active(EQUITY, forecast=_forecast(committed, seed=1))
+    _set_active(BOND, forecast=_forecast(committed, seed=2))
+    return _page(committed)
+
+
+def _comparison_table(app: AppTest) -> str:
+    return next(m.value for m in app.markdown if '<table class="fe-table"' in m.value)
+
+
+def _captions(app: AppTest) -> str:
+    return " ".join(c.value for c in app.caption)
+
+
+def test_the_four_ratios_are_shown_for_both_portfolios_side_by_side():
+    app = _happy_page()
+
+    assert not app.exception
+    table = _comparison_table(app)
+    for heading in ("Optimised", "Equal-weight benchmark", "Difference"):
+        assert f"<th>{heading}</th>" in table
+    for metric in ("Sharpe", "Sortino", "Calmar", "Max drawdown"):
+        assert f">{metric}<span" in table
+
+
+def test_the_backtest_date_range_rebalancing_and_costs_are_stated():
+    app = _happy_page()
+
+    captions = _captions(app)
+    assert "Backtest " in captions and " to " in captions
+    assert "every 10 trading days" in captions
+    assert "reset to 50/50 monthly" in captions
+    assert "3 bp equity, 5 bp bond" in captions
+    assert "S&P 500: Polynomial" in captions
+
+
+def test_after_costs_is_the_default_and_before_costs_can_be_chosen():
+    app = _happy_page()
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+    assert basis.value == "After costs"
+    net = _comparison_table(app)
+
+    basis.set_value("Before costs").run()
+
+    assert not app.exception
+    assert _comparison_table(app) != net
+
+
+def test_the_cumulative_return_chart_is_drawn_beside_the_weights_chart():
+    app = _happy_page()
+
+    # The weights bar chart and the cumulative-return line chart.
+    assert len(app.get("vega_lite_chart")) == 2
+
+
+def test_without_active_models_the_page_explains_what_will_appear():
+    app = _page(_committed())
+
+    assert any("against the equal-weight benchmark appear here" in t for t in _infos(app))
+    assert not [m for m in app.markdown if '<table class="fe-table"' in m.value]

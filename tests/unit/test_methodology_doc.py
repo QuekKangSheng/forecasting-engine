@@ -67,6 +67,7 @@ DOCUMENTED = {
     ("forecasting_engine.portfolio.backtest", "BASELINE_WEIGHTS"),
     ("forecasting_engine.portfolio.backtest", "DEFAULT_COSTS_BPS"),
     ("forecasting_engine.portfolio.backtest", "REBALANCE_FREQUENCY"),
+    ("forecasting_engine.portfolio.directional", "DEFAULT_WINDOW"),
 }
 
 
