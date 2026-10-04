@@ -1,7 +1,7 @@
 """Validating merged Bloomberg data: a pandera schema plus a plain report.
 
 Pandera enforces structure — the date column is unique, non-null and sorted;
-every data column is numeric and, for price-like columns, positive. Everything
+every data column is numeric and, for total-return index columns, positive. Everything
 a real market can legitimately produce — a duplicate date from a revision, a
 weekend row, a statistically unusual move — is reported rather than rejected, so a
 human sees it before the file is used instead of it being silently dropped.
@@ -17,11 +17,17 @@ import pandera.pandas as pa
 
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN, DATE_DISPLAY_FORMAT
 
-#: Bloomberg field mnemonics that name a price or index level. Everything else
-#: (spreads, vol, rates, ...) falls back to SANE_RANGE below. This is a rough
-#: classifier by field name, not a real per-security contract — there is no
-#: fixed set of securities here to build one against.
-PRICE_FIELD_MARKERS: tuple[str, ...] = ("PX_", "TOT_RETURN")
+#: Bloomberg field mnemonics that name a total-return index level, which must
+#: be positive. This is a rough classifier by field name, not a real
+#: per-security contract — there is no fixed set of securities here to build
+#: one against.
+POSITIVE_FIELD_MARKERS: tuple[str, ...] = ("TOT_RETURN",)
+
+#: Field mnemonics checked only for being numeric. ``PX_LAST`` is Bloomberg's
+#: last value for any series, not only prices: a curve such as ``USYC2Y10`` is
+#: negative for long stretches. Everything else (spreads, vol, rates, ...)
+#: falls back to SANE_RANGE below.
+NUMERIC_FIELD_MARKERS: tuple[str, ...] = ("PX_",)
 
 #: Robust z-score of a day-over-day change worth flagging for review. Financial
 #: returns are fat-tailed; calibration on the real ten-year exports put a useful
@@ -29,7 +35,7 @@ PRICE_FIELD_MARKERS: tuple[str, ...] = ("PX_", "TOT_RETURN")
 MAD_THRESHOLD = 8.0
 _MAD_TO_SIGMA = 0.6745
 
-#: Generic bound for columns that are not price-like. Loose on purpose — it is
+#: Generic bound for every other column. Loose on purpose — it is
 #: a sanity net against a badly wrong export, not a documented per-signal range.
 SANE_RANGE: tuple[float, float] = (-100.0, 10_000.0)
 
@@ -64,8 +70,14 @@ class ValidationReport:
         )
 
 
-def is_price_column(name: str) -> bool:
-    return any(marker in name for marker in PRICE_FIELD_MARKERS)
+def is_positive_column(name: str) -> bool:
+    return any(marker in name for marker in POSITIVE_FIELD_MARKERS)
+
+
+def is_numeric_only_column(name: str) -> bool:
+    return not is_positive_column(name) and any(
+        marker in name for marker in NUMERIC_FIELD_MARKERS
+    )
 
 
 def build_schema(columns: list[str]) -> pa.DataFrameSchema:
@@ -88,8 +100,13 @@ def build_schema(columns: list[str]) -> pa.DataFrameSchema:
     for name in columns:
         if name == DATE_COLUMN:
             continue
-        check = pa.Check.gt(0) if is_price_column(name) else pa.Check.in_range(low, high)
-        schema_columns[name] = pa.Column(float, checks=check, nullable=True, coerce=True)
+        if is_positive_column(name):
+            checks = [pa.Check.gt(0)]
+        elif is_numeric_only_column(name):
+            checks = []
+        else:
+            checks = [pa.Check.in_range(low, high)]
+        schema_columns[name] = pa.Column(float, checks=checks, nullable=True, coerce=True)
     return pa.DataFrameSchema(schema_columns)
 
 

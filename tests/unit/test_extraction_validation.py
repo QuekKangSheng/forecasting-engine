@@ -80,10 +80,29 @@ def test_large_percentage_moves_are_not_outliers_when_they_are_typical_for_the_s
     assert report.big_moves.empty
 
 
-def test_a_negative_price_column_is_a_schema_error():
-    data = frame(["2024-01-01", "2024-01-02"], A_Index_PX_LAST=[100.0, -5.0])
+def test_a_negative_total_return_index_is_a_schema_error():
+    data = frame(
+        ["2024-01-01", "2024-01-02"], SPX_Index_TOT_RETURN_INDEX_GROSS_DVDS=[100.0, -5.0]
+    )
     report = validate(data)
-    assert any("PX_LAST" in e for e in report.schema_errors)
+    assert any("TOT_RETURN_INDEX_GROSS_DVDS" in e for e in report.schema_errors)
+
+
+def test_a_negative_px_last_is_accepted_since_not_every_series_is_a_price():
+    # The 2s10s curve was inverted through 2022-24.
+    data = frame(["2022-07-05", "2022-07-06"], USYC2Y10_Index_PX_LAST=[-3.1, -12.4])
+    report = validate(data)
+    assert not report.schema_errors
+
+
+def test_px_last_is_not_held_to_the_generic_range():
+    data = frame(["2024-01-01", "2024-01-02"], NDX_Index_PX_LAST=[16_800.0, 16_900.0])
+    assert schema_errors(data) == []
+
+
+def test_text_in_a_px_last_column_is_still_a_schema_error():
+    data = frame(["2024-01-01", "2024-01-02"], A_Index_PX_LAST=["1.0", "abc"])
+    assert any("PX_LAST" in e for e in schema_errors(data))
 
 
 def test_a_non_price_column_uses_the_generic_sane_range_not_positivity():
@@ -111,14 +130,14 @@ def test_schema_errors_is_empty_for_a_clean_file():
 
 
 def test_schema_errors_names_a_bad_value():
-    data = frame(["2024-01-01", "2024-01-02"], A_Index_PX_LAST=[100.0, -5.0])
-    assert any("PX_LAST" in e for e in schema_errors(data))
+    data = frame(["2024-01-01", "2024-01-02"], A_Index_TOT_RETURN_INDEX=[100.0, -5.0])
+    assert any("TOT_RETURN_INDEX" in e for e in schema_errors(data))
 
 
 def test_schema_errors_matches_validate_report():
     # validate() delegates to schema_errors() for this field — same file,
     # same result, whichever entry point a caller uses.
-    data = frame(["2024-01-01", "2024-01-02"], A_Index_PX_LAST=[100.0, -5.0])
+    data = frame(["2024-01-01", "2024-01-02"], A_Index_TOT_RETURN_INDEX=[100.0, -5.0])
     assert validate(data).schema_errors == schema_errors(data)
 
 

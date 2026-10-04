@@ -50,8 +50,10 @@ a target is decided at ingestion, never inferred later.
   are refused (`ingest/upload.py`).
 - **Per-file schema.** Each file is checked on its own before merging
   (`extraction/validation.schema_errors`). A column whose name contains a
-  `PRICE_FIELD_MARKERS` entry must be positive; any other must lie within
-  `SANE_RANGE`. A failing file is excluded, and the good files still merge.
+  `POSITIVE_FIELD_MARKERS` entry (a total-return index) must be positive; one
+  containing a `NUMERIC_FIELD_MARKERS` entry need only be numeric, since
+  `PX_LAST` is any series' last value and a curve can be negative; any other must
+  lie within `SANE_RANGE`. A failing file is excluded, and the good files still merge.
 - **Merge.** Files are outer-joined on `Date`. Two files sharing a security are
   relabelled by file name. A column with no value on any date is dropped
   (`bloomberg_csv.drop_empty_columns`), and the drop is listed in the data quality
@@ -373,7 +375,8 @@ Values are Python literals as the code holds them.
 | Constant | Module | Value |
 |---|---|---|
 | `MAX_UPLOAD_BYTES` | `forecasting_engine.ingest.upload` | `25_000_000` |
-| `PRICE_FIELD_MARKERS` | `forecasting_engine.extraction.validation` | `("PX_", "TOT_RETURN")` |
+| `POSITIVE_FIELD_MARKERS` | `forecasting_engine.extraction.validation` | `("TOT_RETURN",)` |
+| `NUMERIC_FIELD_MARKERS` | `forecasting_engine.extraction.validation` | `("PX_",)` |
 | `SANE_RANGE` | `forecasting_engine.extraction.validation` | `(-100.0, 10_000.0)` |
 | `MAD_THRESHOLD` | `forecasting_engine.extraction.validation` | `8.0` |
 | `TARGET_TICKERS` | `forecasting_engine.extraction.targets` | `{"SPX Index": "equity", "LBUSTRUU Index": "bond"}` |
