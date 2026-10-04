@@ -200,6 +200,18 @@ def test_after_costs_is_the_default_and_before_costs_can_be_chosen():
     assert _comparison_table(app) != net
 
 
+def test_historical_var_and_cvar_are_shown_beside_max_drawdown():
+    app = _happy_page()
+
+    tables = [m.value for m in app.markdown if '<table class="fe-table"' in m.value]
+    assert len(tables) == 2
+    tail = tables[1]
+    for metric in ("1-day VaR 95%", "1-day CVaR 99%", "Max drawdown", "breach rate"):
+        assert metric in tail
+    assert any("Historical" in m.value and "Tail risk" in m.value for m in app.markdown)
+    assert "one-day losses read from the realised returns" in _captions(app)
+
+
 def test_the_cumulative_return_chart_is_drawn_beside_the_weights_chart():
     app = _happy_page()
 

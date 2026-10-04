@@ -10,6 +10,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     METRICS,
     comparison_rows,
     cumulative_paths,
+    tail_rows,
 )
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
@@ -84,3 +85,42 @@ def test_costs_lower_the_net_return_below_the_gross():
 def test_an_unknown_basis_is_refused():
     with pytest.raises(ValueError):
         comparison_rows(_backtest(), "after tax")
+
+
+# --- FYP-56: historical tail risk beside max drawdown ---------------------------------
+
+
+def test_tail_rows_show_var_and_cvar_at_both_levels_then_drawdown_and_breaches():
+    rows = tail_rows(_backtest(), "net")
+
+    assert [r.metric for r in rows] == [
+        "1-day VaR 95%",
+        "1-day CVaR 95%",
+        "1-day VaR 99%",
+        "1-day CVaR 99%",
+        "Max drawdown",
+        "VaR 95% breach rate (expected 5%)",
+        "VaR 99% breach rate (expected 1%)",
+    ]
+
+
+def test_tail_rows_read_the_backtests_own_figures_for_each_portfolio():
+    result = _backtest()
+    rows = {r.metric: r for r in tail_rows(result, "gross")}
+    optimised = result.tail_risk[("optimised", "gross")]
+    baseline = result.tail_risk[("baseline", "gross")]
+
+    assert rows["1-day VaR 95%"].optimised == f"{optimised.levels[0].var * 100:.2f}%"
+    assert rows["1-day CVaR 99%"].baseline == f"{baseline.levels[1].cvar * 100:.2f}%"
+    assert rows["Max drawdown"].optimised == comparison_rows(result, "gross")[-1].optimised
+
+
+def test_a_backtest_shorter_than_the_var_window_has_no_breach_rate():
+    rows = {r.metric: r for r in tail_rows(_backtest(), "net")}  # 120 days < 252
+
+    assert rows["VaR 95% breach rate (expected 5%)"].optimised == "—"
+
+
+def test_tail_rows_refuse_an_unknown_basis():
+    with pytest.raises(ValueError):
+        tail_rows(_backtest(), "after tax")

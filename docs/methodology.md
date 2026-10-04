@@ -26,8 +26,9 @@ flowchart TD
     K["11. Selection and PBO<br/>validation/harness, validation/pbo"] --> L
     L["12. Gates<br/>validation/gates"]
     J --> M["13. Naive baseline row<br/>models/naive"]
-    N["14. Portfolio backtest vs 50/50<br/>portfolio/backtest, portfolio/performance"]
+    N["14. Portfolio backtest vs 50/50<br/>portfolio/backtest, portfolio/performance"] --> P
     J --> O["15. Directional P&L vs buy-and-hold<br/>portfolio/directional"]
+    P["16. Historical VaR and CVaR<br/>risk/tail"]
 ```
 
 Step 14 consumes an optimiser's weight schedule rather than the steps above: it
@@ -366,9 +367,10 @@ same weights at every rebalance is the fixed-weight case.
    is undefined rather than infinite.
 
 The result is one `BacktestResult`: both daily return paths, gross and net, each
-rebalance's weights, turnover and cost, every metric, the period, the
-rebalance frequency and the active models. It is the input for display (FYP-19)
-and for the risk and significance checks (FYP-56, FYP-52).
+rebalance's weights, turnover and cost, every metric, the historical tail risk
+of §16, the period, the rebalance frequency and the active models. It is the
+input for display (FYP-19) and for the risk and significance checks (FYP-56,
+FYP-52).
 
 ## 15. Directional P&L
 
@@ -395,6 +397,33 @@ the model never trained on.
    invested** is the share of steps in the index.
 
 Everything is gross: no trading cost is charged and cash earns nothing.
+
+## 16. Historical VaR and CVaR
+
+`risk/tail.historical_tail_risk` reads Value at Risk and Conditional VaR straight
+off each backtest path's realised daily returns, gross and net, for both
+portfolios, at every confidence in `VAR_CONFIDENCES`. There is no volatility model
+and no simulation. Each result is tagged "Historical" to tell it apart from Monte
+Carlo figures, and carries the path's maximum drawdown (§14) so the two are read
+together.
+
+- **Tail.** With `n` returns and confidence `c`, the tail is the `⌈n·(1−c)⌉`
+  worst days, so every figure is a day that happened rather than an
+  interpolation between two. **VaR** is the loss on the last of those days;
+  **CVaR** is the mean loss across them, so it is never below VaR. Both are
+  one-day losses, reported as positive numbers; a tail of gains is a negative
+  loss rather than zero.
+- **Breach rate** (a validation diagnostic). Each day from the
+  `VAR_WINDOW`-th on is tested against the VaR of the `VAR_WINDOW` days before it,
+  and a loss strictly greater than that VaR is a breach. Testing days against the
+  whole period's own VaR would be circular: that VaR is by definition the loss
+  exceeded on `1 − c` of those same days, so the rate would come out near `1 − c`
+  for any strategy. A rate well above `1 − c` means the historical window
+  understated the risk that followed — typically on entering a crisis.
+
+The Portfolio page shows these under the performance table, tagged "Historical",
+for both portfolios on the chosen basis (before or after costs), with each
+path's maximum drawdown beside them.
 
 ## Parameters
 
@@ -457,3 +486,5 @@ Values are Python literals as the code holds them.
 | `BASELINE_WEIGHTS` | `forecasting_engine.portfolio.backtest` | `{"equity": 0.5, "bond": 0.5}` |
 | `DEFAULT_COSTS_BPS` | `forecasting_engine.portfolio.backtest` | `{"equity": 3.0, "bond": 5.0}` |
 | `REBALANCE_FREQUENCY` | `forecasting_engine.portfolio.backtest` | `"monthly"` |
+| `VAR_CONFIDENCES` | `forecasting_engine.risk.tail` | `(0.95, 0.99)` |
+| `VAR_WINDOW` | `forecasting_engine.risk.tail` | `252` |

@@ -253,6 +253,25 @@ TERMS: Mapping[str, str] = {
         "the last trading day of each month. The optimised portfolio has to beat "
         "this simple allocation to justify the forecasting behind it."
     ),
+    "Historical tail risk": (
+        "How bad the worst days were, read straight off the backtest's own "
+        "daily returns — no model of volatility and no simulation. Historical "
+        "means these are losses that actually happened in this backtest."
+    ),
+    "1-day VaR": (
+        "Value at Risk: a one-day loss exceeded on only 5% (or 1%) of days. A "
+        "VaR of 1.2% at 95% means 19 days in 20 lost less than 1.2%."
+    ),
+    "1-day CVaR": (
+        "Conditional VaR: the average loss on the days beyond VaR — how bad the "
+        "bad days were, not just where they start. Always at least the VaR."
+    ),
+    "Breach rate": (
+        "How often a day's loss beat the VaR measured over the year before it. "
+        "Near the expected rate means the past year was a fair guide to the "
+        "risk; well above it means risk arrived faster than history suggested, "
+        "as on entering a crisis."
+    ),
 }
 
 

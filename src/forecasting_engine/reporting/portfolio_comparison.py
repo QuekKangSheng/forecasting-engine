@@ -1,5 +1,6 @@
 """FYP-19: the optimised portfolio against the equal-weight benchmark, as rows a
-page can show side by side, and as cumulative paths a chart can draw."""
+page can show side by side, and as cumulative paths a chart can draw. FYP-56:
+the same two portfolios' historical tail risk, as rows beside max drawdown."""
 
 from __future__ import annotations
 
@@ -68,6 +69,47 @@ def cumulative_paths(result: BacktestResult, basis: str) -> pd.DataFrame:
             for name in PORTFOLIO_LABELS
         }
     )
+
+
+@dataclass(frozen=True)
+class TailRow:
+    metric: str
+    optimised: str
+    baseline: str
+
+
+def tail_rows(result: BacktestResult, basis: str) -> list[TailRow]:
+    """Historical VaR and CVaR at each confidence, max drawdown, then each VaR's
+    breach rate against what it should be, for both portfolios on ``basis``.
+    Losses are positive percentages; lower is better on every row."""
+    if basis not in BASES:
+        raise ValueError(f"basis must be one of {BASES}, got {basis!r}")
+    optimised = result.tail_risk[("optimised", basis)]
+    baseline = result.tail_risk[("baseline", basis)]
+    rows = []
+    for mine, theirs in zip(optimised.levels, baseline.levels, strict=True):
+        level = f"{mine.confidence:.0%}"
+        rows.append(TailRow(f"1-day VaR {level}", _fmt(mine.var, True), _fmt(theirs.var, True)))
+        rows.append(
+            TailRow(f"1-day CVaR {level}", _fmt(mine.cvar, True), _fmt(theirs.cvar, True))
+        )
+    rows.append(
+        TailRow(
+            "Max drawdown",
+            _fmt(optimised.max_drawdown, True),
+            _fmt(baseline.max_drawdown, True),
+        )
+    )
+    for mine, theirs in zip(optimised.levels, baseline.levels, strict=True):
+        rows.append(
+            TailRow(
+                f"VaR {mine.confidence:.0%} breach rate (expected "
+                f"{mine.expected_breach_rate:.0%})",
+                _fmt(mine.breach_rate, True),
+                _fmt(theirs.breach_rate, True),
+            )
+        )
+    return rows
 
 
 def _value(metrics: PerformanceMetrics, field: str) -> float:

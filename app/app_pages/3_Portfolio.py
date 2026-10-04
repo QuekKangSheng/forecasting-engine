@@ -31,6 +31,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     PORTFOLIO_LABELS,
     comparison_rows,
     cumulative_paths,
+    tail_rows,
 )
 from forecasting_engine.store import active_model
 from model_settings import EMBARGO_DAYS
@@ -246,3 +247,52 @@ st.caption(
 
 paths = cumulative_paths(backtest, basis) * 100
 st.line_chart(paths, x_label="Date", y_label="Cumulative return (%)")
+
+
+# --- FYP-56: historical VaR and CVaR, beside max drawdown ---------------------------
+
+TAIL_TERMS = {"1-day VaR": "1-day VaR", "1-day CVaR": "1-day CVaR", "Max drawdown": "Max drawdown"}
+
+st.markdown(
+    ui.eyebrow(
+        f"Tail risk {ui.lozenge('Historical', 'neutral')}", glossary.term("Historical tail risk")
+    ),
+    unsafe_allow_html=True,
+)
+
+
+def _tail_cell(metric: str) -> str:
+    term = next((t for prefix, t in TAIL_TERMS.items() if metric.startswith(prefix)), None)
+    term = term or "Breach rate"
+    hint = html.escape(glossary.term(term), quote=True)
+    return (
+        f'<td title="{hint}">{html.escape(metric)}'
+        f'<span class="fe-eyebrow-help" title="{hint}">i</span></td>'
+    )
+
+
+tail_header = "".join(
+    f"<th>{html.escape(h)}</th>"
+    for h in ("Metric", PORTFOLIO_LABELS["optimised"], PORTFOLIO_LABELS["baseline"])
+)
+tail_body = "".join(
+    f"<tr>{_tail_cell(row.metric)}<td>{row.optimised}</td><td>{row.baseline}</td></tr>"
+    for row in tail_rows(backtest, basis)
+)
+st.markdown(
+    f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{tail_header}</tr>'
+    f"</thead><tbody>{tail_body}</tbody></table></div>",
+    unsafe_allow_html=True,
+)
+tail = backtest.tail_risk[("optimised", basis)]
+st.caption(
+    f"{basis_label}, over the same {tail.days:,} trading days as the table above. VaR and "
+    "CVaR are one-day losses read from the realised returns, shown as positive numbers: "
+    "lower is better. Max drawdown is as in the table above. Each "
+    f"breach rate tests every day against the VaR of the {tail.window} days before it."
+    + (
+        ""
+        if tail.days > tail.window
+        else f" The backtest is too short for that ({tail.window} days are needed first)."
+    )
+)
