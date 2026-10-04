@@ -78,8 +78,9 @@ hosting step is needed.
 - **Model families**, each forecasting a 1- or 5-day forward return:
   - a naive training-mean baseline, the bar every model has to beat;
   - the Fama-French five-factor benchmark (equity only);
-  - a polynomial derived automatically from the signals, and optionally one the
-    user types in, each with its own row;
+  - a polynomial, one at a time: derived automatically from the signals, or the
+    user's own shape (placeholders pointed at signals) with only a scale and
+    intercept fitted;
   - machine learning: XGBoost and LightGBM, tuned with Optuna on a rolling
     schedule, with SHAP feature attribution.
 - **Walk-forward validation** — every model is trained on a past window and
@@ -92,7 +93,8 @@ hosting step is needed.
   DuckDB, with a confirmation step for a model that failed both gates.
 - **Directional P&L** — for one model and one index, what holding the index only
   when the forecast says it will rise would have earned against holding it
-  throughout, with hit rate and share of days invested.
+  throughout, over the whole out-of-sample period, with hit rate and share of
+  days invested.
 
 **Portfolio**
 

@@ -157,7 +157,8 @@ Every family on a target tab runs in one Run under the same shared settings —
 horizon, lag, walk-forward windows, embargo and so folds — and the results table
 states those settings above its rows. Changing any of them clears every tab's
 rows together (`app/model_runs.py`); a model's own setting (the derived
-polynomial's term cap, the user's formula) clears only that model's row. Every
+polynomial's term cap, the user's formula and the signal each placeholder stands
+for) clears only that model's row. Every
 family is optional; Run is disabled until one besides the naive baseline is
 ticked, and the naive baseline runs with every Run. The polynomial runs one
 source at a time, derived or the user's own function, each under its own row
@@ -381,7 +382,7 @@ the model never trained on.
    return; there is no window to set. A run's last `h` dates have none yet. The
    chart can be zoomed and panned.
 2. **Steps.** At `h` = 1, one call per date. At `h` = 5 the dates are stepped
-   every 5 dates from its first, so each step's 5-day return ends where the next
+   every 5 dates from the first, so each step's 5-day return ends where the next
    begins and compounding never counts a day twice. Each horizon is reported
    separately; the page shows the one its results were run under.
 3. **Strategy.** Fully invested in the index on a step whose forecast is above
