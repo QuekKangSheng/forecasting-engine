@@ -139,7 +139,8 @@ TERMS: Mapping[str, str] = {
         "Each training block screens the signals on its own history and keeps "
         "the ones that look useful, so the chosen set can differ block to "
         "block. A signal kept everywhere is robust; one kept only occasionally "
-        "is probably noise that happened to fit."
+        "is probably noise that happened to fit. A block that keeps no signal "
+        "fits nothing and forecasts its training average instead."
     ),
     "Fitted terms": (
         "The model as an equation: each term's factors, their powers, and the "

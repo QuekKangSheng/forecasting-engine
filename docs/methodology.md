@@ -143,9 +143,13 @@ date of the price each label reaches, which the splitter uses to purge.
 For the derived polynomial and machine learning, each fold screens every
 candidate signal on its own training window only (`features/screening.py`). A
 signal is kept when the absolute rank IC of the signal against the target is
-greater than `INCLUSION_THRESHOLD` (strictly). If a fold keeps no signal, it is
-fit on all of them instead. The Models page shows each signal's transform, its
-latest-fold in/out and IC, and how many folds kept it.
+greater than `INCLUSION_THRESHOLD` (strictly). If a fold keeps no signal, no
+model is fitted on it: the fold forecasts its training window's mean target for
+every row, with no terms and that mean as its intercept
+(`validation/harness.evaluate`). Fitting on the signals that just failed the gate
+would let them back in. The Models page shows each signal's transform, its
+latest-fold in/out and IC, and how many folds kept it, and says under each
+screening model how many folds had no signal pass.
 
 ## 9. Model families
 

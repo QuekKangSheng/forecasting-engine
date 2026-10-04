@@ -508,10 +508,18 @@ def test_screening_is_taken_from_ml_when_the_polynomial_did_not_screen(screened)
     ]
 
 
-def test_folds_that_fell_back_to_every_signal_are_called_out():
-    screening = ScreeningSummary(folds=8, fell_back=3, counts=(("VIX_Index_PX_LAST", 8),))
-    app = _page({EQUITY: {POLY: _polynomial_run(_result(screening))}})
-    assert "3 of 8 folds kept no signal" in _captions(app)
+def test_folds_with_no_screened_signal_are_called_out_under_each_model():
+    screening = ScreeningSummary(folds=8, fell_back=3, counts=(("VIX_Index_PX_LAST", 5),))
+    runs = {
+        POLY: _polynomial_run(_result(screening)),
+        "Machine Learning": _ml_run(_result(screening)),
+    }
+    app = _page({EQUITY: runs})
+
+    message = "3 of 8 folds had no signal pass screening; those folds forecast the training mean."
+    for heading in (f"{POLY} · S&P 500", "Machine learning · S&P 500"):
+        (expander,) = [e for e in app.expander if e.label == heading]
+        assert message in " ".join(c.value for c in expander.caption)
 
 
 def test_nothing_screened_says_so():

@@ -64,6 +64,7 @@ from forecasting_engine.reporting.model_metrics import (
     Cell,
     FoldTerms,
     ModelRunResult,
+    ScreeningSummary,
     build_metrics_rows,
 )
 from forecasting_engine.reporting.polynomial_function import (
@@ -570,11 +571,15 @@ def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> N
             hide_index=True,
             column_config={"Latest-fold IC": st.column_config.NumberColumn(format="%.4f")},
         )
-        if screening.fell_back:
-            st.caption(
-                f"{screening.fell_back} of {screening.folds} folds kept no signal after "
-                "screening, so they were fit on every signal instead."
-            )
+        _show_no_signal_folds(screening)
+
+
+def _show_no_signal_folds(screening: ScreeningSummary | None) -> None:
+    if screening is not None and screening.fell_back:
+        st.caption(
+            f"{screening.fell_back} of {screening.folds} folds had no signal pass "
+            "screening; those folds forecast the training mean."
+        )
 
 
 def _show_fold_term_count(fn: PolynomialFunction, terms: FoldTerms | None) -> None:
@@ -630,6 +635,7 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
         )
         return
     if fn.origin == Origin.DERIVED:
+        _show_no_signal_folds(run.result.screening)
         _show_fold_term_count(fn, run.result.terms)
     st.dataframe(
         term_rows(fn, label),
@@ -672,6 +678,7 @@ def _show_famafrench(run: model_runs.ModelRun) -> None:
 
 def _show_ml(run: model_runs.ModelRun) -> None:
     _show_fitted_terms(run.description, is_ml=True)
+    _show_no_signal_folds(run.result.screening)
     st.caption(
         "PBO here compares only two candidates, tuned XGBoost and tuned LightGBM, so it "
         "is coarse — read it as a rough check rather than a precise probability."

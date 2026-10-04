@@ -43,6 +43,9 @@ from forecasting_engine.validation.crash import (
 from forecasting_engine.validation.pbo import N_BLOCKS, compute_pbo
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
+TRAINING_MEAN: str = "TrainingMean"
+"""The description name of a fold that kept no signal and forecast its training mean."""
+
 
 @dataclass(frozen=True)
 class FoldScreening:
@@ -56,15 +59,13 @@ class FoldScreening:
 
     @property
     def fitted(self) -> tuple[str, ...]:
-        """The signals this fold was actually fit on.
-
-        When screening keeps nothing, the fold falls back to every candidate
-        rather than fitting on no features, so this is not always ``included``.
-        """
-        return self.included or self.candidates
+        """The signals this fold was fit on: exactly those screening kept."""
+        return self.included
 
     @property
     def fell_back(self) -> bool:
+        """Screening kept no signal, so the fold fell back to forecasting its
+        training mean rather than fitting on signals that just failed the gate."""
         return not self.included
 
 
@@ -115,8 +116,8 @@ def evaluate(
     ``features.screening.screen_over_folds``, using only that fold's own train
     window, and fits/predicts on the signals it included — the walk-forward
     re-evaluation FYP-108/110 call for. A fold whose screening excludes every
-    signal falls back to the full set rather than fitting on none. Off by
-    default: a caller whose Forecaster is given its features directly (a
+    signal fits no model: it forecasts its training window's mean target for
+    every row. Off by default: a caller whose Forecaster is given its features directly (a
     user-supplied formula, a fixed factor benchmark) has nothing for screening
     to filter.
     """
@@ -134,6 +135,9 @@ def evaluate(
                 included=tuple(s.signal for s in scores if s.included),
                 ics={s.signal: s.ic for s in scores},
             )
+            if screening.fell_back:
+                results.append(_training_mean_fold(fold, train_idx, test_idx, panel, screening))
+                continue
             # The fold is fit on exactly what's recorded, so a display built from
             # ``screening`` can't disagree with what the model actually used.
             fold_panel = replace(panel, signals=screening.fitted)
@@ -158,6 +162,33 @@ def evaluate(
             )
         )
     return tuple(results)
+
+
+def _training_mean_fold(
+    fold: int,
+    train: pd.DatetimeIndex,
+    test: pd.DatetimeIndex,
+    panel: FeaturePanel,
+    screening: FoldScreening,
+) -> FoldResult:
+    """A fold with no screened signal: the training window's mean target, for every
+    test and train row, and a description with no terms."""
+    target = panel.targets[0]
+    mean = float(panel.frame.loc[train, target].mean())
+    return FoldResult(
+        fold=fold,
+        train=train,
+        test=test,
+        predicted=pd.Series(mean, index=test, dtype=float),
+        predicted_train=pd.Series(mean, index=train, dtype=float),
+        realised=panel.frame.loc[test, target],
+        realised_train=panel.frame.loc[train, target],
+        description=ModelDescription(
+            name=TRAINING_MEAN, terms=(), coefficients=(), intercept=mean
+        ),
+        screening=screening,
+        horizon=panel.horizon,
+    )
 
 
 def summarize(
@@ -287,9 +318,9 @@ def _crash_over_folds(folds: tuple[FoldResult, ...]) -> CrashDiagnostics:
 def _screening_summary(folds: tuple[FoldResult, ...]) -> ScreeningSummary | None:
     """Count, per signal, the folds that fit it — ``None`` if no fold screened.
 
-    Counts ``fitted`` rather than ``included``: a fold that fell back fit on every
-    signal, so it counts towards each. Every candidate is listed, including one no
-    fold used, since a signal screened out everywhere is the most useful row.
+    A fold that kept no signal forecast its training mean, so it counts towards
+    none. Every candidate is listed, including one no fold used, since a signal
+    screened out everywhere is the most useful row.
     """
     screened = [f.screening for f in folds if f.screening is not None]
     if not screened:

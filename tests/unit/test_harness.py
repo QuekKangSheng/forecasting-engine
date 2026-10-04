@@ -245,24 +245,6 @@ def test_screen_false_leaves_every_signal_unfiltered():
     assert all(signals == ("strong", "flat") for signals in recorder.seen_signals)
 
 
-def test_screen_true_falls_back_to_every_signal_if_all_excluded():
-    # Both signals are constant -> both score NaN -> both excluded. A fold
-    # left with zero features would break every model family's fit(), so
-    # evaluate() must fall back to the full signal set instead.
-    idx = pd.date_range("2024-01-01", periods=40, freq="D")
-    frame = pd.DataFrame({"flat_a": 1.0, "flat_b": 2.0, "fwd_return_1d": range(40)}, index=idx)
-    panel = FeaturePanel(
-        frame=frame, signals=("flat_a", "flat_b"), targets=("fwd_return_1d",), lag_days=1
-    )
-    splitter = PurgedWalkForward(train=20, test=5, embargo=1)
-    recorder = _SignalRecordingForecaster()
-
-    evaluate(lambda: recorder, panel, splitter, screen=True)
-
-    assert recorder.seen_signals, "fixture must produce at least one fold"
-    assert all(set(signals) == {"flat_a", "flat_b"} for signals in recorder.seen_signals)
-
-
 def test_select_best_candidate_picks_the_higher_rank_ic_candidate():
     # A bigger panel than the summarize()/evaluate() tests above — PBO's CSCV
     # splits the combined strategy-return series into n_blocks pieces, so it
@@ -315,17 +297,38 @@ def test_each_fold_records_exactly_the_signals_it_was_fit_on():
     assert all(f.screening.candidates == ("strong", "flat") for f in folds)
 
 
-def test_a_fold_that_excluded_every_signal_records_that_it_fell_back():
-    # Screening kept nothing, so the fold was fit on every signal. Recording
-    # only what screening kept would claim this fold used no signals at all.
+def _no_signal_passes():
     panel = _screening_fixture({"flat_a": 1.0, "flat_b": 2.0}, n=40)
-    recorder = _SignalRecordingForecaster()
-    folds = evaluate(lambda: recorder, panel, PurgedWalkForward(20, 5, 1), screen=True)
+    made = []
 
-    for fold, seen in zip(folds, recorder.seen_signals, strict=True):
-        assert fold.screening.included == ()
+    def make():
+        made.append(_SignalRecordingForecaster())
+        return made[-1]
+
+    folds = evaluate(make, panel, PurgedWalkForward(20, 5, 1), screen=True)
+    return panel, folds, made
+
+
+def test_a_fold_with_no_screened_signal_forecasts_its_training_mean():
+    # Fitting on the signals that just failed the gate would let them back in.
+    panel, folds, _ = _no_signal_passes()
+
+    assert folds
+    for fold in folds:
+        mean = panel.frame.loc[fold.train, "fwd_return_1d"].mean()
+        assert fold.screening.included == fold.screening.fitted == ()
         assert fold.screening.fell_back
-        assert fold.screening.fitted == seen == ("flat_a", "flat_b")
+        assert (fold.predicted == mean).all()
+        assert (fold.predicted_train == mean).all()
+        assert fold.description.terms == ()
+        assert fold.description.intercept == pytest.approx(mean)
+
+
+def test_the_model_is_never_made_or_fitted_for_a_fold_with_no_screened_signal():
+    _, folds, made = _no_signal_passes()
+
+    assert folds
+    assert made == []
 
 
 def test_the_summary_counts_how_many_folds_fit_each_signal():
@@ -351,13 +354,13 @@ def test_the_most_used_signals_are_listed_first():
     assert [name for name, _ in result.screening.counts] == ["strong", "flat"]
 
 
-def test_fallback_folds_count_as_using_every_signal():
-    panel = _screening_fixture({"flat_a": 1.0, "flat_b": 2.0}, n=40)
-    folds = evaluate(_SignalRecordingForecaster, panel, PurgedWalkForward(20, 5, 1), screen=True)
+def test_folds_with_no_screened_signal_are_counted_and_use_no_signal():
+    _, folds, _ = _no_signal_passes()
     result, _ = summarize(folds)
 
     assert result.screening.fell_back == len(folds)
-    assert dict(result.screening.counts) == {"flat_a": len(folds), "flat_b": len(folds)}
+    assert dict(result.screening.counts) == {"flat_a": 0, "flat_b": 0}
+    assert result.terms.with_terms == 0
 
 
 def test_there_is_no_screening_summary_without_screening():

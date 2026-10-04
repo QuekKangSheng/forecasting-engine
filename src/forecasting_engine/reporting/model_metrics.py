@@ -58,7 +58,7 @@ class ScreeningSummary:
     """How many walk-forward folds fit each signal, for a run that screened per fold.
 
     Counts what each fold was actually fit on. A fold whose screening kept no
-    signal falls back to fitting on all of them, so it counts towards every
+    signal fits no model and forecasts its training mean, so it counts towards no
     signal here, and ``fell_back`` says how many folds did that.
     """
 
