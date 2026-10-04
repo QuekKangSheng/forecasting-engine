@@ -547,6 +547,20 @@ def test_the_clip_bounds_are_shown_beside_the_equation():
     assert "mean ± 4 standard deviations: VIX 9.5 to 31.25" in _captions(app)
 
 
+def test_a_standardised_equation_says_how_each_z_is_made():
+    standardised = replace(
+        DERIVED,
+        standardisation={"VIX_Index_PX_LAST": (18.2, 6.1), "LUACOAS_Index_PX_LAST": (1.25, 0.3)},
+    )
+    app = _page({EQUITY: {POLY: _polynomial_run(description=standardised)}})
+
+    (equation,) = [e.value for e in app.latex]
+    assert r"z_{\text{VIX}}^{2}" in equation
+    captions = _captions(app)
+    assert "z(VIX) = (VIX − 18.20) / 6.100" in captions
+    assert "z(US IG credit spread) = (US IG credit spread − 1.250) / 0.3000" in captions
+
+
 def test_the_term_table_uses_labels_not_raw_column_codes():
     table = _terms_table(_page({EQUITY: {POLY: _polynomial_run()}}))
 

@@ -15,6 +15,7 @@ from forecasting_engine.models.polynomial import (
     placeholders,
     run_derived_polynomial,
 )
+from forecasting_engine.validation.harness import evaluate
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
 
@@ -266,24 +267,76 @@ def test_derived_polynomial_scores_the_same_whatever_the_units():
     assert fits[0].corr(fits[1]) > 0.99
 
 
-def test_derived_polynomial_reports_coefficients_in_the_signals_own_units():
-    # The displayed equation is only meaningful if its coefficients apply to the
-    # raw signal, so the description must undo any internal rescaling.
+def _rebuilt(description, frame: pd.DataFrame) -> pd.Series:
+    """The described equation evaluated by hand: each term in the standardised
+    signal z = (clip(x) − mean) / sd."""
+    z = {}
+    for column, (mean, sd) in description.standardisation.items():
+        low, high = description.input_bounds[column]
+        z[column] = (frame[column].clip(low, high) - mean) / sd
+    rebuilt = pd.Series(description.intercept, index=frame.index)
+    for name, coefficient in zip(description.terms, description.coefficients, strict=True):
+        product = pd.Series(1.0, index=frame.index)
+        for part in name.split(" "):
+            column, _, power = part.partition("^")
+            product = product * z[column] ** (int(power) if power else 1)
+        rebuilt = rebuilt + coefficient * product
+    return rebuilt
+
+
+def test_the_equation_in_standardised_signals_reproduces_predict():
+    # The displayed equation is only meaningful if it is exactly what predict()
+    # computes, so the description must undo the expanded terms' rescaling.
     panel = _scaled_panel(1_000.0)
     model = DerivedPolynomial(degree=2, regularizer="lasso")
     model.fit(panel, panel.frame.index)
-    description = model.describe()
 
     idx = panel.frame.index
-    rebuilt = pd.Series(description.intercept, index=idx)
-    for name, coefficient in zip(description.terms, description.coefficients, strict=True):
-        product = pd.Series(1.0, index=idx)
-        for part in name.split(" "):
-            column, _, power = part.partition("^")
-            product = product * panel.frame[column] ** (int(power) if power else 1)
-        rebuilt = rebuilt + coefficient * product
+    np.testing.assert_allclose(
+        _rebuilt(model.describe(), panel.frame), model.predict(panel, idx), rtol=1e-9, atol=1e-12
+    )
 
-    np.testing.assert_allclose(rebuilt, model.predict(panel, idx), rtol=1e-9, atol=1e-12)
+
+def test_each_signals_mean_and_sd_are_reported_from_the_training_window():
+    panel = _scaled_panel(1_000.0)
+    train = panel.frame.index[:200]
+    model = DerivedPolynomial(degree=2, regularizer="lasso")
+    model.fit(panel, train)
+
+    x = panel.frame.loc[train, "x"]
+    assert model.describe().standardisation == {
+        "x": (pytest.approx(x.mean()), pytest.approx(x.std()))
+    }
+
+
+def _level_panel(n: int = 600, seed: int = 11) -> FeaturePanel:
+    """A level signal (like VIX, around 20) whose effect is on its distance from
+    the mean squared: raw, x and x² are near-collinear; centred, they are not."""
+    idx = pd.date_range("2020-01-01", periods=n, freq="D")
+    rng = np.random.default_rng(seed)
+    x = 20 + 5 * rng.normal(size=n)
+    target = 0.0004 * (x - 20) ** 2 + rng.normal(scale=0.002, size=n)
+    frame = pd.DataFrame({"x": x, "target": target}, index=idx)
+    return FeaturePanel(frame=frame, signals=("x",), targets=("target",), lag_days=1)
+
+
+def test_a_squared_effect_keeps_its_squared_term_with_a_stable_sign_across_folds():
+    folds = evaluate(
+        lambda: DerivedPolynomial(degree=2, regularizer="lasso"),
+        _level_panel(),
+        PurgedWalkForward(train=120, test=20, embargo=5),
+    )
+
+    assert len(folds) > 10
+    squared = [
+        dict(zip(f.description.terms, f.description.coefficients, strict=True)) for f in folds
+    ]
+    assert all("x^2" in terms for terms in squared)
+    assert all(terms["x^2"] > 0 for terms in squared)
+    # Centred, the effect sits on the squared term. Expanded raw, it is split
+    # between a large negative level term and a small square (about −0.016 x +
+    # 0.0004 x²), which reads as the opposite of what the data does.
+    assert all(abs(terms.get("x", 0.0)) < 0.5 * terms["x^2"] for terms in squared)
 
 
 def test_deriving_from_one_candidate_reports_no_pbo_rather_than_crashing():
@@ -401,7 +454,7 @@ def test_a_forecast_does_not_depend_on_the_rows_predicted_alongside_it():
     np.testing.assert_allclose(alone, batch.iloc[:5], rtol=1e-12)
 
 
-def test_the_fit_sees_each_signal_clipped_to_its_training_bounds(monkeypatch):
+def test_the_fit_sees_each_signal_clipped_then_standardised(monkeypatch):
     panel = _scaled_panel(1.0)
     frame = panel.frame.copy()
     frame.iloc[10, frame.columns.get_loc("x")] = 50.0  # ~50 SD out
@@ -419,8 +472,7 @@ def test_the_fit_sees_each_signal_clipped_to_its_training_bounds(monkeypatch):
     model.fit(panel, panel.frame.index)
 
     (fitted_on,) = seen
-    _, high = model.describe().input_bounds["x"]
-    assert fitted_on["x"].max() == pytest.approx(high)
+    assert fitted_on["x"].max() == pytest.approx(polynomial.CLIP_SD)
 
 
 def test_term_selection_and_scaling_inside_validation_see_only_earlier_rows(monkeypatch):

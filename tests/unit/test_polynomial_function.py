@@ -6,7 +6,7 @@ import pytest
 
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
-from forecasting_engine.models.polynomial import UserPolynomial
+from forecasting_engine.models.polynomial import DerivedPolynomial, UserPolynomial
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.polynomial_function import (
     MAX_EXPANDED_TERMS,
@@ -17,6 +17,7 @@ from forecasting_engine.reporting.polynomial_function import (
     from_description,
     shape_latex,
     significant,
+    standardisation_lines,
     term_rows,
     to_latex,
 )
@@ -331,6 +332,56 @@ def test_an_expanded_user_function_keeps_its_fitted_form_too():
     assert shape_latex(fn, lambda column: column) == (
         r"\hat{y} = 0.01000 - 0.5000 \cdot (2 \cdot \text{a} + 1)"
     )
+
+
+def test_a_derived_equation_in_standardised_signals_reproduces_predict():
+    rng = np.random.default_rng(5)
+    idx = pd.date_range("2024-01-01", periods=200, freq="D")
+    a, b = 20 + 5 * rng.normal(size=200), 1.5 + 0.3 * rng.normal(size=200)
+    target = 0.0004 * (a - 20) ** 2 - 0.01 * (b - 1.5) + rng.normal(scale=0.002, size=200)
+    frame = pd.DataFrame({"a": a, "b": b, "target": target}, index=idx)
+    panel = FeaturePanel(frame=frame, signals=("a", "b"), targets=("target",), lag_days=1)
+    model = DerivedPolynomial(degree=2, regularizer="lasso")
+    model.fit(panel, idx)
+    description = model.describe()
+    fn = derived(
+        description.terms, description.coefficients, description.intercept, columns=("a", "b")
+    )
+    fn = PolynomialFunction(**{**fn.__dict__, "standardisation": description.standardisation})
+
+    z = {
+        column: (frame[column].clip(*description.input_bounds[column]) - mean) / sd
+        for column, (mean, sd) in fn.standardisation.items()
+    }
+    actual = pd.Series(fn.intercept, index=idx)
+    for term in fn.terms:
+        product = pd.Series(1.0, index=idx)
+        for column, power in term.factors:
+            product = product * z[column] ** power
+        actual = actual + term.coefficient * product
+
+    assert fn.terms
+    np.testing.assert_allclose(actual, model.predict(panel, idx), rtol=1e-9, atol=1e-12)
+
+
+def test_a_standardised_equation_names_its_signals_z_and_says_how_each_is_made():
+    fn = from_description(
+        ModelDescription(
+            "DerivedPolynomial",
+            (f"{VIX}^2",),
+            (-0.0002,),
+            0.0012,
+            standardisation={VIX: (18.2, 6.1), IG: (1.25, 0.3)},
+        ),
+        origin=Origin.DERIVED,
+        target="SPX_Index_PX_LAST",
+        horizon=5,
+    )
+    label = label_for(VIX, IG)
+
+    assert to_latex(fn, label) == r"\hat{y} = 0.001200 - 0.0002000\,z_{\text{VIX}}^{2}"
+    assert term_rows(fn, label)[1]["Factor"] == "z(VIX)"
+    assert standardisation_lines(fn, label) == ["z(VIX) = (VIX − 18.20) / 6.100"]
 
 
 def test_formula_only_mode_writes_the_formula_back_with_labels():

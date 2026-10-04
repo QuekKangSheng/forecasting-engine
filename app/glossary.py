@@ -142,16 +142,19 @@ TERMS: Mapping[str, str] = {
         "on what you expect, and in the direction you expect."
     ),
     "Factor": (
-        "The signal a term is built from, by its plain-language name. Two names "
-        "joined by × is an interaction: the two multiplied together. The "
-        "(intercept) row is not a signal at all — it is the predicted return "
-        "when every signal sits at zero, the baseline the other terms adjust."
+        "The signal a term is built from, by its plain-language name. z(VIX) is "
+        "VIX standardised: how many standard deviations it sits from its "
+        "training-window mean. Two names joined by × is an interaction: the two "
+        "multiplied together. The (intercept) row is not a signal at all — it is "
+        "the predicted return when every signal sits at zero (for z, at its "
+        "mean), the baseline the other terms adjust."
     ),
     "Coefficient": (
         "How much the prediction moves per unit of that term. The sign is the "
-        "direction of the relationship; the size depends on the units of the "
-        "signal, so compare signs and relative magnitudes rather than reading "
-        "one number on its own."
+        "direction of the relationship. For a standardised signal z, the unit is "
+        "one standard deviation, so the derived polynomial's coefficients can be "
+        "compared with each other directly; otherwise the size depends on the "
+        "units of the signal."
     ),
     "Exponent": (
         "The power a factor is raised to. 1 is a straight-line effect, 2 means "

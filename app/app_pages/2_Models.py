@@ -72,6 +72,7 @@ from forecasting_engine.reporting.polynomial_function import (
     dataset_fingerprint,
     from_description,
     shape_latex,
+    standardisation_lines,
     term_rows,
     to_latex,
 )
@@ -608,6 +609,12 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
         )
     else:
         st.latex(to_latex(fn, label))
+    lines = standardisation_lines(fn, label)
+    if lines:
+        st.caption(
+            "Each signal enters standardised on the latest training window, z = "
+            "(signal − its mean) / its standard deviation: " + "; ".join(lines) + "."
+        )
     bounds = run.description.input_bounds
     if bounds:
         ranges = "; ".join(f"{label(s)} {lo:.4g} to {hi:.4g}" for s, (lo, hi) in bounds.items())

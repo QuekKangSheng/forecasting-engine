@@ -1,7 +1,8 @@
 """A fitted polynomial as a readable function: its terms, its equation and its table.
 
 ``ModelDescription`` carries a derived fit's terms as ``PolynomialFeatures`` names
-(``VIX_Index_PX_LAST^2 LUACOAS_Index_PX_LAST``) and a user-supplied fit as its
+(``VIX_Index_PX_LAST^2 LUACOAS_Index_PX_LAST``), written in each signal's
+standardised value ``z = (x − mean) / sd``, and a user-supplied fit as its
 formula with the fitted scale ``b`` and intercept ``a`` (``a + b × formula``).
 ``from_description`` turns either into the same ``PolynomialFunction``, so one
 renderer draws both.
@@ -12,7 +13,7 @@ from __future__ import annotations
 import ast
 import math
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -65,6 +66,9 @@ class PolynomialFunction:
     """A user function's fitted ``b`` in ``a + b × shape``."""
     offset: float = 0.0
     """A user function's fitted ``a`` in ``a + b × shape``."""
+    standardisation: Mapping[str, tuple[float, float]] | None = None
+    """Per signal, the ``(mean, sd)`` of ``z = (x − mean) / sd`` when the terms
+    are written in standardised signals; ``None`` when they use the signals."""
 
 
 def from_description(
@@ -109,7 +113,9 @@ def from_description(
         for name, coefficient in zip(description.terms, description.coefficients, strict=True)
     )
     intercept = 0.0 if description.intercept is None else float(description.intercept)
-    return PolynomialFunction(origin, target, horizon, intercept, terms, None)
+    return PolynomialFunction(
+        origin, target, horizon, intercept, terms, None, standardisation=description.standardisation
+    )
 
 
 def dataset_fingerprint(frame: pd.DataFrame) -> tuple:
@@ -243,7 +249,10 @@ def to_latex(fn: PolynomialFunction, label: Callable[[str], str]) -> str:
     if fn.intercept != 0 or not fn.terms:
         pieces.append((fn.intercept < 0, _latex_number(abs(fn.intercept))))
     for term in fn.terms:
-        factors = r"\,".join(_latex_factor(column, power, label) for column, power in term.factors)
+        factors = r"\,".join(
+            _latex_factor(column, power, label, standardised=fn.standardisation is not None)
+            for column, power in term.factors
+        )
         magnitude = abs(term.coefficient)
         body = factors if significant(magnitude) == significant(1.0) else (
             rf"{_latex_number(magnitude)}\,{factors}"
@@ -285,10 +294,11 @@ def term_rows(fn: PolynomialFunction, label: Callable[[str], str]) -> list[dict[
         rows.append(
             {"Factor": "(intercept)", "Exponent": "—", "Coefficient": significant(fn.intercept)}
         )
+    named = _z_label(label) if fn.standardisation is not None else label
     for term in fn.terms:
         rows.append(
             {
-                "Factor": " × ".join(label(column) for column, _ in term.factors),
+                "Factor": " × ".join(named(column) for column, _ in term.factors),
                 "Exponent": " × ".join(str(power) for _, power in term.factors),
                 "Coefficient": significant(term.coefficient),
             }
@@ -304,8 +314,35 @@ def _latex_number(value: float) -> str:
     return text.replace(_MINUS, "-")
 
 
-def _latex_factor(column: str, power: int, label: Callable[[str], str]) -> str:
+def standardisation_lines(fn: PolynomialFunction, label: Callable[[str], str]) -> list[str]:
+    """For each signal the equation uses, how its standardised value is made:
+    ``z(VIX) = (VIX − 18.20) / 6.100``."""
+    if fn.standardisation is None:
+        return []
+    used = dict.fromkeys(column for term in fn.terms for column, _ in term.factors)
+    lines = []
+    for column in used:
+        if column not in fn.standardisation:
+            continue
+        mean, sd = fn.standardisation[column]
+        sign = _MINUS if mean >= 0 else "+"
+        lines.append(
+            f"{_z_label(label)(column)} = ({label(column)} {sign} {significant(abs(mean))}) "
+            f"/ {significant(sd)}"
+        )
+    return lines
+
+
+def _z_label(label: Callable[[str], str]) -> Callable[[str], str]:
+    return lambda column: f"z({label(column)})"
+
+
+def _latex_factor(
+    column: str, power: int, label: Callable[[str], str], *, standardised: bool = False
+) -> str:
     text = rf"\text{{{_escape(label(column))}}}"
+    if standardised:
+        text = rf"z_{{{text}}}"
     return text if power == 1 else f"{text}^{{{power}}}"
 
 

@@ -35,6 +35,10 @@ class ModelDescription:
     input_bounds: Mapping[str, tuple[float, float]] | None = None
     """Per input, the ``(low, high)`` range it is clipped to before the terms
     apply, for a model that clips; ``None`` if nothing is clipped."""
+    standardisation: Mapping[str, tuple[float, float]] | None = None
+    """Per input, the ``(mean, sd)`` its terms are written in: each term uses
+    ``z = (x − mean) / sd`` of the clipped input. ``None`` if the terms use the
+    inputs as they are."""
 
     def __post_init__(self) -> None:
         if len(self.terms) != len(self.coefficients):

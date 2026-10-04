@@ -189,7 +189,11 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
   `_REGULARIZERS`); degree may never exceed `MAX_DEGREE`. Per fold:
   1. each raw signal is clipped to its training mean ± `CLIP_SD` standard
      deviations, and those bounds are shown beside the equation;
-  2. the clipped signals are expanded with `PolynomialFeatures`;
+  2. each clipped signal is standardised with the same mean and SD,
+     `z = (x − mean) / sd`, and the `z` values are expanded with
+     `PolynomialFeatures`. A level and its square move almost together (VIX and
+     VIX² correlate at about 0.995), so the penalty can't tell them apart; a
+     centred signal and its square barely correlate;
   3. the penalty is chosen by time-ordered cross-validation (`TimeSeriesSplit`,
      up to `INNER_CV_SPLITS` folds, gap = `h`, fewer folds when the window is
      short) over `_N_ALPHAS` penalties spanning a factor of `_ALPHA_EPS`, by mean
@@ -199,8 +203,11 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
      judge a penalty never help choose the terms it is judged on;
   4. the term pick and the scaler are redone on the whole training window, and
      the model is refitted there with the chosen penalty;
-  5. the coefficients are converted back to raw units for display, so the
-     equation reproduces the predictions within the clip bounds.
+  5. the coefficients are converted back from the scaled terms for display, so
+     the equation, written in the standardised signals (e.g.
+     `0.0012 + 0.0004·z_VIX − 0.0002·z_VIX²`), reproduces the predictions. Each
+     signal's mean and SD (`ModelDescription.standardisation`) are shown under
+     it, e.g. `z(VIX) = (VIX − 18.20) / 6.100`.
 
   A fold needs at least `_MIN_TRAINING_ROWS` complete rows.
 - **Machine learning** (`models/boosted.py`). XGBoost and LightGBM, each with

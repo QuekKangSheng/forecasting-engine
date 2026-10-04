@@ -251,9 +251,15 @@ _ALPHA_EPS: float = 1e-3
 
 @dataclass
 class DerivedPolynomial:
-    """Expands the panel's signals with ``PolynomialFeatures`` up to ``degree``,
-    fits a regularized linear model, and reports only the terms that survive
-    regularization (a non-zero coefficient)."""
+    """Clips and standardises the panel's signals on the training window, expands
+    them with ``PolynomialFeatures`` up to ``degree``, fits a regularized linear
+    model, and reports only the terms that survive regularization (a non-zero
+    coefficient).
+
+    Expanding standardised signals rather than raw levels matters: a level and
+    its square move almost together (VIX and VIX² correlate at about 0.995 over a
+    window), so the penalty can't tell them apart and terms swing from fold to
+    fold. A centred signal and its square barely correlate."""
 
     degree: int = 2
     regularizer: str = "lasso"
@@ -276,6 +282,7 @@ class DerivedPolynomial:
         self._model = None
         self._intercept: float | None = None
         self._bounds: tuple[pd.Series, pd.Series] | None = None
+        self._centre: tuple[pd.Series, pd.Series] | None = None
 
     def fit(self, panel: FeaturePanel, train: pd.DatetimeIndex) -> None:
         signals = list(panel.signals)
@@ -285,13 +292,15 @@ class DerivedPolynomial:
                 f"not enough complete training rows to fit a degree-{self.degree} "
                 f"polynomial (need at least {_MIN_TRAINING_ROWS}, got {len(frame)})."
             )
-        # Clipping each signal to its training mean ± CLIP_SD standard deviations
-        # is clipping its standardised value to ± CLIP_SD, done in raw units so
-        # the displayed equation stays exact inside these bounds.
+        # Each signal is clipped to its training mean ± CLIP_SD standard
+        # deviations, then standardised with the same mean and SD, so its
+        # standardised value lies within ± CLIP_SD. A signal with no spread is
+        # only centred.
         mean, sd = frame[signals].mean(), frame[signals].std()
         self._bounds = (mean - CLIP_SD * sd, mean + CLIP_SD * sd)
+        self._centre = (mean, sd.where(sd > 0, 1.0))
         x = pd.DataFrame(
-            self._poly.fit_transform(self._clip(frame[signals])),
+            self._poly.fit_transform(self._standardise(frame[signals])),
             columns=self._poly.get_feature_names_out(signals),
             index=frame.index,
         )
@@ -327,7 +336,7 @@ class DerivedPolynomial:
             return predicted
 
         expanded = pd.DataFrame(
-            self._poly.transform(self._clip(raw)),
+            self._poly.transform(self._standardise(raw)),
             columns=self._poly.get_feature_names_out(signals),
             index=raw.index,
         )[self._columns]
@@ -337,8 +346,8 @@ class DerivedPolynomial:
     def describe(self) -> ModelDescription:
         if self._model is None or self._columns is None:
             raise RuntimeError("describe() called before fit()")
-        # Back in each term's own units, so the displayed equation reproduces
-        # predict() on the raw signals.
+        # Undo the expanded terms' scaling, so the displayed equation in the
+        # standardised signals reproduces predict().
         raw = self._model.coef_ / self._scaler.scale_
         intercept = self._intercept - float(np.dot(raw, self._scaler.mean_))
         terms, coefficients = [], []
@@ -347,17 +356,21 @@ class DerivedPolynomial:
                 terms.append(term)
                 coefficients.append(float(coefficient))
         low, high = self._bounds
+        mean, sd = self._centre
         return ModelDescription(
             name=self.name,
             terms=tuple(terms),
             coefficients=tuple(coefficients),
             intercept=intercept,
             input_bounds={s: (float(low[s]), float(high[s])) for s in low.index},
+            standardisation={s: (float(mean[s]), float(sd[s])) for s in mean.index},
         )
 
-    def _clip(self, signals: pd.DataFrame) -> pd.DataFrame:
+    def _standardise(self, signals: pd.DataFrame) -> pd.DataFrame:
+        """``z = (x − mean) / sd`` of each clipped signal, with training statistics."""
         low, high = self._bounds
-        return signals.clip(lower=low, upper=high, axis=1)
+        mean, sd = self._centre
+        return (signals.clip(lower=low, upper=high, axis=1) - mean) / sd
 
 
 def _prepare(
