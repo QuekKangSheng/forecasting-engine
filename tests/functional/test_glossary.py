@@ -92,7 +92,9 @@ def test_the_controls_that_name_a_concept_explain_it(models_page, label):
 
 
 def test_the_user_supplied_function_box_explains_both_polynomials(models_page):
-    helps = _helps(models_page)
+    for radio in [r for r in models_page.radio if r.label == "Function source"]:
+        radio.set_value("Use your own function")
+    helps = _helps(models_page.run())
     (function_help,) = [h for label, h in helps.items() if label.startswith("Function")]
     assert function_help == glossary.term("Function source")
 

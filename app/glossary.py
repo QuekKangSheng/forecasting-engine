@@ -26,12 +26,12 @@ TERMS: Mapping[str, str] = {
         "a setting changed."
     ),
     "Function source": (
-        "**Derived** always runs: it searches a small grid of polynomial degrees "
-        "and regularizers and reports the best one. Regularization pushes weak "
-        "terms to exactly zero, so the result stays short enough to read.\n\n"
-        "**Your own function** is optional. It applies the exact formula you "
-        "write and gets its own row, so a view you already hold is judged "
-        "beside the derived one under the same settings."
+        "Choose one. **Derive automatically** searches a small grid of polynomial "
+        "degrees and regularizers and reports the best one. Regularization pushes "
+        "weak terms to exactly zero, so the result stays short enough to read.\n\n"
+        "**Use your own function** applies the formula you write, so a view you "
+        "already hold is judged under the same settings as every other model. "
+        "Each gets its own row, named for which kind it is."
     ),
     "Forecast horizon": (
         "How many trading days ahead to predict. Each horizon is run and "

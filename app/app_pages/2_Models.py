@@ -89,6 +89,9 @@ NAIVE, FF5, DERIVED, USER, ML = MODEL_ORDER
 
 ACTIVE_MODEL_CANDIDATES = (DERIVED, USER, ML)
 
+#: The polynomial's two sources; exactly one runs.
+DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
+
 ROLE_NAMES: dict[TargetRole, str] = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
 
 TABLE_COLUMNS: tuple[str, ...] = (
@@ -212,7 +215,7 @@ with st.expander("Settings"):
     )
 
 check_cols = st.columns(3)
-check_cols[0].checkbox("Polynomial", value=True, disabled=True)
+run_poly = check_cols[0].checkbox("Polynomial", value=True)
 run_ff5 = check_cols[1].checkbox(
     "Fama-French 5", value=True, help="An equity-factor benchmark, so it runs on Equity only."
 )
@@ -264,32 +267,66 @@ def _show_alignment(panel: FeaturePanel, target_name: str) -> None:
         )
 
 
-def _polynomial_settings(key: str, panel: FeaturePanel) -> dict[str, object]:
-    """The derived polynomial always runs; a function entered here runs beside it
-    as its own row. Each row depends only on its own setting."""
+def _kept(widget_key: str, default: object) -> object:
+    """The last value a widget held. Streamlit forgets a widget's value while it is
+    hidden, so each input is kept under its own key and restored when shown again;
+    hiding an input is then never a change of setting."""
+    return st.session_state.get(f"{widget_key}_kept", default)
+
+
+def _keep(widget_key: str, value: object) -> None:
+    st.session_state[f"{widget_key}_kept"] = value
+
+
+def _polynomial_settings(key: str, panel: FeaturePanel) -> tuple[str | None, dict[str, object]]:
+    """Which polynomial runs, if any, and each polynomial row's own setting.
+
+    Only the chosen source's input is shown. Each row depends only on its own
+    setting, so switching source or unticking clears nothing."""
+    terms_key, formula_key = f"terms_{key}", f"formula_{key}"
+    settings: dict[str, object] = {
+        DERIVED: int(_kept(terms_key, DEFAULT_MAX_TERMS)),
+        USER: str(_kept(formula_key, "")).strip(),
+    }
+    if not run_poly:
+        return None, settings
     st.markdown(
         ui.eyebrow("Polynomial", glossary.term("Function source")), unsafe_allow_html=True
     )
-    max_terms = st.number_input(
-        "Max terms per candidate (optional cap)",
-        min_value=1,
-        value=DEFAULT_MAX_TERMS,
-        step=1,
-        key=f"terms_{key}",
+    source = st.radio(
+        "Function source",
+        (DERIVE_OPTION, OWN_OPTION),
+        horizontal=True,
+        label_visibility="collapsed",
+        key=f"poly_source_{key}",
     )
-    st.caption(
-        f"The derived function always runs: it tries a small grid of degrees (1-3, of up "
-        f"to {MAX_DEGREE} allowed) and regularizers (Lasso, ElasticNet), compares them "
-        "via PBO, and reports the one with the best out-of-sample rank IC."
-    )
+    if source == DERIVE_OPTION:
+        max_terms = st.number_input(
+            "Max terms per candidate (optional cap)",
+            min_value=1,
+            value=settings[DERIVED],
+            step=1,
+            key=terms_key,
+        )
+        _keep(terms_key, int(max_terms))
+        settings[DERIVED] = int(max_terms)
+        st.caption(
+            f"Tries a small grid of degrees (1-3, of up to {MAX_DEGREE} allowed) and "
+            "regularizers (Lasso, ElasticNet), compares them via PBO, and reports the "
+            "one with the best out-of-sample rank IC."
+        )
+        return DERIVED, settings
     st.caption(f"Available signal columns: {', '.join(panel.signals)}")
     formula = st.text_input(
-        "Function (optional) — arithmetic on signal columns only, e.g. "
+        "Function — arithmetic on signal columns only, e.g. "
         "`2 * vix + credit_spread_hy ** 2`",
-        key=f"formula_{key}",
+        value=settings[USER],
+        key=formula_key,
         help=glossary.term("Function source"),
     )
-    return {DERIVED: int(max_terms), USER: formula.strip()}
+    _keep(formula_key, formula)
+    settings[USER] = formula.strip()
+    return USER, settings
 
 
 def _run_derived(max_terms: int, panel: FeaturePanel, price_col: str) -> model_runs.ModelRun:
@@ -753,11 +790,11 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     panel = align_and_lag(indexed, signal_cols, price_col, horizon=horizon, transforms=transforms)
     _show_alignment(panel, target_name)
 
-    settings = _polynomial_settings(key, panel)
+    polynomial, settings = _polynomial_settings(key, panel)
     tab_runs = model_runs.tab(stored, role, settings)
-    models = [NAIVE, DERIVED]
-    if settings[USER]:
-        models.append(USER)
+    models = [NAIVE]
+    if polynomial == DERIVED or (polynomial == USER and settings[USER]):
+        models.append(polynomial)
     # FF5 is an equity-factor benchmark, not designed to predict bond returns —
     # it would technically run and produce numbers, so it never runs here.
     if run_ff5 and role == TargetRole.EQUITY:
@@ -765,7 +802,10 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if run_ml:
         models.append(ML)
 
-    if st.button("Run", type="primary", key=f"run_{key}"):
+    if polynomial == USER and not settings[USER]:
+        st.caption("Enter a function for the user-supplied polynomial to run.")
+    nothing_to_run = models == [NAIVE]
+    if st.button("Run", type="primary", key=f"run_{key}", disabled=nothing_to_run):
         runners = {
             NAIVE: lambda: model_runs.ModelRun(*run_naive(panel, splitter)),
             DERIVED: lambda: _run_derived(settings[DERIVED], panel, price_col),
@@ -774,6 +814,11 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
             ML: lambda: _run_ml(panel),
         }
         _run(models, tab_runs, run_one=lambda name: runners[name](), target_name=target_name)
+    if nothing_to_run:
+        st.caption(
+            "Tick a model besides the naive baseline to run: the baseline is only read "
+            "against another model."
+        )
 
     runs = tab_runs.runs
     if not runs:

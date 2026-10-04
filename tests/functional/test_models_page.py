@@ -169,6 +169,26 @@ def _expander_labels(app: AppTest) -> list[str]:
     return [e.label for e in app.expander]
 
 
+DERIVE, OWN = "Derive automatically", "Use your own function"
+
+
+def _source(app: AppTest, tab: int = 0):
+    return [r for r in app.radio if r.label == "Function source"][tab]
+
+
+def _choose_own(app: AppTest) -> AppTest:
+    """Switch every tab's polynomial to the user-supplied function."""
+    for radio in [r for r in app.radio if r.label == "Function source"]:
+        radio.set_value(OWN)
+    return app.run()
+
+
+def _untick(app: AppTest, *labels: str) -> AppTest:
+    for label in labels:
+        next(c for c in app.checkbox if c.label == label).uncheck()
+    return app.run()
+
+
 # --- guards and layout -----------------------------------------------------------
 
 
@@ -196,13 +216,12 @@ def test_the_old_family_and_target_pickers_and_trials_input_are_gone():
     assert all("optuna" not in n.label.lower() for n in app.number_input)
 
 
-def test_the_model_checkboxes_default_to_every_family_with_polynomial_always_on():
+def test_the_model_checkboxes_default_to_every_family_and_none_is_compulsory():
     app = _page()
 
     boxes = {c.label: c for c in app.checkbox}
-    assert boxes["Polynomial"].value and boxes["Polynomial"].disabled
-    assert boxes["Fama-French 5"].value
-    assert boxes["Machine learning"].value
+    assert set(boxes) == {"Polynomial", "Fama-French 5", "Machine learning"}
+    assert all(box.value and not box.disabled for box in boxes.values())
 
 
 def test_settings_hold_the_horizon_windows_and_embargo():
@@ -591,7 +610,7 @@ def test_changing_a_function_clears_only_that_tabs_user_supplied_row():
         EQUITY: {POLY: _polynomial_run(), USER_POLY: _polynomial_run()},
         BOND: {POLY: _polynomial_run(), USER_POLY: _polynomial_run()},
     }
-    app = _page(tabs, bond=True)
+    app = _choose_own(_page(tabs, bond=True))
     (formula, _bond_formula) = [t for t in app.text_input if t.label.startswith("Function")]
     formula.set_value("2 * VIX_Index_PX_LAST").run()
 
@@ -609,12 +628,33 @@ def test_changing_the_term_cap_clears_only_that_tabs_derived_row():
 
 
 def test_ticking_or_unticking_a_model_clears_nothing():
-    app = _page(_two_tabs(), bond=True)
-    (ml,) = [c for c in app.checkbox if c.label == "Machine learning"]
-    ml.uncheck().run()
+    app = _untick(_page(_two_tabs(), bond=True), "Machine learning", "Polynomial")
 
     assert POLY in _stored_runs(app, EQUITY)
     assert POLY in _stored_runs(app, BOND)
+
+
+def test_switching_the_polynomial_source_clears_nothing_and_keeps_each_input():
+    tabs = {EQUITY: {POLY: _polynomial_run(), USER_POLY: _polynomial_run()}}
+    app = _page(tabs)
+    _source(app).set_value(OWN).run()
+    assert not [n for n in app.number_input if n.label.startswith("Max terms")]
+    _source(app).set_value(DERIVE).run()
+
+    assert set(_stored_runs(app)) == {POLY, USER_POLY}
+    (cap,) = [n for n in app.number_input if n.label.startswith("Max terms")]
+    assert cap.value == 10
+
+
+def test_only_the_chosen_sources_input_is_shown():
+    app = _page()
+    assert [n for n in app.number_input if n.label.startswith("Max terms")]
+    assert not [t for t in app.text_input if t.label.startswith("Function")]
+
+    _source(app).set_value(OWN).run()
+
+    assert not [n for n in app.number_input if n.label.startswith("Max terms")]
+    assert [t for t in app.text_input if t.label.startswith("Function")]
 
 
 def test_committing_a_new_dataset_clears_everything():
@@ -662,14 +702,14 @@ def _factors(dates: pd.Series) -> pd.DataFrame:
     )
 
 
-def _untick(app: AppTest, *labels: str) -> AppTest:
-    for label in labels:
-        next(c for c in app.checkbox if c.label == label).uncheck()
-    return app.run()
-
-
 def _run_equity(app: AppTest, formula: str = "2 * VIX_Index_PX_LAST") -> AppTest:
+    """Run the equity tab with ``formula`` as the user-supplied polynomial."""
+    _choose_own(app)
     next(t for t in app.text_input if t.label.startswith("Function")).set_value(formula).run()
+    return _press_run(app)
+
+
+def _press_run(app: AppTest) -> AppTest:
     next(b for b in app.button if b.label == "Run").click().run()
     return app
 
@@ -684,13 +724,13 @@ def test_run_fits_every_ticked_model_and_one_failure_does_not_stop_the_rest(
     app = _run_equity(_page())
 
     assert not app.exception
-    assert set(_stored_runs(app)) == {NAIVE, POLY, USER_POLY, "Machine Learning"}
+    assert set(_stored_runs(app)) == {NAIVE, USER_POLY, "Machine Learning"}
     assert "no route to host" in " ".join(e.value for e in app.error)
     assert len(stub_ml) == 1
 
 
 def test_the_naive_baseline_runs_every_time_on_the_polynomials_rows(stub_ml):
-    app = _run_equity(_untick(_page(), "Fama-French 5", "Machine learning"))
+    app = _press_run(_untick(_page(), "Fama-French 5", "Machine learning"))
 
     runs = _stored_runs(app)
     assert runs[NAIVE].result.rows_scored == runs[POLY].result.rows_scored
@@ -702,20 +742,61 @@ def test_an_unticked_model_is_not_run(monkeypatch, stub_ml):
     monkeypatch.setattr(fama_french, "resolve", lambda: pytest.fail("FF5 was unticked"))
     app = _run_equity(_untick(_page(), "Fama-French 5", "Machine learning"))
 
-    assert set(_stored_runs(app)) == {NAIVE, POLY, USER_POLY}
+    assert set(_stored_runs(app)) == {NAIVE, USER_POLY}
     assert not stub_ml
+
+
+def test_unticking_polynomial_runs_no_polynomial_row(monkeypatch, stub_ml):
+    monkeypatch.setattr(fama_french, "resolve", lambda: pytest.fail("FF5 was unticked"))
+    app = _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
+
+    assert not app.exception
+    assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
+    assert not [r for r in app.radio if r.label == "Function source"]
+
+
+def test_machine_learning_can_run_on_its_own(stub_ml):
+    app = _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
+
+    assert not app.exception
+    assert len(stub_ml) == 1
+    assert "Machine Learning" in _table(app)
+
+
+def test_run_is_disabled_with_nothing_but_the_baseline_ticked():
+    app = _untick(_page(), "Polynomial", "Fama-French 5", "Machine learning")
+
+    (run,) = [b for b in app.button if b.label == "Run"]
+    assert run.disabled
+    assert "Tick a model besides the naive baseline to run" in _captions(app)
+
+
+def test_run_is_disabled_on_the_bond_tab_with_only_ff5_ticked():
+    app = _untick(_page(bond=True), "Polynomial", "Machine learning")
+
+    (equity_run, bond_run) = [b for b in app.button if b.label == "Run"]
+    assert not equity_run.disabled
+    assert bond_run.disabled
+
+
+@pytest.mark.parametrize(("source", "ran"), [("derive", POLY), ("own", USER_POLY)])
+def test_only_the_chosen_polynomial_runs(stub_ml, source, ran):
+    app = _untick(_page(), "Fama-French 5", "Machine learning")
+    app = _run_equity(app) if source == "own" else _press_run(app)
+
+    assert set(_stored_runs(app)) == {NAIVE, ran}
 
 
 def test_ff5_never_runs_on_the_bond_tab(monkeypatch, stub_ml):
     monkeypatch.setattr(fama_french, "resolve", lambda: pytest.fail("FF5 ran for bonds"))
-    app = _page(bond=True)
+    app = _choose_own(_page(bond=True))
     (_equity_formula, bond_formula) = [t for t in app.text_input if t.label.startswith("Function")]
     bond_formula.set_value("2 * VIX_Index_PX_LAST").run()
     (_equity_run, bond_run) = [b for b in app.button if b.label == "Run"]
     bond_run.click().run()
 
     assert not app.exception
-    assert set(_stored_runs(app, BOND)) == {NAIVE, POLY, USER_POLY, "Machine Learning"}
+    assert set(_stored_runs(app, BOND)) == {NAIVE, USER_POLY, "Machine Learning"}
 
 
 def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch, stub_ml):
@@ -733,20 +814,20 @@ def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch, stub_
     assert "10 target dates have no factor row" in _captions(app)
 
 
-def test_a_blank_function_runs_only_the_derived_polynomial(stub_ml):
-    app = _untick(_page(), "Fama-French 5")
-    next(b for b in app.button if b.label == "Run").click().run()
+def test_a_blank_own_function_runs_no_polynomial_and_says_why(stub_ml):
+    app = _press_run(_choose_own(_untick(_page(), "Fama-French 5")))
 
     assert not app.exception
     assert not app.error
-    assert set(_stored_runs(app)) == {NAIVE, POLY, "Machine Learning"}
+    assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
+    assert "Enter a function for the user-supplied polynomial to run." in _captions(app)
 
 
 def test_a_broken_function_fails_its_own_row_but_the_rest_still_run(stub_ml):
     app = _run_equity(_untick(_page(), "Fama-French 5"), formula="2 * NOT_A_SIGNAL")
 
     assert USER_POLY in " ".join(e.value for e in app.error)
-    assert set(_stored_runs(app)) == {NAIVE, POLY, "Machine Learning"}
+    assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
 
 
 def test_ml_results_show_shap_and_the_coarse_pbo_note(stub_ml):

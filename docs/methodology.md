@@ -153,9 +153,13 @@ Every family on a target tab runs in one Run under the same shared settings —
 horizon, lag, walk-forward windows, embargo and so folds — and the results table
 states those settings above its rows. Changing any of them clears every tab's
 rows together (`app/model_runs.py`); a model's own setting (the derived
-polynomial's term cap, the user's formula) clears only that model's row. The
-derived polynomial always runs; a user polynomial runs beside it, as its own row,
-only when a formula has been entered.
+polynomial's term cap, the user's formula) clears only that model's row. Every
+family is optional; Run is disabled until one besides the naive baseline is
+ticked, and the naive baseline runs with every Run. The polynomial runs one
+source at a time, derived or the user's own function, each under its own row
+name, and switching source clears nothing. PBO is computed only within a
+family's own configurations, so which families run together never changes any
+family's result.
 
 Each family is fit per fold on the training window and predicts the test window.
 A row missing any signal a model uses is left out of that model's fitting and
