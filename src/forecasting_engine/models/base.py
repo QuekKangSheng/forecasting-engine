@@ -23,8 +23,9 @@ from forecasting_engine.ingest.align import FeaturePanel
 @dataclass(frozen=True)
 class ModelDescription:
     """What a fitted model is, in the sponsor's stated output format: terms and
-    coefficients. ``UserPolynomial`` reports the terms it was given; a fitted model
-    reports whatever survived fitting.
+    coefficients. ``UserPolynomial`` reports its formula as one term, with the
+    fitted scale as its coefficient; a fitted model reports whatever survived
+    fitting.
     """
 
     name: str

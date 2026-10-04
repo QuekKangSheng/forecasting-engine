@@ -15,6 +15,7 @@ from forecasting_engine.reporting.polynomial_function import (
     Term,
     dataset_fingerprint,
     from_description,
+    shape_latex,
     significant,
     term_rows,
     to_latex,
@@ -177,18 +178,22 @@ def test_a_user_formula_has_no_unexpanded_formula_when_it_expands():
         "+a - -b",
     ],
 )
-def test_the_expanded_terms_compute_exactly_what_the_formula_does(formula):
+def test_the_expanded_terms_compute_exactly_what_the_fitted_function_does(formula):
     # Tests the algebra, not the formatting: the expanded terms, evaluated on
-    # random data, must equal UserPolynomial's own prediction.
+    # random data, must equal the fitted UserPolynomial's own prediction.
     rng = np.random.default_rng(7)
     idx = pd.date_range("2024-01-01", periods=40, freq="D")
     frame = pd.DataFrame(
-        {name: rng.normal(size=40) for name in ("a", "b", "c")} | {"target": 0.0}, index=idx
+        {name: rng.normal(size=40) for name in ("a", "b", "c", "target")}, index=idx
     )
     panel = FeaturePanel(frame=frame, signals=("a", "b", "c"), targets=("target",), lag_days=1)
+    model = UserPolynomial(formula)
+    model.fit(panel, idx)
 
-    expected = UserPolynomial(formula).predict(panel, idx)
-    fn = user(formula)
+    expected = model.predict(panel, idx)
+    fn = from_description(
+        model.describe(), origin=Origin.USER_SUPPLIED, target="SPX_Index_PX_LAST", horizon=1
+    )
     assert fn.formula is None, "these formulas should all expand"
     actual = pd.Series(fn.intercept, index=idx)
     for term in fn.terms:
@@ -298,6 +303,34 @@ def test_a_zero_intercept_only_function_still_shows_zero():
 def test_a_scientific_coefficient_is_typeset():
     fn = derived([VIX], [0.0000123456], intercept=0.0)
     assert to_latex(fn, label_for(VIX)) == r"\hat{y} = 1.235 \times 10^{-5}\,\text{VIX}"
+
+
+def test_a_fitted_user_function_is_written_as_its_scale_and_intercept():
+    fn = from_description(
+        ModelDescription("UserPolynomial", (f"{VIX} / {IG}",), (0.0004,), -0.0012),
+        origin=Origin.USER_SUPPLIED,
+        target="SPX_Index_PX_LAST",
+        horizon=5,
+    )
+    expected = (
+        r"\hat{y} = -0.001200 + 0.0004000 \cdot (\text{VIX} / \text{US IG credit spread})"
+    )
+    assert shape_latex(fn, label_for(VIX, IG)) == expected
+    assert to_latex(fn, label_for(VIX, IG)) == expected
+
+
+def test_an_expanded_user_function_keeps_its_fitted_form_too():
+    fn = from_description(
+        ModelDescription("UserPolynomial", ("2 * a + 1",), (-0.5,), 0.01),
+        origin=Origin.USER_SUPPLIED,
+        target="SPX_Index_PX_LAST",
+        horizon=1,
+    )
+    assert as_dict(fn) == {(("a", 1),): -1.0}
+    assert fn.intercept == pytest.approx(0.01 - 0.5)
+    assert shape_latex(fn, lambda column: column) == (
+        r"\hat{y} = 0.01000 - 0.5000 \cdot (2 \cdot \text{a} + 1)"
+    )
 
 
 def test_formula_only_mode_writes_the_formula_back_with_labels():

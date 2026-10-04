@@ -55,7 +55,7 @@ class PolynomialConfigError(ValueError):
     """
 
 
-# ── UserPolynomial: applies a supplied function, no fitting ─────────────────
+# ── UserPolynomial: the user's shape, scaled to the target per fold ─────────
 
 _ALLOWED_BINOPS = {
     ast.Add: operator.add,
@@ -148,28 +148,93 @@ def _safe_eval(node: ast.AST, env: Mapping[str, pd.Series]):
 
 @dataclass
 class UserPolynomial:
-    """Applies a user-supplied function directly. ``fit`` is a no-op — FYP-43's
-    first acceptance criterion is that a valid function is applied with no
-    fitting step performed."""
+    """The user supplies the shape ``f``; each fold fits ``forecast = a + b × f`` by
+    ordinary least squares on its training rows (FYP-43 change request).
+
+    The formula alone is a signal's level, not a return: ``VIX_Index_PX_LAST``
+    would "forecast" a return of about 20. Fitting a scale and intercept puts the
+    forecast on the target's scale while the user still decides its shape.
+
+    ``bindings`` names the signal column each placeholder in ``formula`` stands
+    for; a name with no binding is read as a column itself.
+    """
 
     formula: str
+    bindings: Mapping[str, str] = field(default_factory=dict)
     name: str = field(default="UserPolynomial", init=False)
 
     def __post_init__(self) -> None:
         self._tree = _parse(self.formula)
+        self._intercept: float | None = None
+        self._slope: float | None = None
+
+    @property
+    def resolved_formula(self) -> str:
+        """The formula with every placeholder replaced by the column it stands for."""
+        return ast.unparse(_Rebind(self.bindings).visit(_parse(self.formula)))
 
     def fit(self, panel: FeaturePanel, train: pd.DatetimeIndex) -> None:
-        pass
+        f = self._shape(panel, train)
+        y = panel.frame.loc[train, panel.targets[0]]
+        both = f.notna() & y.notna()
+        if not both.any():
+            raise PolynomialConfigError(
+                "no training row has both the function's value and the target, so its "
+                "scale can't be fitted."
+            )
+        f, y = f[both], y[both]
+        variance = float(((f - f.mean()) ** 2).mean())
+        # A constant shape carries no information to scale: the fold forecasts
+        # its training mean.
+        slope = float(((f - f.mean()) * (y - y.mean())).mean()) / variance if variance else 0.0
+        self._slope = slope
+        self._intercept = float(y.mean()) - slope * float(f.mean())
 
     def predict(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> pd.Series:
+        if self._slope is None:
+            raise RuntimeError("predict() called before fit()")
+        return self._intercept + self._slope * self._shape(panel, idx)
+
+    def describe(self) -> ModelDescription:
+        if self._slope is None:
+            raise RuntimeError("describe() called before fit()")
+        return ModelDescription(
+            name=self.name,
+            terms=(self.resolved_formula,),
+            coefficients=(self._slope,),
+            intercept=self._intercept,
+        )
+
+    def _shape(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> pd.Series:
+        """``f``, the formula's own value on ``idx``."""
         env = {name: panel.frame.loc[idx, name] for name in panel.signals}
+        for placeholder, column in self.bindings.items():
+            if column not in panel.signals:
+                raise PolynomialConfigError(
+                    f"{placeholder} stands for {column!r}, which is not a signal column."
+                )
+            env[placeholder] = env[column]
         result = _safe_eval(self._tree, env)
         if isinstance(result, int | float):
             return pd.Series(float(result), index=idx)
-        return result.reindex(idx)
+        return result.reindex(idx).astype(float)
 
-    def describe(self) -> ModelDescription:
-        return ModelDescription(name=self.name, terms=(self.formula,), coefficients=(1.0,))
+
+class _Rebind(ast.NodeTransformer):
+    def __init__(self, bindings: Mapping[str, str]) -> None:
+        self.bindings = bindings
+
+    def visit_Name(self, node: ast.Name) -> ast.Name:
+        return ast.copy_location(ast.Name(self.bindings.get(node.id, node.id), node.ctx), node)
+
+
+def placeholders(formula: str) -> tuple[str, ...]:
+    """The names ``formula`` uses, in the order they first appear."""
+    names = sorted(
+        (node for node in ast.walk(_parse(formula)) if isinstance(node, ast.Name)),
+        key=lambda node: node.col_offset,
+    )
+    return tuple(dict.fromkeys(node.id for node in names))
 
 
 # ── DerivedPolynomial: PolynomialFeatures + Lasso/ElasticNet ─────────────────
@@ -383,12 +448,15 @@ for a single fit."""
 
 
 def run_user_polynomial(
-    formula: str, panel: FeaturePanel, splitter: PurgedWalkForward
+    formula: str,
+    panel: FeaturePanel,
+    splitter: PurgedWalkForward,
+    bindings: Mapping[str, str] | None = None,
 ) -> tuple[ModelRunResult, ModelDescription]:
-    """FYP-125: a user-supplied function bypasses fitting and applies directly.
-    No configuration search happens, so ``pbo`` is ``None`` — the same "no
-    configuration search" case FF5 reports."""
-    folds = evaluate(lambda: UserPolynomial(formula), panel, splitter)
+    """A user-supplied shape, scaled and shifted to the target in each fold.
+    There is one configuration and nothing to choose between, so ``pbo`` is
+    ``None`` — the same "no configuration search" case FF5 reports."""
+    folds = evaluate(lambda: UserPolynomial(formula, dict(bindings or {})), panel, splitter)
     _require_folds(folds, panel, splitter)
     return summarize(folds, pbo=None)
 

@@ -29,9 +29,12 @@ TERMS: Mapping[str, str] = {
         "Choose one. **Derive automatically** searches a small grid of polynomial "
         "degrees and regularizers and reports the best one. Regularization pushes "
         "weak terms to exactly zero, so the result stays short enough to read.\n\n"
-        "**Use your own function** applies the formula you write, so a view you "
-        "already hold is judged under the same settings as every other model. "
-        "Each gets its own row, named for which kind it is."
+        "**Use your own function** takes the shape you write, using placeholders "
+        "such as x and y that you then point at signals, and fits only a scale "
+        "and an intercept to it on each training window, so the forecast is a "
+        "return rather than a signal's level. A view you already hold is judged "
+        "under the same settings as every other model. Each gets its own row, "
+        "named for which kind it is."
     ),
     "Forecast horizon": (
         "How many trading days ahead to predict. Each horizon is run and "

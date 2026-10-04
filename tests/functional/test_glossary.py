@@ -59,7 +59,7 @@ def models_page() -> AppTest:
     fn = from_description(description, origin=Origin.DERIVED, target="SPX_Index_PX_LAST", horizon=5)
     stored = model_runs.StoredRuns((dataset_fingerprint(committed), 5, 120, 20))
     stored.tabs[TargetRole.EQUITY] = model_runs.TabRuns(
-        {"Polynomial (derived)": 10, "Polynomial (user-supplied)": ""},
+        {"Polynomial (derived)": 10, "Polynomial (user-supplied)": ("", ())},
         {"Polynomial (derived)": model_runs.ModelRun(_result(), description, function=fn)},
     )
     app = AppTest.from_file(str(MODELS_PAGE), default_timeout=30)

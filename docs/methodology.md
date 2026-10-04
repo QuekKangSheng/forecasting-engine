@@ -173,9 +173,16 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
   `_TIMEOUT_SECONDS`), falling back to the saved copy with a warning, and an
   error if there is neither. A fold needs at least `_MIN_TRAINING_ROWS` complete
   rows. No configuration search, so no PBO.
-- **User polynomial** (`models/polynomial.UserPolynomial`). The formula typed by
-  the user is applied directly to the signals, with no fitting or screening. No
-  configuration search, so no PBO.
+- **User polynomial** (`models/polynomial.UserPolynomial`). The user writes the
+  shape `f` with placeholders (`x`, `y`, ...) and picks the signal each one
+  stands for; a placeholder named after a signal column defaults to it. In each
+  fold, `forecast = a + b × f` is fitted by ordinary least squares on the
+  training rows where both `f` and the target are present, so the forecast is a
+  return rather than a signal's level. If `f` is constant there, `b` = 0 and the
+  fold forecasts its training mean. No screening. The page shows the latest
+  fold's `a + b × (formula)` and the signal table beside the box (column,
+  security, field, transform, 1-day lag, latest value after both). One
+  configuration, so no PBO.
 - **Derived polynomial** (`models/polynomial.DerivedPolynomial`). The grid is
   every degree in `CANDIDATE_DEGREES` with every regularizer in
   `CANDIDATE_REGULARIZERS` (Lasso, and ElasticNet with an L1 share of 0.5, as in

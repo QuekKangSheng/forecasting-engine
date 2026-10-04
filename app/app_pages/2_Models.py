@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 
+import pandas as pd
 import streamlit as st
 
 import bloomberg_extraction_panel
@@ -49,6 +50,7 @@ from forecasting_engine.models.polynomial import (
     MAX_DEGREE,
     DerivedPolynomial,
     PolynomialConfigError,
+    placeholders,
     run_derived_polynomial,
     run_user_polynomial,
 )
@@ -69,6 +71,7 @@ from forecasting_engine.reporting.polynomial_function import (
     PolynomialFunction,
     dataset_fingerprint,
     from_description,
+    shape_latex,
     term_rows,
     to_latex,
 )
@@ -286,7 +289,7 @@ def _polynomial_settings(key: str, panel: FeaturePanel) -> tuple[str | None, dic
     terms_key, formula_key = f"terms_{key}", f"formula_{key}"
     settings: dict[str, object] = {
         DERIVED: int(_kept(terms_key, DEFAULT_MAX_TERMS)),
-        USER: str(_kept(formula_key, "")).strip(),
+        USER: _user_function(key, str(_kept(formula_key, "")), panel),
     }
     if not run_poly:
         return None, settings
@@ -316,17 +319,96 @@ def _polynomial_settings(key: str, panel: FeaturePanel) -> tuple[str | None, dic
             "one with the best out-of-sample rank IC."
         )
         return DERIVED, settings
-    st.caption(f"Available signal columns: {', '.join(panel.signals)}")
-    formula = st.text_input(
-        "Function — arithmetic on signal columns only, e.g. "
-        "`2 * vix + credit_spread_hy ** 2`",
-        value=settings[USER],
-        key=formula_key,
-        help=glossary.term("Function source"),
-    )
-    _keep(formula_key, formula)
-    settings[USER] = formula.strip()
+    inputs, table = st.columns([2, 3])
+    with inputs:
+        formula = st.text_input(
+            "Function — write its shape with placeholders, then pick each one's signal",
+            value=str(_kept(formula_key, "")),
+            placeholder=_example(panel),
+            key=formula_key,
+            help=glossary.term("Function source"),
+        )
+        _keep(formula_key, formula)
+        settings[USER] = _user_function(key, formula, panel, show=True)
+    with table:
+        _show_signal_table(panel)
     return USER, settings
+
+
+def _example(panel: FeaturePanel) -> str:
+    """An example formula, and the first two real signals its placeholders would mean."""
+    first, *rest = panel.signals
+    if not rest:
+        return f"e.g. 2 * x, with x = {first}"
+    return f"e.g. x - 0.5 * y ** 2, with x = {first} and y = {rest[0]}"
+
+
+def _user_function(
+    key: str, formula: str, panel: FeaturePanel, *, show: bool = False
+) -> tuple[str, tuple[tuple[str, str], ...] | None]:
+    """The formula and the signal each of its placeholders stands for, or no
+    bindings if the formula can't be read (its error is shown under the box).
+
+    Each placeholder gets a dropdown of the signals. A placeholder that is already
+    a signal's column name defaults to it; the others default to the signals in
+    order, so ``x`` and ``y`` start as the first two."""
+    formula = formula.strip()
+    if not formula:
+        return "", ()
+    try:
+        names = placeholders(formula)
+    except PolynomialConfigError as exc:
+        if show:
+            st.error(f"{USER}: {exc}", icon=":material/error:")
+        return formula, None
+    signals = list(panel.signals)
+    bindings = []
+    unnamed = iter(s for s in signals if s not in names)
+    for name in names:
+        widget_key = f"bind_{key}_{name}"
+        default = name if name in signals else next(unnamed, signals[0])
+        chosen = _kept(widget_key, default)
+        if chosen not in signals:
+            chosen = default
+        if show:
+            chosen = st.selectbox(
+                f"{name} stands for",
+                signals,
+                index=signals.index(chosen),
+                format_func=lambda s: f"{label(s)} ({s})",
+                key=widget_key,
+            )
+            _keep(widget_key, chosen)
+        bindings.append((name, chosen))
+    return formula, tuple(bindings)
+
+
+def _show_signal_table(panel: FeaturePanel) -> None:
+    """The signals a function can use: what each is, and what the model sees."""
+    st.dataframe(
+        [
+            {
+                "Column": signal,
+                "Security": sources[signal].security if signal in sources else "—",
+                "Field": sources[signal].field if signal in sources else "—",
+                "Transform": str(panel.alignment[signal].transform),
+                "Lag": f"{PRODUCTION_LAG_DAYS} day",
+                "Latest value": _latest(panel.frame[signal]),
+            }
+            for signal in panel.signals
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        "Latest value is after the transform and the lag: what the function is "
+        "given, not the raw export."
+    )
+
+
+def _latest(series: pd.Series) -> str:
+    present = series.dropna()
+    return f"{present.iloc[-1]:.4g}" if len(present) else "—"
 
 
 def _run_derived(max_terms: int, panel: FeaturePanel, price_col: str) -> model_runs.ModelRun:
@@ -345,8 +427,11 @@ def _run_derived(max_terms: int, panel: FeaturePanel, price_col: str) -> model_r
     return model_runs.ModelRun(result, description, function=fn)
 
 
-def _run_user(formula: str, panel: FeaturePanel, price_col: str) -> model_runs.ModelRun:
-    result, description = run_user_polynomial(formula, panel, splitter)
+def _run_user(
+    function: tuple[str, tuple[tuple[str, str], ...]], panel: FeaturePanel, price_col: str
+) -> model_runs.ModelRun:
+    formula, bindings = function
+    result, description = run_user_polynomial(formula, panel, splitter, dict(bindings))
     fn = from_description(
         description,
         origin=Origin.USER_SUPPLIED,
@@ -515,7 +600,14 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
     fn = run.function
     st.markdown(ui.eyebrow(fn.origin, glossary.term("Fitted terms")), unsafe_allow_html=True)
     st.caption(f"Forecasts: {label(fn.target)}, {fn.horizon}-day return")
-    st.latex(to_latex(fn, label))
+    if fn.origin == Origin.USER_SUPPLIED:
+        st.latex(shape_latex(fn, label))
+        st.caption(
+            "Your function sets the shape; the scale and intercept are fitted by least "
+            "squares on each fold's training window. Shown: the latest fold's fit."
+        )
+    else:
+        st.latex(to_latex(fn, label))
     bounds = run.description.input_bounds
     if bounds:
         ranges = "; ".join(f"{label(s)} {lo:.4g} to {hi:.4g}" for s, (lo, hi) in bounds.items())
@@ -526,7 +618,7 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
     if fn.formula is not None:
         st.caption(
             "This function can't be written as separate terms and exponents (it divides "
-            "by a signal, or expands to more than 50 terms), so it's shown as entered."
+            "by a signal, or expands to more than 50 terms), so it has no term table."
         )
         return
     if fn.origin == Origin.DERIVED:
@@ -793,7 +885,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     polynomial, settings = _polynomial_settings(key, panel)
     tab_runs = model_runs.tab(stored, role, settings)
     models = [NAIVE]
-    if polynomial == DERIVED or (polynomial == USER and settings[USER]):
+    user_formula, user_bindings = settings[USER]
+    if polynomial == DERIVED or (polynomial == USER and user_formula and user_bindings is not None):
         models.append(polynomial)
     # FF5 is an equity-factor benchmark, not designed to predict bond returns —
     # it would technically run and produce numbers, so it never runs here.
@@ -802,7 +895,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if run_ml:
         models.append(ML)
 
-    if polynomial == USER and not settings[USER]:
+    if polynomial == USER and not user_formula:
         st.caption("Enter a function for the user-supplied polynomial to run.")
     nothing_to_run = models == [NAIVE]
     if st.button("Run", type="primary", key=f"run_{key}", disabled=nothing_to_run):

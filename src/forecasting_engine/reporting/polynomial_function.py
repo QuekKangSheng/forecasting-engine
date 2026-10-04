@@ -1,9 +1,10 @@
 """A fitted polynomial as a readable function: its terms, its equation and its table.
 
 ``ModelDescription`` carries a derived fit's terms as ``PolynomialFeatures`` names
-(``VIX_Index_PX_LAST^2 LUACOAS_Index_PX_LAST``) and a user-supplied fit as the
-formula string it was given. ``from_description`` turns either into the same
-``PolynomialFunction``, so one renderer draws both.
+(``VIX_Index_PX_LAST^2 LUACOAS_Index_PX_LAST``) and a user-supplied fit as its
+formula with the fitted scale ``b`` and intercept ``a`` (``a + b × formula``).
+``from_description`` turns either into the same ``PolynomialFunction``, so one
+renderer draws both.
 """
 
 from __future__ import annotations
@@ -58,6 +59,12 @@ class PolynomialFunction:
     """Empty when no term survived fitting, or in formula-only mode."""
     formula: str | None
     """Set only when a user formula couldn't be expanded into terms."""
+    shape: str | None = None
+    """A user function's formula as entered, before its fitted scale."""
+    scale: float = 1.0
+    """A user function's fitted ``b`` in ``a + b × shape``."""
+    offset: float = 0.0
+    """A user function's fitted ``a`` in ``a + b × shape``."""
 
 
 def from_description(
@@ -77,17 +84,24 @@ def from_description(
     """
     if origin is Origin.USER_SUPPLIED:
         formula = description.terms[0]
+        (scale,) = description.coefficients
+        offset = 0.0 if description.intercept is None else float(description.intercept)
         expanded = _expand_formula(formula)
         if expanded is None:
-            return PolynomialFunction(origin, target, horizon, 0.0, (), formula)
-        intercept = expanded.pop((), 0.0)
+            return PolynomialFunction(
+                origin, target, horizon, offset, (), formula, formula, scale, offset
+            )
+        expanded = _scale(expanded, scale)
+        intercept = offset + expanded.pop((), 0.0)
         terms = tuple(
             Term(coefficient, factors)
             for factors, coefficient in sorted(
                 expanded.items(), key=lambda kv: (sum(p for _, p in kv[0]), kv[0])
             )
         )
-        return PolynomialFunction(origin, target, horizon, intercept, terms, None)
+        return PolynomialFunction(
+            origin, target, horizon, intercept, terms, None, formula, scale, offset
+        )
 
     known = None if columns is None else frozenset(columns)
     terms = tuple(
@@ -223,7 +237,7 @@ def significant(value: float, digits: int = SIGNIFICANT_DIGITS) -> str:
 def to_latex(fn: PolynomialFunction, label: Callable[[str], str]) -> str:
     lead = r"\hat{y} = "
     if fn.formula is not None:
-        return lead + _latex_node(_parse(fn.formula).body, label)
+        return shape_latex(fn, label)
 
     pieces: list[tuple[bool, str]] = []  # (negative, body)
     if fn.intercept != 0 or not fn.terms:
@@ -243,6 +257,23 @@ def to_latex(fn: PolynomialFunction, label: Callable[[str], str]) -> str:
         else:
             out.append(f" - {body}" if negative else f" + {body}")
     return lead + "".join(out)
+
+
+def shape_latex(fn: PolynomialFunction, label: Callable[[str], str]) -> str:
+    """A user function as fitted: ``a + b · (formula)``, with its own formula
+    written back as entered. Without a fitted scale, the formula alone."""
+    body = _latex_node(_parse(fn.shape or fn.formula).body, label)
+    if fn.scale == 1.0 and fn.offset == 0.0:
+        return r"\hat{y} = " + body
+    sign = "-" if fn.scale < 0 else "+"
+    return (
+        rf"\hat{{y}} = {_latex_signed(fn.offset)} {sign} "
+        rf"{_latex_number(abs(fn.scale))} \cdot ({body})"
+    )
+
+
+def _latex_signed(value: float) -> str:
+    return f"-{_latex_number(abs(value))}" if value < 0 else _latex_number(value)
 
 
 def term_rows(fn: PolynomialFunction, label: Callable[[str], str]) -> list[dict[str, str]]:

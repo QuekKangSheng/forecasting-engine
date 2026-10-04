@@ -49,7 +49,7 @@ USER_POLY = "Polynomial (user-supplied)"
 #: The page's defaults: 5-day horizon, 120/20 walk-forward windows, a 10-term
 #: cap on the derived polynomial and a blank user-supplied function.
 DEFAULT_SHARED = (5, 120, 20)
-DEFAULT_MODEL_SETTINGS = {POLY: 10, USER_POLY: ""}
+DEFAULT_MODEL_SETTINGS = {POLY: 10, USER_POLY: ("", ())}
 NAIVE = "Naive (training mean)"
 
 
@@ -824,7 +824,7 @@ def test_a_blank_own_function_runs_no_polynomial_and_says_why(stub_ml):
 
 
 def test_a_broken_function_fails_its_own_row_but_the_rest_still_run(stub_ml):
-    app = _run_equity(_untick(_page(), "Fama-French 5"), formula="2 * NOT_A_SIGNAL")
+    app = _run_equity(_untick(_page(), "Fama-French 5"), formula="2 *")
 
     assert USER_POLY in " ".join(e.value for e in app.error)
     assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
@@ -846,6 +846,84 @@ def test_ml_results_show_which_tune_each_fold_used_and_the_latest_settings(stub_
     settings = next(d.value for d in app.dataframe if "Setting" in d.value.columns)
     assert dict(zip(settings["Setting"], settings["Value"], strict=True))["max_depth"] == "4"
     assert "latest tune (xgboost)" in _captions(app)
+
+
+# --- FYP-43 change request: the user's shape, scaled to the target ------------------
+
+VIX, IG = "VIX_Index_PX_LAST", "LUACOAS_Index_PX_LAST"
+
+
+def _bindings(app: AppTest) -> dict[str, str]:
+    return {s.label.split(" ")[0]: s.value for s in app.selectbox if s.label.endswith("stands for")}
+
+
+def test_each_placeholder_gets_a_signal_dropdown_starting_with_the_first_signals():
+    app = _choose_own(_page())
+    next(t for t in app.text_input if t.label.startswith("Function")).set_value("x - y ** 2").run()
+
+    assert _bindings(app) == {"x": VIX, "y": IG}
+
+
+def test_a_placeholder_named_after_a_signal_defaults_to_that_signal():
+    app = _choose_own(_page())
+    formula = next(t for t in app.text_input if t.label.startswith("Function"))
+    formula.set_value(f"{IG} + x").run()
+
+    assert _bindings(app) == {IG: IG, "x": VIX}
+
+
+def test_the_example_uses_the_first_two_real_signals():
+    app = _choose_own(_page())
+    formula = next(t for t in app.text_input if t.label.startswith("Function"))
+
+    assert formula.placeholder == f"e.g. x - 0.5 * y ** 2, with x = {VIX} and y = {IG}"
+    assert "credit_spread_hy" not in formula.placeholder
+
+
+def test_the_signal_table_lists_every_signal_with_its_transform_and_lag():
+    sources = {
+        VIX: ColumnSource("VIX Index", "PX_LAST"),
+        IG: ColumnSource("LUACOAS Index", "PX_LAST"),
+    }
+    app = _choose_own(_page(sources=sources))
+
+    table = next(d.value for d in app.dataframe if "Latest value" in d.value.columns)
+    assert table["Column"].tolist() == [VIX, IG]
+    assert table["Security"].tolist() == ["VIX Index", "LUACOAS Index"]
+    assert table["Transform"].tolist() == ["level", "level"]
+    assert set(table["Lag"]) == {"1 day"}
+
+
+def test_running_binds_each_placeholder_to_its_chosen_signal(stub_ml):
+    app = _untick(_page(), "Fama-French 5", "Machine learning")
+    app = _run_equity(app, formula="2 * x + y")
+    next(s for s in app.selectbox if s.label == "y stands for").set_value(VIX).run()
+    app = _press_run(app)
+
+    description = _stored_runs(app)[USER_POLY].description
+    assert description.terms == (f"2 * {VIX} + {VIX}",)
+    assert description.intercept is not None
+
+
+def test_changing_a_placeholders_signal_clears_only_the_user_supplied_row():
+    tabs = {EQUITY: {POLY: _polynomial_run(), USER_POLY: _polynomial_run()}}
+    app = _choose_own(_page(tabs))
+    next(t for t in app.text_input if t.label.startswith("Function")).set_value("x").run()
+    app.session_state[model_runs.RUNS_KEY].tabs[EQUITY].runs[USER_POLY] = _polynomial_run()
+    next(s for s in app.selectbox if s.label == "x stands for").set_value(IG).run()
+
+    assert set(_stored_runs(app)) == {POLY}
+
+
+def test_a_user_function_is_shown_as_its_fitted_scale_and_intercept():
+    description = ModelDescription("UserPolynomial", (f"{VIX} / {IG}",), (0.0004,), -0.0012)
+    fn = from_description(description, origin=Origin.USER_SUPPLIED, target=SPX, horizon=5)
+    run = model_runs.ModelRun(_result(pbo=None), description, function=fn)
+    app = _page({EQUITY: {USER_POLY: run}})
+
+    (equation,) = [e.value for e in app.latex]
+    assert r"-0.001200 + 0.0004000 \cdot (" in equation
+    assert "scale and intercept are fitted by least squares" in _captions(app)
 
 
 # --- FYP-161: one run, one set of settings, stated beside the results ---------------
