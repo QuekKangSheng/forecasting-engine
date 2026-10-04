@@ -212,12 +212,9 @@ with st.expander("Settings"):
         "on them, so machine learning's tuning never touches a reported result."
     )
 
-check_cols = st.columns(3)
+check_cols = st.columns(2)
 check_cols[0].checkbox("Polynomial", value=True, disabled=True)
-run_ff5 = check_cols[1].checkbox(
-    "Fama-French 5", value=True, help="An equity-factor benchmark, so it runs on Equity only."
-)
-run_ml = check_cols[2].checkbox("Machine learning", value=True)
+run_ml = check_cols[1].checkbox("Machine learning", value=True)
 
 horizon = int(horizon)
 splitter = PurgedWalkForward(
@@ -768,9 +765,16 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if settings[USER]:
         models.append(USER)
     # FF5 is an equity-factor benchmark, not designed to predict bond returns —
-    # it would technically run and produce numbers, so it never runs here.
-    if run_ff5 and role == TargetRole.EQUITY:
-        models.append(FF5)
+    # the checkbox itself only exists on the Equity tab, so Bond never offers it.
+    if role == TargetRole.EQUITY:
+        run_ff5 = st.checkbox(
+            "Fama-French 5",
+            value=True,
+            key=f"run_ff5_{key}",
+            help="An equity-factor benchmark, so it only runs here.",
+        )
+        if run_ff5:
+            models.append(FF5)
     if run_ml:
         models.append(ML)
 
@@ -800,8 +804,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         if name in runs:
             st.markdown(_gate_line(name, runs[name].result))
     _show_table({name: run.result for name, run in runs.items()})
-    _show_active_picker(role, runs, target_name)
     _show_directional(role, runs, target_name)
+    _show_active_picker(role, runs, target_name)
 
     _show_screening(runs, target_name)
     for name in (DERIVED, USER):

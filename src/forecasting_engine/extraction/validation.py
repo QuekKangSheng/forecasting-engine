@@ -23,6 +23,14 @@ from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN, DATE_DISPLA
 #: fixed set of securities here to build one against.
 PRICE_FIELD_MARKERS: tuple[str, ...] = ("PX_", "TOT_RETURN")
 
+#: Tickers whose PX_LAST is a yield, spread or curve rather than a true price
+#: — Bloomberg reuses PX_LAST generically, so PRICE_FIELD_MARKERS alone wrongly
+#: forces these positive (a 2s10s spread or a breakeven rate can go negative).
+#: The same three tickers are already DIFFERENCE rather than LOG_RETURN in
+#: ingest.align.TICKER_TRANSFORMS for this reason; duplicated here rather than
+#: imported, since extraction must not depend on the later ingest stage.
+NON_PRICE_TICKERS: tuple[str, ...] = ("USYC2Y10", "USGG10YR", "USGGBE10")
+
 #: Robust z-score of a day-over-day change worth flagging for review. Financial
 #: returns are fat-tailed; calibration on the real ten-year exports put a useful
 #: review volume at eight rather than the textbook three.
@@ -31,7 +39,10 @@ _MAD_TO_SIGMA = 0.6745
 
 #: Generic bound for columns that are not price-like. Loose on purpose — it is
 #: a sanity net against a badly wrong export, not a documented per-signal range.
-SANE_RANGE: tuple[float, float] = (-100.0, 10_000.0)
+#: The lower bound allows for a deep yield-curve inversion (2s10s has gone
+#: below -100 bps historically), not just the small negative spreads typical
+#: of breakeven rates.
+SANE_RANGE: tuple[float, float] = (-300.0, 10_000.0)
 
 #: How many offending dates a report names outright. ``duplicate_dates`` and
 #: ``weekend_rows`` stay exact counts; a file with thousands of weekend rows
@@ -65,6 +76,8 @@ class ValidationReport:
 
 
 def is_price_column(name: str) -> bool:
+    if any(name.startswith(ticker) for ticker in NON_PRICE_TICKERS):
+        return False
     return any(marker in name for marker in PRICE_FIELD_MARKERS)
 
 

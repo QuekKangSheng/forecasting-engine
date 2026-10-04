@@ -15,6 +15,7 @@ _ROW = re.compile(r"^\| `(?P<name>\w+)` \| `(?P<module>[\w.]+)` \| `(?P<value>.+
 DOCUMENTED = {
     ("forecasting_engine.ingest.upload", "MAX_UPLOAD_BYTES"),
     ("forecasting_engine.extraction.validation", "PRICE_FIELD_MARKERS"),
+    ("forecasting_engine.extraction.validation", "NON_PRICE_TICKERS"),
     ("forecasting_engine.extraction.validation", "SANE_RANGE"),
     ("forecasting_engine.extraction.validation", "MAD_THRESHOLD"),
     ("forecasting_engine.extraction.targets", "TARGET_TICKERS"),
