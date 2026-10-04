@@ -736,6 +736,7 @@ def _confirm_high_risk(
     target_name: str,
 ) -> None:
     failed_text = " and ".join(GATE_NAMES[g] for g in failed)
+    pending_key = f"pending_active_{role.value}"
     st.warning(
         f"{model_name} failed both promotion gates ({failed_text}) for {target_name}. "
         "Setting it active anyway means portfolio evaluation will use a model that "
@@ -747,8 +748,10 @@ def _confirm_high_risk(
         active_model.set_active_model(
             role, model_name, result, high_risk=True, **ACTIVE_SETTINGS
         )
+        st.session_state.pop(pending_key, None)
         st.rerun()
     if cols[1].button("Cancel", key=f"cancel_{role.value}"):
+        st.session_state.pop(pending_key, None)
         st.rerun()
 
 
@@ -775,16 +778,24 @@ def _show_active_picker(
         key=f"active_select_{key}",
         label_visibility="collapsed",
     )
+    # A pending confirmation is kept in session state: its buttons are clicked on
+    # a later run, when "Set as active" no longer reads as pressed.
+    pending_key = f"pending_active_{key}"
     if cols[1].button("Set as active", key=f"set_active_{key}"):
         result = runs[selected].result
-        outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
-        if is_high_risk(outcome):
-            _confirm_high_risk(role, selected, result, outcome.failed_gates, target_name)
+        if is_high_risk(evaluate_candidate(result.oos_rank_ic, result.pbo)):
+            st.session_state[pending_key] = selected
         else:
+            st.session_state.pop(pending_key, None)
             active_model.set_active_model(
                 role, selected, result, high_risk=False, **ACTIVE_SETTINGS
             )
             st.rerun()
+    pending = st.session_state.get(pending_key)
+    if pending in runs:
+        result = runs[pending].result
+        outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
+        _confirm_high_risk(role, pending, result, outcome.failed_gates, target_name)
 
 
 def _directional_default(role: TargetRole, options: list[str], runs) -> int:

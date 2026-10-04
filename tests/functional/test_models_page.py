@@ -459,6 +459,27 @@ def test_a_high_risk_model_asks_for_confirmation_before_being_set_active():
     assert active_model.get_active_model(EQUITY) is None
 
 
+def test_confirming_a_high_risk_model_sets_it_active():
+    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+    next(b for b in app.button if b.label == "Set active anyway").click().run()
+
+    assert not app.exception
+    active = active_model.get_active_model(EQUITY)
+    assert active is not None and active.model_name == POLY and active.high_risk
+
+
+def test_cancelling_a_high_risk_model_leaves_nothing_active():
+    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+    next(b for b in app.button if b.label == "Cancel").click().run()
+
+    assert active_model.get_active_model(EQUITY) is None
+    assert not any("failed both promotion gates" in w.value for w in app.warning)
+
+
 def test_a_model_that_only_fails_one_gate_is_not_treated_as_high_risk():
     one_gate_failing = _result(oos_rank_ic=0.01, pbo=0.3)
     app = _page({EQUITY: {POLY: _polynomial_run(one_gate_failing)}})
