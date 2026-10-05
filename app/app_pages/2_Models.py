@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -818,7 +819,8 @@ def _show_directional(
     role: TargetRole, runs: dict[str, model_runs.ModelRun], target_name: str
 ) -> None:
     """FYP-162: holding the index only when the forecast says it will rise, against
-    holding it throughout, over the run's whole out-of-sample period."""
+    holding it throughout, over the run's whole out-of-sample period, or over a
+    window dragged out on the chart."""
     options = [
         n
         for n in MODEL_ORDER
@@ -839,19 +841,40 @@ def _show_directional(
     )
     result = runs[name].result
     try:
-        pnl = directional_pnl(result.forecast, result.realised, horizon=horizon)
+        whole = directional_pnl(result.forecast, result.realised, horizon=horizon)
     except DirectionalDataError as exc:
         st.info(str(exc), icon=":material/info:")
         return
 
+    event = st.altair_chart(
+        _pnl_chart(whole, brush=True),
+        on_select="rerun",
+        selection_mode="window",
+        key=f"pnl_chart_{key}_{name}",
+    )
+    window = _chosen_window(event)
+    pnl = whole
+    if window is not None:
+        try:
+            pnl = directional_pnl(
+                result.forecast, result.realised, horizon=horizon, start=window[0], end=window[1]
+            )
+        except DirectionalDataError:
+            window = None
+
     steps = (
         "one call per day" if horizon == 1 else f"one call every {horizon} days, never overlapping"
     )
+    span = (
+        f"the chosen window of {pnl.days} out-of-sample trading days"
+        if window is not None
+        else f"all {pnl.days} out-of-sample trading days"
+    )
     st.caption(
-        f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: all {pnl.days} "
-        f"out-of-sample trading days, {pnl.calls} calls ({steps}). "
-        "Gross of transaction costs; cash earns nothing. On the chart, scroll to zoom, "
-        "drag to pan and double-click to reset."
+        f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: {span}, {pnl.calls} "
+        f"calls ({steps}). Gross of transaction costs; cash earns nothing. Drag across the "
+        "chart to pick a window: the figures below are recomputed for it, starting from "
+        "zero on its first day. Double-click the chart to go back to the whole period."
     )
     metric_cols = st.columns(4)
     metric_cols[0].metric(
@@ -872,14 +895,8 @@ def _show_directional(
     metric_cols[3].metric(
         "Days invested", f"{pnl.share_invested:.0%}", help=glossary.term("Days invested")
     )
-    st.line_chart(
-        {
-            "Long/cash strategy": pnl.strategy_cumulative * 100,
-            "Buy and hold": pnl.buy_and_hold_cumulative * 100,
-        },
-        x_label="Forecast date",
-        y_label="Cumulative return (%)",
-    )
+    if window is not None:
+        st.altair_chart(_pnl_chart(pnl, brush=False), key=f"pnl_window_chart_{key}_{name}")
     if pnl.no_forecast:
         st.caption(
             f"{pnl.no_forecast} of {pnl.calls} calls had no forecast (a signal was "
@@ -892,6 +909,57 @@ def _show_directional(
             f"switch to {other} {'day' if other == 1 else 'days'} in Settings and run "
             "again to see it."
         )
+
+
+#: The interval a reader drags across the Directional P&L chart.
+PNL_WINDOW = "window"
+
+
+def _pnl_chart(pnl, *, brush: bool) -> alt.Chart:
+    """Both cumulative returns, in percent. With ``brush``, dragging across the
+    chart selects a window of dates, read back by ``_chosen_window``."""
+    frame = pd.DataFrame(
+        {
+            "Long/cash strategy": pnl.strategy_cumulative * 100,
+            "Buy and hold": pnl.buy_and_hold_cumulative * 100,
+        }
+    )
+    long = (
+        frame.rename_axis("Forecast date")
+        .reset_index()
+        .melt("Forecast date", var_name="Series", value_name="Cumulative return (%)")
+    )
+    chart = (
+        alt.Chart(long)
+        .mark_line()
+        .encode(
+            x=alt.X("Forecast date:T"),
+            y=alt.Y("Cumulative return (%):Q"),
+            color=alt.Color("Series:N", legend=alt.Legend(title=None, orient="bottom")),
+            tooltip=[
+                alt.Tooltip("Forecast date:T", format="%d %b %Y"),
+                "Series:N",
+                alt.Tooltip("Cumulative return (%):Q", format=".1f"),
+            ],
+        )
+        .properties(height=320)
+    )
+    if brush:
+        chart = chart.add_params(alt.selection_interval(name=PNL_WINDOW, encodings=["x"]))
+    return chart
+
+
+def _chosen_window(event) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    """The dates dragged out on the Directional P&L chart, or ``None`` for none."""
+    chosen = (getattr(event, "selection", None) or {}).get(PNL_WINDOW) or {}
+    bounds = chosen.get("Forecast date")
+    if not bounds or len(bounds) != 2:
+        return None
+    start, end = (
+        pd.to_datetime(v, unit="ms") if isinstance(v, int | float) else pd.to_datetime(v)
+        for v in bounds
+    )
+    return (start, end) if start < end else None
 
 
 def _render_tab(role: TargetRole, price_col: str) -> None:

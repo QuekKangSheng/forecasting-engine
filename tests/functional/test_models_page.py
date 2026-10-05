@@ -1071,7 +1071,7 @@ def test_the_directional_check_replays_the_whole_period_with_no_window_to_set():
     assert not [n for n in app.number_input if "Window" in n.label]
     captions = _captions(app)
     assert "all 100 out-of-sample trading days" in captions
-    assert "scroll to zoom, drag to pan and double-click to reset" in captions
+    assert "Drag across the chart to pick a window" in captions
 
 
 def test_the_directional_check_says_how_to_see_the_other_horizon():

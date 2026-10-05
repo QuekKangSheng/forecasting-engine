@@ -78,9 +78,15 @@ def directional_pnl(
     realised: pd.Series,
     *,
     horizon: int,
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
 ) -> DirectionalResult:
-    """The long/cash strategy and buy-and-hold over every one of ``forecast``'s
-    out-of-sample dates, stepped every ``horizon`` days.
+    """The long/cash strategy and buy-and-hold over ``forecast``'s out-of-sample
+    dates, stepped every ``horizon`` days from the first.
+
+    Every date is replayed unless ``start`` and ``end`` pick a window of them
+    (both inclusive); the steps then begin at the window's first date, so the
+    window reads as if it were the whole period.
 
     Only dates with a realised return count: the last ``horizon`` dates of a run
     have none yet. A date with a realised return but no forecast is held in cash.
@@ -91,9 +97,12 @@ def directional_pnl(
         {"forecast": forecast, "realised": realised.reindex(forecast.index)}
     ).sort_index()
     frame = frame[frame["realised"].notna()]
+    if start is not None or end is not None:
+        frame = frame.loc[start:end]
     if frame.empty:
         raise DirectionalDataError(
-            "This run has no out-of-sample day with a realised return to compare against."
+            "This run has no out-of-sample day with a realised return to compare against"
+            + (" in the chosen window." if start is not None or end is not None else ".")
         )
 
     steps = frame.iloc[::horizon]

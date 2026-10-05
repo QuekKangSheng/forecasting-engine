@@ -181,6 +181,31 @@ def test_every_out_of_sample_date_is_replayed():
     assert result.end == forecast.index[-1]
 
 
+def test_a_window_is_replayed_as_if_it_were_the_whole_period():
+    forecast = _series(np.arange(30, dtype=float) + 1)
+    realised = _series(np.arange(30, dtype=float) / 100)
+    start, end = forecast.index[7], forecast.index[21]
+
+    result = directional_pnl(forecast, realised, horizon=5, start=start, end=end)
+
+    assert result.start == start and result.end == forecast.index[17]
+    assert result.days == 15
+    assert result.buy_and_hold.tolist() == [0.07, 0.12, 0.17]
+    assert result.strategy_cumulative.iloc[0] == pytest.approx(0.07)
+
+
+def test_a_window_with_no_realised_return_says_so():
+    forecast = _series([0.01] * 5)
+    with pytest.raises(DirectionalDataError, match="chosen window"):
+        directional_pnl(
+            forecast,
+            _series([0.01] * 5),
+            horizon=1,
+            start=pd.Timestamp("2030-01-01"),
+            end=pd.Timestamp("2030-02-01"),
+        )
+
+
 def test_dates_awaiting_a_realised_return_are_not_counted_as_replayed():
     realised = _series([0.01] * 8 + [np.nan] * 2)
 
