@@ -384,10 +384,11 @@ against (`ModelRunResult.forecast`, `.realised`), so every day replayed is one
 the model never trained on.
 
 1. **Period.** Every out-of-sample date the run produced that has a realised
-   return; a run's last `h` dates have none yet. Dragging across the chart picks
-   a window of those dates (`start`, `end`), and every figure is recomputed for
+   return; a run's last `h` dates have none yet. A slider narrows this to a
+   window of those dates (`start`, `end`), and every figure is recomputed for
    it, as if it were the whole period: steps begin on its first date and both
-   cumulative returns start from zero there.
+   cumulative returns start from zero there. The chart zooms and pans in the
+   browser alone, so it never reruns the page.
 2. **Steps.** At `h` = 1, one call per date. At `h` = 5 the dates are stepped
    every 5 dates from the first, so each step's 5-day return ends where the next
    begins and compounding never counts a day twice. Each horizon is reported

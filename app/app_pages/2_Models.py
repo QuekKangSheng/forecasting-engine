@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import html
 
-import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -463,10 +462,45 @@ def _run_ml(panel: FeaturePanel) -> model_runs.ModelRun:
     return model_runs.ModelRun(result, description, tuning=tuning)
 
 
+def _pending_key(target_name: str) -> str:
+    return f"pending_run_{target_name}"
+
+
+def _show_interrupted_run(target_name: str) -> None:
+    """Say which models a Run never finished, rather than dropping them silently.
+
+    Any click on the page while models are fitting (a checkbox, a slider, the
+    other tab's Run) reruns the page, and Streamlit stops the Run part-way."""
+    unfinished = st.session_state.pop(_pending_key(target_name), None)
+    if unfinished:
+        st.warning(
+            f"The last Run for {target_name} was stopped before {', '.join(unfinished)} "
+            "finished, because something on the page was clicked while it ran. Press Run "
+            "again and leave the page alone until every model shows as done.",
+            icon=":material/warning:",
+        )
+
+
+def _errors_key(target_name: str) -> str:
+    return f"run_errors_{target_name}"
+
+
 def _run(models: list[str], runs: model_runs.TabRuns, *, run_one, target_name: str) -> None:
-    """Fit each model in turn, each in its own status box. One failing never stops the rest."""
-    for name in models:
-        with st.status(f"{name} · {target_name}", expanded=False) as status:
+    """Fit each model in turn. One failing never stops the rest.
+
+    The loop makes no Streamlit call between models: a click made meanwhile is
+    held until the next call (``fastReruns`` is off), so it can't cut the Run
+    short after one model and drop the rest. That is also why progress is one
+    spinner rather than a status box per model, and why errors are kept in
+    session state and shown once the loop is done."""
+    pending = st.session_state[_pending_key(target_name)] = list(models)
+    errors: dict[str, str] = {}
+    st.session_state[_errors_key(target_name)] = errors
+    with st.spinner(
+        f"Fitting {', '.join(models)} for {target_name}. Machine learning can take about "
+        "ten minutes; anything clicked meanwhile waits until the Run is done."
+    ):
+        for name in models:
             try:
                 runs.runs[name] = run_one(name)
             except (
@@ -483,10 +517,15 @@ def _run(models: list[str], runs: model_runs.TabRuns, *, run_one, target_name: s
                         "the Fama-French factors could not be downloaded and none are "
                         f"saved, so FF5 was not run: {message}"
                     )
-                st.error(f"{name}: {message}", icon=":material/error:")
-                status.update(label=f"{name} · {target_name} · failed", state="error")
-            else:
-                status.update(label=f"{name} · {target_name} · done", state="complete")
+                errors[name] = message
+            pending.remove(name)
+    st.session_state.pop(_pending_key(target_name), None)
+
+
+def _show_run_errors(target_name: str) -> None:
+    """The last Run's model errors, until the page is next rerun."""
+    for name, message in st.session_state.pop(_errors_key(target_name), {}).items():
+        st.error(f"{name}: {message}", icon=":material/error:")
 
 
 def _header_html(column: str) -> str:
@@ -846,21 +885,29 @@ def _show_directional(
         st.info(str(exc), icon=":material/info:")
         return
 
-    event = st.altair_chart(
-        _pnl_chart(whole, brush=True),
-        on_select="rerun",
-        selection_mode="window",
-        key=f"pnl_chart_{key}_{name}",
+    # A slider rather than a selection on the chart: dragging on a chart is what
+    # a reader does to pan it, and every chart event reruns the page, which
+    # silently cuts short any Run still in progress.
+    first, last = whole.strategy.index[0].date(), whole.strategy.index[-1].date()
+    start, end = st.slider(
+        "Window",
+        min_value=first,
+        max_value=last,
+        value=(first, last),
+        format="DD/MM/YYYY",
+        key=f"pnl_window_{key}_{name}",
+        help=glossary.term("P&L window"),
     )
-    window = _chosen_window(event)
+    window = None if (start, end) == (first, last) else (pd.Timestamp(start), pd.Timestamp(end))
     pnl = whole
     if window is not None:
         try:
             pnl = directional_pnl(
                 result.forecast, result.realised, horizon=horizon, start=window[0], end=window[1]
             )
-        except DirectionalDataError:
-            window = None
+        except DirectionalDataError as exc:
+            st.info(str(exc), icon=":material/info:")
+            return
 
     steps = (
         "one call per day" if horizon == 1 else f"one call every {horizon} days, never overlapping"
@@ -872,9 +919,10 @@ def _show_directional(
     )
     st.caption(
         f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: {span}, {pnl.calls} "
-        f"calls ({steps}). Gross of transaction costs; cash earns nothing. Drag across the "
-        "chart to pick a window: the figures below are recomputed for it, starting from "
-        "zero on its first day. Double-click the chart to go back to the whole period."
+        f"calls ({steps}). Gross of transaction costs; cash earns nothing. Narrow the "
+        "window with the slider: every figure and the chart are recomputed for it, starting "
+        "from zero on its first day. On the chart, scroll to zoom, drag to pan and "
+        "double-click to reset."
     )
     metric_cols = st.columns(4)
     metric_cols[0].metric(
@@ -895,8 +943,14 @@ def _show_directional(
     metric_cols[3].metric(
         "Days invested", f"{pnl.share_invested:.0%}", help=glossary.term("Days invested")
     )
-    if window is not None:
-        st.altair_chart(_pnl_chart(pnl, brush=False), key=f"pnl_window_chart_{key}_{name}")
+    st.line_chart(
+        {
+            "Long/cash strategy": pnl.strategy_cumulative * 100,
+            "Buy and hold": pnl.buy_and_hold_cumulative * 100,
+        },
+        x_label="Forecast date",
+        y_label="Cumulative return (%)",
+    )
     if pnl.no_forecast:
         st.caption(
             f"{pnl.no_forecast} of {pnl.calls} calls had no forecast (a signal was "
@@ -909,57 +963,6 @@ def _show_directional(
             f"switch to {other} {'day' if other == 1 else 'days'} in Settings and run "
             "again to see it."
         )
-
-
-#: The interval a reader drags across the Directional P&L chart.
-PNL_WINDOW = "window"
-
-
-def _pnl_chart(pnl, *, brush: bool) -> alt.Chart:
-    """Both cumulative returns, in percent. With ``brush``, dragging across the
-    chart selects a window of dates, read back by ``_chosen_window``."""
-    frame = pd.DataFrame(
-        {
-            "Long/cash strategy": pnl.strategy_cumulative * 100,
-            "Buy and hold": pnl.buy_and_hold_cumulative * 100,
-        }
-    )
-    long = (
-        frame.rename_axis("Forecast date")
-        .reset_index()
-        .melt("Forecast date", var_name="Series", value_name="Cumulative return (%)")
-    )
-    chart = (
-        alt.Chart(long)
-        .mark_line()
-        .encode(
-            x=alt.X("Forecast date:T"),
-            y=alt.Y("Cumulative return (%):Q"),
-            color=alt.Color("Series:N", legend=alt.Legend(title=None, orient="bottom")),
-            tooltip=[
-                alt.Tooltip("Forecast date:T", format="%d %b %Y"),
-                "Series:N",
-                alt.Tooltip("Cumulative return (%):Q", format=".1f"),
-            ],
-        )
-        .properties(height=320)
-    )
-    if brush:
-        chart = chart.add_params(alt.selection_interval(name=PNL_WINDOW, encodings=["x"]))
-    return chart
-
-
-def _chosen_window(event) -> tuple[pd.Timestamp, pd.Timestamp] | None:
-    """The dates dragged out on the Directional P&L chart, or ``None`` for none."""
-    chosen = (getattr(event, "selection", None) or {}).get(PNL_WINDOW) or {}
-    bounds = chosen.get("Forecast date")
-    if not bounds or len(bounds) != 2:
-        return None
-    start, end = (
-        pd.to_datetime(v, unit="ms") if isinstance(v, int | float) else pd.to_datetime(v)
-        for v in bounds
-    )
-    return (start, end) if start < end else None
 
 
 def _render_tab(role: TargetRole, price_col: str) -> None:
@@ -991,6 +994,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if run_ml:
         models.append(ML)
 
+    _show_interrupted_run(target_name)
     if polynomial == USER and not user_formula:
         st.caption("Enter a function for the user-supplied polynomial to run.")
     nothing_to_run = models == [NAIVE]
@@ -1003,6 +1007,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
             ML: lambda: _run_ml(panel),
         }
         _run(models, tab_runs, run_one=lambda name: runners[name](), target_name=target_name)
+    _show_run_errors(target_name)
     if nothing_to_run:
         st.caption(
             "Tick a model besides the naive baseline to run: the baseline is only read "

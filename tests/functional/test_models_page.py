@@ -1071,7 +1071,33 @@ def test_the_directional_check_replays_the_whole_period_with_no_window_to_set():
     assert not [n for n in app.number_input if "Window" in n.label]
     captions = _captions(app)
     assert "all 100 out-of-sample trading days" in captions
-    assert "Drag across the chart to pick a window" in captions
+    assert "scroll to zoom, drag to pan and double-click to reset" in captions
+
+
+def test_a_window_picked_with_the_slider_recomputes_every_figure():
+    app = _directional_page()
+    (window,) = [s for s in app.slider if s.label == "Window"]
+    dates = pd.bdate_range("2024-06-03", periods=100)
+    # The whole period by default: from the first 5-day step to the last.
+    assert window.value == (dates[0].date(), dates[95].date())
+
+    window.set_value((dates[40].date(), dates[59].date())).run()
+
+    assert not app.exception
+    captions = _captions(app)
+    assert "the chosen window of 20 out-of-sample trading days, 4 calls" in captions
+    assert _metric(app, "Hit rate") == "100%"
+
+
+def test_an_interrupted_run_says_which_models_did_not_finish():
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
+    app.session_state["pending_run_S&P 500"] = ["Machine Learning"]
+    app.run()
+
+    warnings = " ".join(w.value for w in app.warning)
+    assert "stopped before Machine Learning finished" in warnings
+    app.run()
+    assert "stopped before" not in " ".join(w.value for w in app.warning)
 
 
 def test_the_directional_check_says_how_to_see_the_other_horizon():

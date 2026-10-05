@@ -211,6 +211,11 @@ TERMS: Mapping[str, str] = {
         "Every day the model was graded on is replayed, never a day it trained "
         "on, so the result is what following it live would have looked like."
     ),
+    "P&L window": (
+        "The stretch of the out-of-sample period the figures describe. Narrow it "
+        "to see how the forecast's direction did in, say, one year or one sell-off: "
+        "both returns start from zero on the window's first day."
+    ),
     "Long/cash strategy": (
         "Compounded return of holding the index on every call where the "
         "forecast was positive and holding cash on every other. Before "
