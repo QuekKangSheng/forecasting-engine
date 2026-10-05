@@ -13,6 +13,7 @@ from forecasting_engine.portfolio.optimize import (
     covariance_at_rebalance,
     expected_returns,
     solve_weights,
+    weight_breakdown,
     weight_schedule,
 )
 
@@ -246,6 +247,33 @@ def test_solve_weights_matches_the_analytic_equal_variance_formula():
     expected_equity = 0.5 + (mu[EQUITY] - mu[BOND]) / (2 * 4.0 * variance)
     assert weights[EQUITY] == pytest.approx(expected_equity)
     assert weights[BOND] == pytest.approx(1 - expected_equity)
+
+
+def test_the_breakdown_is_the_lowest_risk_mix_plus_the_forecasts_tilt():
+    covariance = _covariance(0.0005, 0.00002, 0.000001)
+    equal = pd.Series({EQUITY: 0.001, BOND: 0.001})
+    apart = pd.Series({EQUITY: 0.003, BOND: 0.001})
+
+    flat = weight_breakdown(equal, covariance, risk_aversion=4.0, bounds=(0.0, 1.0))
+    tilted = weight_breakdown(apart, covariance, risk_aversion=4.0, bounds=(0.0, 1.0))
+
+    # Equal forecasts leave the lowest-risk mix: mostly the far calmer bond.
+    assert flat.forecast_tilt == 0.0
+    assert flat.equity == pytest.approx(flat.lowest_risk) and flat.lowest_risk < 0.1
+    var_diff = 0.0005 - 2 * 0.000001 + 0.00002
+    assert tilted.forecast_tilt == pytest.approx(0.002 / (4.0 * var_diff))
+    assert tilted.lowest_risk == pytest.approx(flat.lowest_risk)
+
+
+def test_the_breakdown_says_when_a_bound_capped_the_weight():
+    covariance = _covariance(0.0005, 0.00002, 0.000001)
+    mu = pd.Series({EQUITY: 0.003, BOND: 0.001})
+
+    capped = weight_breakdown(mu, covariance, risk_aversion=4.0, bounds=(0.2, 0.8))
+
+    assert capped.unconstrained > 0.8
+    assert capped.capped and capped.equity == 0.8
+    assert solve_weights(mu, covariance, risk_aversion=4.0, bounds=(0.2, 0.8))[EQUITY] == 0.8
 
 
 def test_solve_weights_sums_to_one():

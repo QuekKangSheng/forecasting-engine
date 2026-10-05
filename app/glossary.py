@@ -186,14 +186,22 @@ TERMS: Mapping[str, str] = {
         "can still be set active, but asks for confirmation first."
     ),
     "Risk aversion (λ)": (
-        "How heavily risk is weighed against expected return when splitting "
-        "between equity and bond. Higher pulls the allocation toward whichever "
-        "is less volatile; lower chases the forecast with the better return."
+        "The optimiser picks the weights that maximise expected return minus "
+        "λ/2 × variance, both over the forecast horizon. With two assets that "
+        "comes to: equity weight = lowest-risk mix + (equity forecast − bond "
+        "forecast) / (λ × variance of the difference between the two). So λ "
+        "only scales how far the forecasts move the allocation away from the "
+        "lowest-risk mix. Near 0 the forecasts decide everything; very high "
+        "keeps the lowest-risk mix whatever they say. As a guide, 1–2 is "
+        "risk-seeking, 3–5 moderate (market-implied values sit around 2–4), and "
+        "8 or more conservative."
     ),
     "Weight bounds": (
-        "The minimum and maximum either asset may be allocated, so a small, "
-        "noisy difference between the two forecasts can't swing the portfolio "
-        "to one extreme."
+        "The least either index may hold. Equity and bond always add up to "
+        "100%, so a 20% floor on each also caps each at 80%. It stops a small, "
+        "noisy difference between the two forecasts swinging the portfolio to "
+        "one extreme. The optimiser does not start from 50/50 and tilt: it "
+        "solves for the weights directly, and the floor only clips the result."
     ),
     "Directional P&L": (
         "What you would have earned by holding this index only when the model "

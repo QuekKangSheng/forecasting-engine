@@ -13,6 +13,7 @@ from __future__ import annotations
 import html
 
 import altair as alt
+import pandas as pd
 import streamlit as st
 
 import bloomberg_extraction_panel
@@ -110,19 +111,24 @@ with st.expander("Settings"):
         step=0.5,
         help=glossary.term("Risk aversion (λ)"),
     )
-    # Equity and bond always sum to 100%, so a bound isn't two independent
-    # numbers — it's how far either asset may tilt away from an even 50/50,
-    # the same distance on both sides.
-    default_tilt = 0.5 - optimize.DEFAULT_WEIGHT_BOUNDS[0]
-    tilt = st.slider(
-        "Maximum tilt from 50/50",
+    st.caption(
+        "Higher keeps the allocation near the lowest-risk mix whatever the forecasts "
+        "say; lower follows the forecasts. About 1–2 is risk-seeking, 3–5 moderate, "
+        "8 or more conservative."
+    )
+    # Equity and bond always sum to 100%, so one floor bounds both: at least this
+    # much in each means at most 100% minus it in the other.
+    lower = st.slider(
+        "Minimum in each index",
         0.0,
         0.5,
-        default_tilt,
+        optimize.DEFAULT_WEIGHT_BOUNDS[0],
         step=0.05,
+        format="%.2f",
         help=glossary.term("Weight bounds"),
     )
-    lower, upper = 0.5 - tilt, 0.5 + tilt
+    upper = 1 - lower
+    st.caption(f"Each index stays between {lower:.0%} and {upper:.0%}.")
 
 schedule = optimize.weight_schedule(
     forecasts,
@@ -150,6 +156,33 @@ st.markdown(
 cols = st.columns(2)
 cols[0].metric(equity_name, f"{latest[EQUITY]:.0%}")
 cols[1].metric(bond_name, f"{latest[BOND]:.0%}")
+
+latest_forecast = optimize.expected_returns(pd.DatetimeIndex([latest_date]), forecasts).iloc[0]
+breakdown = optimize.weight_breakdown(
+    latest_forecast,
+    optimize.covariance_at_rebalance(
+        latest_date,
+        prices,
+        horizon=equity_active.horizon,
+        train_window=equity_active.train_window,
+        embargo=EMBARGO_DAYS,
+    ),
+    risk_aversion=risk_aversion,
+    bounds=(lower, upper),
+)
+direction = "adds" if breakdown.forecast_tilt >= 0 else "takes"
+cap = (
+    f", which the {lower:.0%}–{upper:.0%} limits cap at {breakdown.equity:.0%}"
+    if breakdown.capped
+    else ""
+)
+st.caption(
+    f"How this was set: the lowest-risk mix is {breakdown.lowest_risk:.0%} {equity_name}. "
+    f"The forecasts ({equity_name} {latest_forecast[EQUITY]:+.2%}, {bond_name} "
+    f"{latest_forecast[BOND]:+.2%} over {equity_active.horizon} days) {direction} "
+    f"{abs(breakdown.forecast_tilt):.0%} at risk aversion {risk_aversion:g}, giving "
+    f"{breakdown.unconstrained:.0%}{cap}."
+)
 
 st.markdown(
     ui.eyebrow(

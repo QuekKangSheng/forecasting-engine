@@ -200,6 +200,26 @@ def test_after_costs_is_the_default_and_before_costs_can_be_chosen():
     assert _comparison_table(app) != net
 
 
+def test_the_latest_weights_say_how_they_were_set():
+    captions = _captions(_happy_page())
+
+    assert "How this was set: the lowest-risk mix is" in captions
+    assert "at risk aversion 4" in captions
+
+
+def test_a_minimum_in_each_index_bounds_both_weights():
+    app = _happy_page()
+    (floor,) = [s for s in app.slider if s.label == "Minimum in each index"]
+    assert floor.value == pytest.approx(0.2)
+
+    floor.set_value(0.4).run()
+
+    assert not app.exception
+    values = [float(m.value.strip("%")) / 100 for m in app.metric]
+    assert all(0.4 - 1e-9 <= v <= 0.6 + 1e-9 for v in values)
+    assert "Each index stays between 40% and 60%." in _captions(app)
+
+
 def test_historical_var_and_cvar_are_shown_beside_max_drawdown():
     app = _happy_page()
 

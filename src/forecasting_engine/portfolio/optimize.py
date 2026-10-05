@@ -10,6 +10,7 @@ every date a forecast exists for.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import pandas as pd
 
@@ -138,6 +139,52 @@ def covariance_at_rebalance(
     return returns.cov() * horizon
 
 
+@dataclass(frozen=True)
+class WeightBreakdown:
+    """How one rebalance's equity weight was reached, for a reader to follow."""
+
+    lowest_risk: float
+    """Equity's weight in the minimum-variance mix: where the allocation sits
+    when the two forecasts are equal."""
+    forecast_tilt: float
+    """What the difference between the forecasts adds to equity at this risk
+    aversion, before any bound."""
+    equity: float
+    """Equity's final weight, after the bounds."""
+
+    @property
+    def unconstrained(self) -> float:
+        return self.lowest_risk + self.forecast_tilt
+
+    @property
+    def capped(self) -> bool:
+        return self.equity != self.unconstrained
+
+
+def weight_breakdown(
+    expected_return: pd.Series,
+    covariance: pd.DataFrame,
+    *,
+    risk_aversion: float = DEFAULT_RISK_AVERSION,
+    bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
+) -> WeightBreakdown:
+    """``solve_weights``'s equity weight, split into the lowest-risk mix and the
+    forecasts' tilt from it: ``w = (σ_b² − σ_eb)/D + (μ_e − μ_b)/(λ·D)``, with
+    ``D = σ_e² − 2σ_eb + σ_b²``, then clipped to ``bounds``."""
+    equity, bond = ASSETS
+    mu_diff = expected_return[equity] - expected_return[bond]
+    var_ee, var_bb = covariance.loc[equity, equity], covariance.loc[bond, bond]
+    cov_eb = covariance.loc[equity, bond]
+    var_diff = var_ee - 2 * cov_eb + var_bb
+    if var_diff <= 0:
+        midpoint = sum(bounds) / 2
+        return WeightBreakdown(lowest_risk=midpoint, forecast_tilt=0.0, equity=midpoint)
+    lowest_risk = float((var_bb - cov_eb) / var_diff)
+    tilt = float(mu_diff / (risk_aversion * var_diff))
+    w_equity = min(max(lowest_risk + tilt, bounds[0]), bounds[1])
+    return WeightBreakdown(lowest_risk=lowest_risk, forecast_tilt=tilt, equity=w_equity)
+
+
 def solve_weights(
     expected_return: pd.Series,
     covariance: pd.DataFrame,
@@ -158,15 +205,9 @@ def solve_weights(
     midpoint of ``bounds`` is used rather than dividing by zero.
     """
     equity, bond = ASSETS
-    mu_diff = expected_return[equity] - expected_return[bond]
-    var_ee, var_bb = covariance.loc[equity, equity], covariance.loc[bond, bond]
-    cov_eb = covariance.loc[equity, bond]
-    var_diff = var_ee - 2 * cov_eb + var_bb
-    if var_diff <= 0:
-        w_equity = sum(bounds) / 2
-    else:
-        w_equity = (mu_diff / risk_aversion - (cov_eb - var_bb)) / var_diff
-    w_equity = min(max(w_equity, bounds[0]), bounds[1])
+    w_equity = weight_breakdown(
+        expected_return, covariance, risk_aversion=risk_aversion, bounds=bounds
+    ).equity
     return pd.Series({equity: w_equity, bond: 1 - w_equity})
 
 
