@@ -10,6 +10,7 @@ from streamlit.testing.v1 import AppTest
 import bloomberg_extraction_panel
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.reporting.model_metrics import ModelRunResult
+from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
 from forecasting_engine.store import active_model
 from forecasting_engine.validation.crash import CrashDiagnostics
 
@@ -21,7 +22,6 @@ EQUITY_COL = "SPX_Index_PX_LAST"
 BOND_COL = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
 N_DAYS = 60
 
-SETTINGS = {"horizon": 3, "train_window": 15, "test_window": 10, "dataset_fingerprint": "fp-1"}
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +46,15 @@ def _committed() -> pd.DataFrame:
             BOND_COL: 100 * np.cumprod(1 + rng.normal(0, 0.01, N_DAYS)),
         }
     )
+
+
+#: What the active models are stamped with: the committed dataset below.
+SETTINGS = {
+    "horizon": 3,
+    "train_window": 15,
+    "test_window": 10,
+    "dataset_fingerprint": str(dataset_fingerprint(_committed())),
+}
 
 
 def _forecast(committed, seed=0, n_dates=40) -> pd.Series:
@@ -111,6 +120,18 @@ def test_mismatched_settings_blocks_with_an_explanation():
 
     assert not app.exception
     assert any("different settings" in w.value for w in app.warning)
+
+
+def test_active_models_set_on_another_dataset_are_refused():
+    committed = _committed()
+    stale = {"dataset_fingerprint": "an earlier upload"}
+    _set_active(EQUITY, forecast=_forecast(committed), **stale)
+    _set_active(BOND, forecast=_forecast(committed), **stale)
+    app = _page(committed)
+
+    assert not app.exception
+    assert any("different dataset than the one committed now" in w.value for w in app.warning)
+    assert not app.metric
 
 
 def test_with_no_committed_data_shows_a_guiding_message():

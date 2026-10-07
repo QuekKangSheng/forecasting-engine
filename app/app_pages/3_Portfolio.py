@@ -28,6 +28,7 @@ from forecasting_engine.portfolio.backtest import (
     run_backtest,
 )
 from forecasting_engine.reporting.factor_labels import labeller
+from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
 from forecasting_engine.reporting.portfolio_comparison import (
     PORTFOLIO_LABELS,
     comparison_rows,
@@ -80,6 +81,25 @@ if merged is None or EQUITY not in target_columns or BOND not in target_columns:
         "No committed data with both an equity and a bond target resolved — visit the "
         "Data page first.",
         icon=":material/info:",
+    )
+    st.stop()
+
+# Each active model's saved forecast belongs to the dataset it was run on. One
+# set on an earlier upload (other dates, another bond index) would otherwise be
+# combined with today's prices without a word.
+stale = [
+    name
+    for name, record in (("equity", equity_active), ("bond", bond_active))
+    if record.dataset_fingerprint != str(dataset_fingerprint(merged))
+]
+if stale:
+    st.warning(
+        f"The active {' and '.join(stale)} model{'s were' if len(stale) > 1 else ' was'} "
+        "set from a run on a different dataset than the one committed now, so "
+        f"{'their forecasts' if len(stale) > 1 else 'its forecast'} can't be combined with "
+        "these prices. Run the models on this data on the Models page and set them active "
+        "again.",
+        icon=":material/warning:",
     )
     st.stop()
 
