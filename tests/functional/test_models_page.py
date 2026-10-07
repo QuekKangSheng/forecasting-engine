@@ -1009,6 +1009,14 @@ def test_a_run_fits_in_the_background_and_its_results_appear_when_done(monkeypat
     assert "**Machine Learning**: fitting" in progress or "waiting" in progress
     assert next(b for b in app.button if b.label == "Run").disabled
 
+    deadline = time.time() + 10
+    while model_jobs.job(next(iter(model_jobs._jobs))).status[NAIVE] != model_jobs.DONE:
+        assert time.time() < deadline
+        time.sleep(0.05)
+    app.run()
+    assert "Naive (training mean)" in _table(app)  # shown while ML is still fitting
+    assert "Machine Learning" not in _table(app)
+
     release.set()
     _wait_for_runs()
     app.run()

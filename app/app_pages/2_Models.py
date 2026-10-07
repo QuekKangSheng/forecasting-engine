@@ -518,14 +518,21 @@ def _collect(role: TargetRole, runs: model_runs.TabRuns, settings: dict[str, obj
 def _show_job(role: TargetRole, target_name: str) -> None:
     """While this target's Run fits in the background, what each model is doing.
 
-    Refreshes on its own, and reruns the whole page once the Run finishes so its
-    results appear without a click."""
+    Refreshes on its own, and reruns the whole page each time a model finishes,
+    so results appear as they come in, without a click."""
     job = model_jobs.job(_job_id(role))
     if job is None:
         return
     seen_key = f"job_seen_{job.job_id}"
+    done_key = f"job_done_{job.job_id}"
+    finished = sum(1 for s in job.status.values() if s in (model_jobs.DONE, model_jobs.FAILED))
     if job.active:
         st.session_state[seen_key] = False
+        # Each model's results go up as soon as it finishes, not when the Run ends.
+        if st.session_state.get(done_key, finished) != finished:
+            st.session_state[done_key] = finished
+            st.rerun()
+        st.session_state[done_key] = finished
         now = time.time()
         parts = []
         for name in job.models:
