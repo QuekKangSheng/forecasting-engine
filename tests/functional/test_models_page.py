@@ -6,6 +6,9 @@ under test here is what the page shows, not the fitting. Tests that press Run
 stub the machine-learning fit and the factor download.
 """
 
+import pickle
+import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,6 +17,7 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
+import model_jobs
 import model_runs
 from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
@@ -978,6 +982,109 @@ def test_a_user_function_is_shown_as_its_fitted_scale_and_intercept():
     assert "scale and intercept are fitted by least squares" in _captions(app)
 
 
+# --- Runs fit in the background and are kept --------------------------------------
+
+
+def _wait_for_runs(timeout: float = 30.0) -> None:
+    deadline = time.time() + timeout
+    while model_jobs.active_jobs():
+        assert time.time() < deadline, "the background Run never finished"
+        time.sleep(0.1)
+
+
+def test_a_run_fits_in_the_background_and_its_results_appear_when_done(monkeypatch):
+    monkeypatch.setattr(model_jobs, "INLINE", False)
+    release = threading.Event()
+
+    def slow(panel, splitter):
+        release.wait(10)
+        return _result(), _ml_run().description, _tuning_log()
+
+    monkeypatch.setattr(boosted, "run_boosted", slow)
+    app = _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
+
+    assert not app.exception
+    progress = " ".join(i.value for i in app.info)
+    assert "Running in the background for S&P 500" in progress
+    assert "**Machine Learning**: fitting" in progress or "waiting" in progress
+    assert next(b for b in app.button if b.label == "Run").disabled
+
+    release.set()
+    _wait_for_runs()
+    app.run()
+
+    assert "Machine Learning" in _table(app)
+    assert not any("Running in the background" in i.value for i in app.info)
+
+
+def test_finished_runs_are_there_in_a_new_session_on_the_same_data(stub_ml):
+    _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
+
+    later = _page()  # a new session: nothing stored in it
+
+    assert set(_stored_runs(later)) == {NAIVE, "Machine Learning"}
+    assert "Machine Learning" in _table(later)
+
+
+def test_saved_runs_are_not_shown_under_other_settings(stub_ml):
+    _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
+
+    app = _page()
+    (horizon,) = [c for c in app.segmented_control if c.label == "Forecast horizon"]
+    horizon.set_value(1).run()
+
+    assert _stored_runs(app) == {}
+
+
+def test_a_failing_model_reports_its_error_after_a_background_run(monkeypatch):
+    def broken(panel, splitter):
+        raise ValueError("unexpected")
+
+    monkeypatch.setattr(boosted, "run_boosted", broken)
+    app = _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
+
+    assert "Machine Learning: ValueError: unexpected" in " ".join(e.value for e in app.error)
+    assert set(_stored_runs(app)) == {NAIVE}
+
+
+def test_run_all_targets_queues_every_tabs_ticked_models(stub_ml):
+    app = _page(bond=True)
+    for box in [c for c in app.checkbox if c.label in ("Polynomial", "Fama-French 5")]:
+        box.uncheck()
+    app.run()
+    next(b for b in app.button if b.label == "Run all targets").click().run()
+
+    assert not app.exception
+    assert set(_stored_runs(app, EQUITY)) == {NAIVE, "Machine Learning"}
+    assert set(_stored_runs(app, BOND)) == {NAIVE, "Machine Learning"}
+    assert len(stub_ml) == 2
+
+
+def test_a_new_window_can_pick_up_the_data_committed_last_time(stub_ml):
+    _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))  # commits nothing itself
+    committed = _committed()
+    bundle = {
+        "extraction_committed": committed,
+        "extraction_committed_targets": {EQUITY: SPX},
+    }
+    path = Path("data") / "last_commit.pkl"
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(pickle.dumps(bundle))
+
+    app = AppTest.from_file(str(PAGE), default_timeout=60).run()  # a new window
+    assert "committed in an earlier window" in " ".join(i.value for i in app.info)
+    next(b for b in app.button if b.label == "Use the data committed last time").click().run()
+
+    assert not app.exception
+    assert "Machine Learning" in _table(app)
+
+
+def test_run_all_targets_is_only_offered_with_more_than_one_target():
+    app = _page()
+
+    assert not [b for b in app.button if b.label == "Run all targets"]
+
+
 # --- FYP-161: one run, one set of settings, stated beside the results ---------------
 
 
@@ -1087,17 +1194,6 @@ def test_a_window_picked_with_the_slider_recomputes_every_figure():
     captions = _captions(app)
     assert "the chosen window of 20 out-of-sample trading days, 4 calls" in captions
     assert _metric(app, "Hit rate") == "100%"
-
-
-def test_an_interrupted_run_says_which_models_did_not_finish():
-    app = _page({EQUITY: {POLY: _polynomial_run()}})
-    app.session_state["pending_run_S&P 500"] = ["Machine Learning"]
-    app.run()
-
-    warnings = " ".join(w.value for w in app.warning)
-    assert "stopped before Machine Learning finished" in warnings
-    app.run()
-    assert "stopped before" not in " ".join(w.value for w in app.warning)
 
 
 def test_the_directional_check_says_how_to_see_the_other_horizon():

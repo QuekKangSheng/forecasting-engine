@@ -5,12 +5,6 @@
 # size-limit message. Keep this the looser of the two.
 maxUploadSize = 30
 
-[runner]
-# A click while models are fitting (a checkbox, a slider, the other tab's Run)
-# would otherwise stop the Run part-way and drop the model still fitting, which
-# can take ten minutes. With this off, the click waits until the Run finishes.
-fastReruns = false
-
 
 # Colours are GitHub Primer's, which an internal analytics tool has no reason to
 # depart from: an enterprise blue accent, neutral greys carrying the structure,

@@ -11,13 +11,16 @@ table formatting is in forecasting_engine.reporting.model_metrics.
 
 from __future__ import annotations
 
+import functools
 import html
+import time
 
 import pandas as pd
 import streamlit as st
 
 import bloomberg_extraction_panel
 import glossary
+import model_jobs
 import model_runs
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
@@ -143,6 +146,8 @@ st.caption(
     help=glossary.term("Promotion gate"),
 )
 
+if bloomberg_extraction_panel.offer_last_commit():
+    st.rerun()
 merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)
 if merged is None:
     st.info('No data committed yet — click "Use Updated Data" on the Data page first.')
@@ -411,7 +416,9 @@ def _latest(series: pd.Series) -> str:
     return f"{present.iloc[-1]:.4g}" if len(present) else "—"
 
 
-def _run_derived(max_terms: int, panel: FeaturePanel, price_col: str) -> model_runs.ModelRun:
+def _run_derived(
+    max_terms: int, panel: FeaturePanel, price_col: str, splitter: PurgedWalkForward
+) -> model_runs.ModelRun:
     candidates = tuple(
         DerivedPolynomial(degree=c.degree, regularizer=c.regularizer, max_terms=max_terms)
         for c in CANDIDATE_CONFIGS
@@ -421,14 +428,17 @@ def _run_derived(max_terms: int, panel: FeaturePanel, price_col: str) -> model_r
         description,
         origin=Origin.DERIVED,
         target=price_col,
-        horizon=horizon,
+        horizon=panel.horizon,
         columns=panel.signals,
     )
     return model_runs.ModelRun(result, description, function=fn)
 
 
 def _run_user(
-    function: tuple[str, tuple[tuple[str, str], ...]], panel: FeaturePanel, price_col: str
+    function: tuple[str, tuple[tuple[str, str], ...]],
+    panel: FeaturePanel,
+    price_col: str,
+    splitter: PurgedWalkForward,
 ) -> model_runs.ModelRun:
     formula, bindings = function
     result, description = run_user_polynomial(formula, panel, splitter, dict(bindings))
@@ -436,15 +446,23 @@ def _run_user(
         description,
         origin=Origin.USER_SUPPLIED,
         target=price_col,
-        horizon=horizon,
+        horizon=panel.horizon,
         columns=panel.signals,
     )
     return model_runs.ModelRun(result, description, function=fn)
 
 
-def _run_famafrench(price_col: str) -> model_runs.ModelRun:
-    resolved = fama_french.resolve()
-    indexed = merge_factors(merged, resolved.file.frame).set_index(DATE_COLUMN)
+def _run_famafrench(
+    frame: pd.DataFrame, price_col: str, horizon: int, splitter: PurgedWalkForward
+) -> model_runs.ModelRun:
+    try:
+        resolved = fama_french.resolve()
+    except FactorFetchError as exc:
+        raise FactorFetchError(
+            "the Fama-French factors could not be downloaded and none are saved, so FF5 "
+            f"was not run: {exc}"
+        ) from exc
+    indexed = merge_factors(frame, resolved.file.frame).set_index(DATE_COLUMN)
     panel = align_and_lag(
         indexed, list(FACTOR_COLUMNS), price_col, horizon=horizon, exact=FACTOR_COLUMNS
     )
@@ -457,75 +475,87 @@ def _run_famafrench(price_col: str) -> model_runs.ModelRun:
     )
 
 
-def _run_ml(panel: FeaturePanel) -> model_runs.ModelRun:
+def _run_ml(panel: FeaturePanel, splitter: PurgedWalkForward) -> model_runs.ModelRun:
     result, description, tuning = run_boosted(panel, splitter)
     return model_runs.ModelRun(result, description, tuning=tuning)
 
 
-def _pending_key(target_name: str) -> str:
-    return f"pending_run_{target_name}"
+def _run_naive(panel: FeaturePanel, splitter: PurgedWalkForward) -> model_runs.ModelRun:
+    return model_runs.ModelRun(*run_naive(panel, splitter))
 
 
-def _show_interrupted_run(target_name: str) -> None:
-    """Say which models a Run never finished, rather than dropping them silently.
+#: Errors whose message is written for a portfolio manager.
+MODEL_ERRORS = (
+    PolynomialConfigError,
+    FamaFrenchDataError,
+    BoostedConfigError,
+    FactorFetchError,
+    NaiveDataError,
+)
 
-    Any click on the page while models are fitting (a checkbox, a slider, the
-    other tab's Run) reruns the page, and Streamlit stops the Run part-way."""
-    unfinished = st.session_state.pop(_pending_key(target_name), None)
-    if unfinished:
-        st.warning(
-            f"The last Run for {target_name} was stopped before {', '.join(unfinished)} "
-            "finished, because something on the page was clicked while it ran. Press Run "
-            "again and leave the page alone until every model shows as done.",
-            icon=":material/warning:",
+
+def _job_id(role: TargetRole) -> str:
+    return model_jobs.result_key("job", shared_settings, role.value)
+
+
+def _result_key(role: TargetRole, name: str, settings: dict[str, object]) -> str:
+    """Everything a model's result depends on: the shared settings, the target,
+    the model and, for a polynomial row, its own setting."""
+    return model_jobs.result_key(shared_settings, role.value, name, settings.get(name))
+
+
+def _collect(role: TargetRole, runs: model_runs.TabRuns, settings: dict[str, object]) -> None:
+    """Add every saved result for this target's current settings that the page
+    doesn't hold yet: a background Run's, or one from an earlier session."""
+    for name in MODEL_ORDER:
+        if name not in runs.runs:
+            saved = model_jobs.load(_result_key(role, name, settings))
+            if saved is not None:
+                runs.runs[name] = saved
+
+
+@st.fragment(run_every=3)
+def _show_job(role: TargetRole, target_name: str) -> None:
+    """While this target's Run fits in the background, what each model is doing.
+
+    Refreshes on its own, and reruns the whole page once the Run finishes so its
+    results appear without a click."""
+    job = model_jobs.job(_job_id(role))
+    if job is None:
+        return
+    seen_key = f"job_seen_{job.job_id}"
+    if job.active:
+        st.session_state[seen_key] = False
+        now = time.time()
+        parts = []
+        for name in job.models:
+            status = job.status[name]
+            if status == model_jobs.RUNNING:
+                parts.append(f"**{name}**: fitting ({_elapsed(now - job.started[name])})")
+            elif status == model_jobs.QUEUED:
+                parts.append(f"**{name}**: waiting")
+            else:
+                took = _elapsed(job.finished[name] - job.started[name])
+                parts.append(f"**{name}**: {status} ({took})")
+        st.info(
+            f"Running in the background for {target_name}. "
+            + " · ".join(parts)
+            + ". You can switch tabs, use the rest of the app or close this window: each "
+            "model is saved when it finishes and shows here, or on your return after "
+            "committing the same data.",
+            icon=":material/hourglass_top:",
         )
-
-
-def _errors_key(target_name: str) -> str:
-    return f"run_errors_{target_name}"
-
-
-def _run(models: list[str], runs: model_runs.TabRuns, *, run_one, target_name: str) -> None:
-    """Fit each model in turn. One failing never stops the rest.
-
-    The loop makes no Streamlit call between models: a click made meanwhile is
-    held until the next call (``fastReruns`` is off), so it can't cut the Run
-    short after one model and drop the rest. That is also why progress is one
-    spinner rather than a status box per model, and why errors are kept in
-    session state and shown once the loop is done."""
-    pending = st.session_state[_pending_key(target_name)] = list(models)
-    errors: dict[str, str] = {}
-    st.session_state[_errors_key(target_name)] = errors
-    with st.spinner(
-        f"Fitting {', '.join(models)} for {target_name}. Machine learning can take about "
-        "ten minutes; anything clicked meanwhile waits until the Run is done."
-    ):
-        for name in models:
-            try:
-                runs.runs[name] = run_one(name)
-            except (
-                PolynomialConfigError,
-                FamaFrenchDataError,
-                BoostedConfigError,
-                FactorFetchError,
-                NaiveDataError,
-            ) as exc:
-                runs.runs.pop(name, None)
-                message = str(exc)
-                if isinstance(exc, FactorFetchError):
-                    message = (
-                        "the Fama-French factors could not be downloaded and none are "
-                        f"saved, so FF5 was not run: {message}"
-                    )
-                errors[name] = message
-            pending.remove(name)
-    st.session_state.pop(_pending_key(target_name), None)
-
-
-def _show_run_errors(target_name: str) -> None:
-    """The last Run's model errors, until the page is next rerun."""
-    for name, message in st.session_state.pop(_errors_key(target_name), {}).items():
+        return
+    if st.session_state.get(seen_key) is False:
+        st.session_state[seen_key] = True
+        st.rerun()
+    for name, message in job.errors.items():
         st.error(f"{name}: {message}", icon=":material/error:")
+
+
+def _elapsed(seconds: float) -> str:
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}:{secs:02d}"
 
 
 def _header_html(column: str) -> str:
@@ -994,20 +1024,32 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if run_ml:
         models.append(ML)
 
-    _show_interrupted_run(target_name)
     if polynomial == USER and not user_formula:
         st.caption("Enter a function for the user-supplied polynomial to run.")
     nothing_to_run = models == [NAIVE]
-    if st.button("Run", type="primary", key=f"run_{key}", disabled=nothing_to_run):
+    job = model_jobs.job(_job_id(role))
+    running = job is not None and job.active
+    clicked = st.button(
+        "Run", type="primary", key=f"run_{key}", disabled=nothing_to_run or running
+    )
+    if (clicked or run_all) and not nothing_to_run and not running:
         runners = {
-            NAIVE: lambda: model_runs.ModelRun(*run_naive(panel, splitter)),
-            DERIVED: lambda: _run_derived(settings[DERIVED], panel, price_col),
-            USER: lambda: _run_user(settings[USER], panel, price_col),
-            FF5: lambda: _run_famafrench(price_col),
-            ML: lambda: _run_ml(panel),
+            NAIVE: functools.partial(_run_naive, panel, splitter),
+            DERIVED: functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter),
+            USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
+            FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
+            ML: functools.partial(_run_ml, panel, splitter),
         }
-        _run(models, tab_runs, run_one=lambda name: runners[name](), target_name=target_name)
-    _show_run_errors(target_name)
+        model_jobs.submit(
+            _job_id(role),
+            target_name,
+            {name: runners[name] for name in models},
+            {name: _result_key(role, name, settings) for name in models},
+            expected_errors=MODEL_ERRORS,
+        )
+        submitted.append(role)
+    _show_job(role, target_name)
+    _collect(role, tab_runs, settings)
     if nothing_to_run:
         st.caption(
             "Tick a model besides the naive baseline to run: the baseline is only read "
@@ -1047,7 +1089,19 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
 
 
 roles = [role for role in TargetRole if role in target_columns]
+run_all = len(roles) > 1 and st.button(
+    "Run all targets",
+    icon=":material/play_arrow:",
+    help="Queue the models ticked on every tab, one target after the other, in the "
+    "background. Each tab's own Run does the same for that target alone.",
+)
+#: Targets whose Run was queued in this pass. Once every tab has had its turn
+#: (so "Run all targets" reaches each), the page is redrawn to show their
+#: progress and disabled Run buttons.
+submitted: list[TargetRole] = []
 tabs = st.tabs([f"{ROLE_NAMES[r]} · {label(target_columns[r])}" for r in roles])
 for role, tab in zip(roles, tabs, strict=True):
     with tab:
         _render_tab(role, target_columns[role])
+if submitted and not model_jobs.INLINE:
+    st.rerun()
