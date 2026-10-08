@@ -1,5 +1,5 @@
-"""Turning each target's saved forecast into rebalance dates, expected returns and
-the covariance each rebalance is sized against."""
+"""Turning each target's saved signal into rebalance dates, expected signals, the
+covariance each rebalance is sized against, and a tilt from the 50/50 benchmark."""
 
 import numpy as np
 import pandas as pd
@@ -7,11 +7,14 @@ import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.optimize import (
+    DEFAULT_RISK_LEVEL,
     DEFAULT_WEIGHT_BOUNDS,
+    RISK_AVERSION_SCALE,
     OptimizeDataError,
     common_rebalance_dates,
     covariance_at_rebalance,
     expected_returns,
+    risk_aversion_for,
     solve_weights,
     weight_breakdown,
     weight_schedule,
@@ -43,17 +46,24 @@ def no_tuning_period(monkeypatch):
     monkeypatch.setattr("forecasting_engine.portfolio.optimize.TUNING_ROWS", 0)
 
 
-def test_one_rebalance_per_test_window_on_a_shared_calendar():
+def test_a_one_day_horizon_rebalances_on_every_out_of_sample_day():
     dates = pd.bdate_range("2024-01-02", periods=10)
     prices = _prices(dates, seed=0)
 
-    rebalances = common_rebalance_dates(
-        prices, horizon=1, train_window=2, test_window=2, embargo=0
-    )
+    rebalances = common_rebalance_dates(prices, horizon=1, train_window=2, test_window=2, embargo=0)
 
-    # tuning_rows=0, train=2, embargo=0 -> first test window starts at
-    # position 2; each later one two rows further: 2, 4, 6, 8.
-    assert list(rebalances) == [dates[2], dates[4], dates[6], dates[8]]
+    # tuning_rows=0, train=2, embargo=0 -> test windows cover positions 2 to 9.
+    assert list(rebalances) == list(dates[2:10])
+
+
+def test_a_rebalance_every_horizon_days_holds_each_forecast_for_its_own_horizon():
+    dates = pd.bdate_range("2024-01-02", periods=10)
+    prices = _prices(dates, seed=0)
+
+    rebalances = common_rebalance_dates(prices, horizon=3, train_window=2, test_window=2, embargo=0)
+
+    # Out-of-sample positions 2 to 9, every third: 2, 5, 8 — across test windows.
+    assert list(rebalances) == [dates[2], dates[5], dates[8]]
 
 
 def test_a_price_gap_in_one_asset_shifts_the_whole_shared_calendar():
@@ -68,12 +78,12 @@ def test_a_price_gap_in_one_asset_shifts_the_whole_shared_calendar():
     prices_with_gap = {**prices, BOND: with_gap}
 
     rebalances = common_rebalance_dates(
-        prices_with_gap, horizon=1, train_window=2, test_window=2, embargo=0
+        prices_with_gap, horizon=2, train_window=2, test_window=2, embargo=0
     )
 
-    # The shared calendar drops dates[3], leaving dates[2] folded with
-    # dates[4] instead of dates[3] — every later fold start shifts one
-    # row earlier than the no-gap case above, not out of sync entirely.
+    # The shared calendar drops dates[3], so every second shared date from
+    # position 2 is dates[2], dates[5], dates[7] — every later rebalance shifts
+    # one row together for both targets, not out of sync with each other.
     assert list(rebalances) == [dates[2], dates[5], dates[7]]
 
 
@@ -81,9 +91,7 @@ def test_rebalances_are_sorted_ascending():
     dates = pd.bdate_range("2024-01-02", periods=8)
     prices = _prices(dates, seed=2)
 
-    rebalances = common_rebalance_dates(
-        prices, horizon=1, train_window=2, test_window=1, embargo=0
-    )
+    rebalances = common_rebalance_dates(prices, horizon=1, train_window=2, test_window=1, embargo=0)
 
     assert list(rebalances) == sorted(rebalances)
 
@@ -92,9 +100,7 @@ def test_with_no_room_for_a_full_test_window_there_are_no_rebalances():
     dates = pd.bdate_range("2024-01-02", periods=3)
     prices = _prices(dates, seed=3)
 
-    rebalances = common_rebalance_dates(
-        prices, horizon=1, train_window=2, test_window=2, embargo=0
-    )
+    rebalances = common_rebalance_dates(prices, horizon=1, train_window=2, test_window=2, embargo=0)
 
     assert rebalances.empty
 
@@ -166,9 +172,7 @@ def test_covariance_uses_exactly_the_purged_training_window():
     prices = _prices(dates, seed=0)
     rebalance_date = dates[10]
 
-    cov = covariance_at_rebalance(
-        rebalance_date, prices, horizon=3, train_window=5, embargo=2
-    )
+    cov = covariance_at_rebalance(rebalance_date, prices, horizon=3, train_window=5, embargo=2)
 
     # train=5, embargo=2, horizon=3 at position 10: natural_end=8, start=3,
     # purge_boundary=min(8, 10-3)=7 -> dates[3:7].
@@ -249,7 +253,7 @@ def test_solve_weights_matches_the_analytic_equal_variance_formula():
     assert weights[BOND] == pytest.approx(1 - expected_equity)
 
 
-def test_the_breakdown_is_the_lowest_risk_mix_plus_the_forecasts_tilt():
+def test_the_breakdown_is_the_benchmark_plus_the_signals_tilt():
     covariance = _covariance(0.0005, 0.00002, 0.000001)
     equal = pd.Series({EQUITY: 0.001, BOND: 0.001})
     apart = pd.Series({EQUITY: 0.003, BOND: 0.001})
@@ -257,12 +261,42 @@ def test_the_breakdown_is_the_lowest_risk_mix_plus_the_forecasts_tilt():
     flat = weight_breakdown(equal, covariance, risk_aversion=4.0, bounds=(0.0, 1.0))
     tilted = weight_breakdown(apart, covariance, risk_aversion=4.0, bounds=(0.0, 1.0))
 
-    # Equal forecasts leave the lowest-risk mix: mostly the far calmer bond.
+    # Agreeing signals leave the 50/50 benchmark, however much calmer bond is.
     assert flat.forecast_tilt == 0.0
-    assert flat.equity == pytest.approx(flat.lowest_risk) and flat.lowest_risk < 0.1
+    assert flat.anchor == 0.5 and flat.equity == 0.5
     var_diff = 0.0005 - 2 * 0.000001 + 0.00002
     assert tilted.forecast_tilt == pytest.approx(0.002 / (4.0 * var_diff))
-    assert tilted.lowest_risk == pytest.approx(flat.lowest_risk)
+    assert tilted.unconstrained == pytest.approx(0.5 + tilted.forecast_tilt)
+
+
+def test_no_signal_means_the_benchmark_at_every_risk_level():
+    covariance = _covariance(0.0005, 0.00002, 0.000001)
+    none = pd.Series({EQUITY: 0.0, BOND: 0.0})
+
+    for level in RISK_AVERSION_SCALE:
+        weights = solve_weights(none, covariance, risk_aversion=risk_aversion_for(level))
+        assert weights[EQUITY] == 0.5 and weights[BOND] == 0.5
+
+
+def test_the_risk_scale_runs_from_1_risk_loving_to_5_risk_averse():
+    assert list(RISK_AVERSION_SCALE) == [1, 2, 3, 4, 5]
+    lambdas = [risk_aversion_for(level) for level in RISK_AVERSION_SCALE]
+    assert lambdas == sorted(lambdas) and len(set(lambdas)) == 5
+    assert DEFAULT_RISK_LEVEL == 3
+
+    covariance = _covariance(0.0005, 0.00002, 0.000001)
+    signal = pd.Series({EQUITY: 0.0005, BOND: 0.0})
+    tilts = [
+        abs(solve_weights(signal, covariance, risk_aversion=lam, bounds=(0.0, 1.0))[EQUITY] - 0.5)
+        for lam in lambdas
+    ]
+    assert tilts == sorted(tilts, reverse=True)
+
+
+@pytest.mark.parametrize("level", [0, 6])
+def test_a_risk_level_off_the_scale_is_refused(level):
+    with pytest.raises(ValueError, match="1 to 5"):
+        risk_aversion_for(level)
 
 
 def test_the_breakdown_says_when_a_bound_capped_the_weight():
@@ -295,7 +329,7 @@ def test_solve_weights_is_clipped_to_bounds():
     assert weights[BOND] == pytest.approx(0.2)
 
 
-def test_solve_weights_falls_back_to_the_bounds_midpoint_when_assets_are_indistinguishable():
+def test_solve_weights_keeps_the_benchmark_when_assets_are_indistinguishable():
     mu = pd.Series({EQUITY: 0.05, BOND: 0.01})
     identical = _covariance(0.04, 0.04, 0.04)  # perfectly correlated, equal variance
 
@@ -327,8 +361,8 @@ def _schedule_inputs(seed=0):
     return dates, prices, forecasts
 
 
-# train_window=15, embargo=2, tuning_rows=0 (patched) -> first test window
-# starts at position 17; each later one ten rows further: 17, 27, 37, 47.
+# train_window=15, embargo=2, tuning_rows=0 (patched) -> test windows cover
+# positions 17 to 56; a rebalance every horizon (3) days: 17, 20, ..., 56.
 _SCHEDULE_KWARGS = {"horizon": 3, "train_window": 15, "test_window": 10, "embargo": 2}
 
 
@@ -337,7 +371,7 @@ def test_weight_schedule_has_one_row_per_rebalance_summing_to_one_within_bounds(
 
     schedule = weight_schedule(forecasts, prices, **_SCHEDULE_KWARGS)
 
-    assert list(schedule.index) == [dates[17], dates[27], dates[37], dates[47]]
+    assert list(schedule.index) == list(dates[17:57:3])
     assert list(schedule.columns) == [EQUITY, BOND]
     assert schedule.sum(axis=1).sub(1.0).abs().max() < 1e-9
     assert schedule[EQUITY].between(*DEFAULT_WEIGHT_BOUNDS).all()
@@ -353,4 +387,4 @@ def test_weight_schedule_skips_a_rebalance_with_a_missing_forecast():
     schedule = weight_schedule(forecasts, prices, **_SCHEDULE_KWARGS)
 
     assert first_rebalance not in schedule.index
-    assert len(schedule) == 3
+    assert len(schedule) == len(dates[17:57:3]) - 1

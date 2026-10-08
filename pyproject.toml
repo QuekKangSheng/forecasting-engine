@@ -44,6 +44,7 @@ addopts = "-q"
 # editable-install .pth file in a working state between invocations, and
 # pytest's own pythonpath insertion doesn't depend on it at all.
 pythonpath = ["app", "src"]
+markers = ["real_defaults: run the Models page under its own default settings"]
 
 [tool.ruff]
 line-length = 100

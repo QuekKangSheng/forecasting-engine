@@ -183,9 +183,7 @@ def _training_mean_fold(
         predicted_train=pd.Series(mean, index=train, dtype=float),
         realised=panel.frame.loc[test, target],
         realised_train=panel.frame.loc[train, target],
-        description=ModelDescription(
-            name=TRAINING_MEAN, terms=(), coefficients=(), intercept=mean
-        ),
+        description=ModelDescription(name=TRAINING_MEAN, terms=(), coefficients=(), intercept=mean),
         screening=screening,
         horizon=panel.horizon,
     )
@@ -201,10 +199,16 @@ def summarize(
     Pooling scores one long out-of-sample series rather than averaging short,
     noisy per-fold scores. Each fold's predictions come from its own fit, so a
     pooled Pearson IC mixes those fits' scales; Rank IC does not care about
-    scale, which is why it, not IC, is what the gate is set on. Two Newey-West
-    standard errors of the pooled Rank IC are reported: one over h - 1 lags,
-    for the overlap between neighbouring h-day labels, and one over as many
-    lags as a test window has rows, for errors a fold's single fit shares.
+    scale. Two Newey-West standard errors of each pooled Rank IC are reported:
+    one over h - 1 lags, for the overlap between neighbouring h-day labels, and
+    one over as many lags as a test window has rows, for errors a fold's single
+    fit shares.
+
+    The gate is set on the Signal Rank IC: the pooled Rank IC of what the
+    signals add to each fold's training-mean return (``signal_forecasts``). The
+    plain pooled Rank IC also scores the forecast's level, which shifts with
+    each fold's training mean whatever the signals say, so a model with no
+    signal can score there and one with a real signal can be swamped there.
 
     Requires at least one fold. Callers should check ``evaluate()``'s output is
     non-empty themselves and raise their own domain-appropriate error message
@@ -214,6 +218,7 @@ def summarize(
     """
     predicted, realised = pooled(folds)
     within = within_fold_ranks(folds)
+    signal = signal_forecasts(folds)
     test_window_lags = max(len(f.test) for f in folds)
     result = ModelRunResult(
         ic=metrics.ic(predicted, realised),
@@ -224,9 +229,7 @@ def summarize(
         pbo=pbo,
         crash=_crash_over_folds(folds),
         screening=_screening_summary(folds),
-        terms=FoldTerms(
-            folds=len(folds), with_terms=sum(1 for f in folds if f.description.terms)
-        ),
+        terms=FoldTerms(folds=len(folds), with_terms=sum(1 for f in folds if f.description.terms)),
         rows_scored=sum(int((f.predicted.notna() & f.realised.notna()).sum()) for f in folds),
         oos_rank_ic_within=metrics.rank_ic(within, realised),
         oos_rank_ic_within_se=metrics.rank_ic_se(within, realised, lags=test_window_lags),
@@ -236,6 +239,10 @@ def summarize(
         ),
         forecast=predicted,
         realised=realised,
+        signal_rank_ic=metrics.rank_ic(signal, realised),
+        signal_rank_ic_se=metrics.rank_ic_se(signal, realised, lags=folds[0].horizon - 1),
+        signal_rank_ic_se_test=metrics.rank_ic_se(signal, realised, lags=test_window_lags),
+        baseline=predicted - signal,
     )
     # FYP-122's "deliverable artifact": the most recent fold's fitted terms
     # and coefficients — a fit can pick different terms fold to fold, so this
@@ -256,9 +263,11 @@ def select_best_candidate(
     ``BoostedForecaster``'s tuned XGBoost vs. tuned LightGBM. A single
     configuration (FF5, a user-supplied polynomial) has nothing to compare
     against and reports ``pbo=None`` directly to ``summarize()`` instead of
-    calling this. Selection, PBO and the gate all use Rank IC.
+    calling this. Selection, PBO and the gate all use the Signal Rank IC.
     """
-    pooled_by_name = {name: pooled(folds) for name, folds in per_candidate.items()}
+    pooled_by_name = {
+        name: (signal_forecasts(folds), pooled(folds)[1]) for name, folds in per_candidate.items()
+    }
     pbo_result = compute_pbo(pooled_by_name, n_blocks=n_blocks)
     scores = {name: _finite(metrics.rank_ic(*pair)) for name, pair in pooled_by_name.items()}
     best_name = max(scores, key=scores.__getitem__)
@@ -281,6 +290,26 @@ def within_fold_ranks(folds: tuple[FoldResult, ...]) -> pd.Series:
         n = int(ranks.notna().sum())
         parts.append((ranks - (n + 1) / 2) / max(n, 1))
     return pd.concat(parts)
+
+
+def fold_baseline(fold: FoldResult) -> float:
+    """The fold's training-window mean target: what the naive baseline forecasts
+    for it, and so the level a forecast is judged relative to."""
+    return float(fold.realised_train.mean())
+
+
+def signal_forecasts(folds: tuple[FoldResult, ...]) -> pd.Series:
+    """Every fold's test predictions less that fold's training-window mean target,
+    end to end: what the signals add to the naive forecast.
+
+    A forecast's level moves with its fold's training mean whatever the signals
+    say, and on daily equity data that trailing mean ranks future returns the
+    wrong way (returns mean-revert). Scored pooled, the level can swamp a real
+    signal or pass one that has none. Taking the training mean away leaves what
+    the model itself contributes. A fold that forecasts its training mean
+    contributes exactly zero.
+    """
+    return pd.concat([f.predicted - fold_baseline(f) for f in folds])
 
 
 def pooled(folds: tuple[FoldResult, ...]) -> tuple[pd.Series, pd.Series]:

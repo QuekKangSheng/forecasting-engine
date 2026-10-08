@@ -105,6 +105,7 @@ ROLE_NAMES: dict[TargetRole, str] = {TargetRole.EQUITY: "Equity", TargetRole.BON
 TABLE_COLUMNS: tuple[str, ...] = (
     "Model",
     "IC",
+    "Signal Rank IC",
     "OOS Rank IC",
     "RMSE",
     "PBO",
@@ -123,6 +124,7 @@ BADGE_LABELS = {"success": "Gate met", "danger": "Gate failed"}
 #: need none, and the three crash columns share one explanation.
 COLUMN_TERMS = {
     "IC": "IC",
+    "Signal Rank IC": "Signal Rank IC",
     "OOS Rank IC": "OOS Rank IC",
     "RMSE": "RMSE",
     "PBO": "PBO",
@@ -134,7 +136,12 @@ COLUMN_TERMS = {
     "Constant folds": "Constant folds",
 }
 
-GATE_NAMES = {"oos_rank_ic": "OOS Rank IC", "pbo": "PBO"}
+GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "pbo": "PBO"}
+
+#: Bumped whenever what a saved result holds changes meaning, so a result saved
+#: by older code is refitted rather than shown under today's columns. 2: the
+#: gate moved to the Signal Rank IC and results carry each fold's baseline.
+RESULT_VERSION = 2
 
 st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
 ui.inject()
@@ -501,7 +508,9 @@ def _job_id(role: TargetRole) -> str:
 def _result_key(role: TargetRole, name: str, settings: dict[str, object]) -> str:
     """Everything a model's result depends on: the shared settings, the target,
     the model and, for a polynomial row, its own setting."""
-    return model_jobs.result_key(shared_settings, role.value, name, settings.get(name))
+    return model_jobs.result_key(
+        RESULT_VERSION, shared_settings, role.value, name, settings.get(name)
+    )
 
 
 def _collect(role: TargetRole, runs: model_runs.TabRuns, settings: dict[str, object]) -> None:
@@ -605,7 +614,7 @@ def _gate_line(name: str, result: ModelRunResult) -> str:
         return f"**{name}**: the baseline to beat — not gated."
     if result.pbo is None:
         return f"**{name}**: not gated — no configuration search, so no PBO."
-    outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
+    outcome = evaluate_candidate(result.gated_rank_ic, result.pbo)
     if outcome.promoted:
         return f"**{name}**: gate met."
     failed = " and ".join(GATE_NAMES[g] for g in outcome.failed_gates)
@@ -862,7 +871,7 @@ def _show_active_picker(
     pending_key = f"pending_active_{key}"
     if cols[1].button("Set as active", key=f"set_active_{key}"):
         result = runs[selected].result
-        if is_high_risk(evaluate_candidate(result.oos_rank_ic, result.pbo)):
+        if is_high_risk(evaluate_candidate(result.gated_rank_ic, result.pbo)):
             st.session_state[pending_key] = selected
         else:
             st.session_state.pop(pending_key, None)
@@ -873,7 +882,7 @@ def _show_active_picker(
     pending = st.session_state.get(pending_key)
     if pending in runs:
         result = runs[pending].result
-        outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
+        outcome = evaluate_candidate(result.gated_rank_ic, result.pbo)
         _confirm_high_risk(role, pending, result, outcome.failed_gates, target_name)
 
 
@@ -885,7 +894,7 @@ def _directional_default(role: TargetRole, options: list[str], runs) -> int:
         return options.index(current.model_name)
     for i, name in enumerate(options):
         result = runs[name].result
-        if result.pbo is not None and evaluate_candidate(result.oos_rank_ic, result.pbo).promoted:
+        if result.pbo is not None and evaluate_candidate(result.gated_rank_ic, result.pbo).promoted:
             return i
     forecasting = [i for i, name in enumerate(options) if name in ACTIVE_MODEL_CANDIDATES]
     return forecasting[0] if forecasting else 0
@@ -993,12 +1002,13 @@ def _show_directional(
             f"{pnl.no_forecast} of {pnl.calls} calls had no forecast (a signal was "
             "missing that day), so the strategy stayed in cash and the hit rate leaves them out."
         )
-    other = next(h for h in HORIZONS if h != horizon) if len(HORIZONS) > 1 else None
-    if other is not None:
+    others = [h for h in HORIZONS if h != horizon]
+    if others:
+        listed = ", ".join(str(h) for h in others[:-1])
+        listed = f"{listed} or {others[-1]}" if listed else str(others[-1])
         st.caption(
             f"This is the {horizon}-day horizon. Each horizon is reported separately: "
-            f"switch to {other} {'day' if other == 1 else 'days'} in Settings and run "
-            "again to see it."
+            f"switch to {listed} days in Settings and run again to see another."
         )
 
 
@@ -1036,9 +1046,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     nothing_to_run = models == [NAIVE]
     job = model_jobs.job(_job_id(role))
     running = job is not None and job.active
-    clicked = st.button(
-        "Run", type="primary", key=f"run_{key}", disabled=nothing_to_run or running
-    )
+    clicked = st.button("Run", type="primary", key=f"run_{key}", disabled=nothing_to_run or running)
     if (clicked or run_all) and not nothing_to_run and not running:
         runners = {
             NAIVE: functools.partial(_run_naive, panel, splitter),

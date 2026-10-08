@@ -1,10 +1,21 @@
-"""Turn the active equity and bond models' forecasts into a mean-variance weight
-schedule — the input ``portfolio.backtest.run_backtest`` chains through history.
+"""Turn the active equity and bond models' signals into a weight schedule — the
+input ``portfolio.backtest.run_backtest`` chains through history.
 
-Each active model's forecast was captured fold by fold, one walk-forward test
-window at a time (``store.active_model``); a rebalance happens once per test
-window, not once per day, so the dates here are each fold's first date, not
-every date a forecast exists for.
+The allocation starts from the 50/50 benchmark and tilts away from it by what the
+signals say, in a benchmark-relative mean-variance problem: maximise the
+expected signal return of the tilt less ``λ/2`` times its variance. Risk here is
+how far the portfolio strays from the benchmark, so risk aversion sets how much
+a signal is acted on, and with no signal the portfolio is the benchmark.
+
+A model's signal is its forecast less its fold's training-mean return
+(``validation.harness.signal_forecasts``). The training means are left out on
+purpose: equity's trailing mean is far above bond's in most windows and swings
+with recent performance, so fed to the optimiser it pins the allocation to a
+bound whatever the signals say.
+
+A rebalance happens once every ``horizon`` trading days over the out-of-sample
+period, so each allocation is held for exactly as long as the forecast it was
+set from looks ahead.
 """
 
 from __future__ import annotations
@@ -16,7 +27,7 @@ import pandas as pd
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel
-from forecasting_engine.portfolio.backtest import ASSETS
+from forecasting_engine.portfolio.backtest import ASSETS, BASELINE_WEIGHTS
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 
 
@@ -24,10 +35,16 @@ class OptimizeDataError(ValueError):
     """The message is written for a portfolio manager, like the other models' errors."""
 
 
-DEFAULT_RISK_AVERSION: float = 4.0
-"""Working default, not sponsor-confirmed: a moderately risk-averse investor, in
-line with standard CAPM-style calibrations. Revisit once Alpha Norm states a
-risk-aversion preference."""
+RISK_AVERSION_SCALE: Mapping[int, float] = {1: 1.0, 2: 3.0, 3: 10.0, 4: 30.0, 5: 100.0}
+"""The sponsor's 1-5 risk-aversion scale (1 most risk-loving, 5 most risk-averse)
+mapped to the optimiser's λ. Working calibration, not sponsor-confirmed: each step
+multiplies λ by about 3. On the Sep 2026 Bloomberg data, at a 10-day horizon and a
+252-day train window, level 1 sits at a weight bound on most rebalances where a
+signal is present, and level 5 keeps nine rebalances in ten within about 12
+percentage points of 50/50."""
+
+DEFAULT_RISK_LEVEL: int = 3
+"""Working default, not sponsor-confirmed: the middle of the scale."""
 
 DEFAULT_WEIGHT_BOUNDS: tuple[float, float] = (0.2, 0.8)
 """Working default, not sponsor-confirmed: stops either asset being pushed to a
@@ -51,14 +68,16 @@ def common_rebalance_dates(
     test_window: int,
     embargo: int,
 ) -> pd.DatetimeIndex:
-    """One date per walk-forward test window, on the calendar both targets share.
+    """Every ``horizon``-th out-of-sample date on the calendar both targets share,
+    from the first walk-forward test window's start.
+
+    An allocation is held until the next rebalance, so holding it for the
+    forecast's own horizon is what the forecast speaks to: a 5-day forecast held
+    20 days says nothing about the last 15 of them.
 
     Equity's and bond's own active models were each walk-forward split over
-    their *own* calendar, so if one target's price history starts even a few
-    days before the other's, their independent "every test_window-th day"
-    counts drift out of phase and rarely land on the same date twice. Splitting
-    one shared calendar instead keeps both targets' rebalance cadence in sync
-    throughout, the same way their settings are already required to match.
+    their *own* calendar, so splitting one shared calendar keeps both targets'
+    out-of-sample period, and so the rebalance dates, in step.
     """
     calendar = _common_price_calendar(prices)
     panel = FeaturePanel(
@@ -67,7 +86,10 @@ def common_rebalance_dates(
     splitter = PurgedWalkForward(
         train=train_window, test=test_window, embargo=embargo, tuning_rows=TUNING_ROWS
     )
-    return pd.DatetimeIndex([test[0] for _, test in splitter.split(panel) if len(test)])
+    tested = [test for _, test in splitter.split(panel) if len(test)]
+    if not tested:
+        return pd.DatetimeIndex([])
+    return tested[0].append(tested[1:])[::horizon]
 
 
 def expected_returns(
@@ -143,98 +165,103 @@ def covariance_at_rebalance(
 class WeightBreakdown:
     """How one rebalance's equity weight was reached, for a reader to follow."""
 
-    lowest_risk: float
-    """Equity's weight in the minimum-variance mix: where the allocation sits
-    when the two forecasts are equal."""
+    anchor: float
+    """Equity's benchmark weight: where the allocation sits when the two
+    signals agree."""
     forecast_tilt: float
-    """What the difference between the forecasts adds to equity at this risk
+    """What the difference between the signals adds to equity at this risk
     aversion, before any bound."""
     equity: float
     """Equity's final weight, after the bounds."""
 
     @property
     def unconstrained(self) -> float:
-        return self.lowest_risk + self.forecast_tilt
+        return self.anchor + self.forecast_tilt
 
     @property
     def capped(self) -> bool:
         return self.equity != self.unconstrained
 
 
+def risk_aversion_for(level: int) -> float:
+    """λ for a level on the sponsor's 1-5 scale (``RISK_AVERSION_SCALE``)."""
+    if level not in RISK_AVERSION_SCALE:
+        raise ValueError(f"risk aversion level must be 1 to 5, got {level}")
+    return RISK_AVERSION_SCALE[level]
+
+
 def weight_breakdown(
-    expected_return: pd.Series,
+    expected_signal: pd.Series,
     covariance: pd.DataFrame,
     *,
-    risk_aversion: float = DEFAULT_RISK_AVERSION,
+    risk_aversion: float = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
 ) -> WeightBreakdown:
-    """``solve_weights``'s equity weight, split into the lowest-risk mix and the
-    forecasts' tilt from it: ``w = (σ_b² − σ_eb)/D + (μ_e − μ_b)/(λ·D)``, with
+    """``solve_weights``'s equity weight, split into the benchmark weight and the
+    signals' tilt from it: ``w = w_bench + (s_e − s_b)/(λ·D)``, with
     ``D = σ_e² − 2σ_eb + σ_b²``, then clipped to ``bounds``."""
     equity, bond = ASSETS
-    mu_diff = expected_return[equity] - expected_return[bond]
-    var_ee, var_bb = covariance.loc[equity, equity], covariance.loc[bond, bond]
-    cov_eb = covariance.loc[equity, bond]
-    var_diff = var_ee - 2 * cov_eb + var_bb
-    if var_diff <= 0:
-        midpoint = sum(bounds) / 2
-        return WeightBreakdown(lowest_risk=midpoint, forecast_tilt=0.0, equity=midpoint)
-    lowest_risk = float((var_bb - cov_eb) / var_diff)
-    tilt = float(mu_diff / (risk_aversion * var_diff))
-    w_equity = min(max(lowest_risk + tilt, bounds[0]), bounds[1])
-    return WeightBreakdown(lowest_risk=lowest_risk, forecast_tilt=tilt, equity=w_equity)
+    anchor = float(BASELINE_WEIGHTS[equity])
+    signal_diff = expected_signal[equity] - expected_signal[bond]
+    var_diff = (
+        covariance.loc[equity, equity]
+        - 2 * covariance.loc[equity, bond]
+        + covariance.loc[bond, bond]
+    )
+    tilt = float(signal_diff / (risk_aversion * var_diff)) if var_diff > 0 else 0.0
+    w_equity = min(max(anchor + tilt, bounds[0]), bounds[1])
+    return WeightBreakdown(anchor=anchor, forecast_tilt=tilt, equity=w_equity)
 
 
 def solve_weights(
-    expected_return: pd.Series,
+    expected_signal: pd.Series,
     covariance: pd.DataFrame,
     *,
-    risk_aversion: float = DEFAULT_RISK_AVERSION,
+    risk_aversion: float = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
 ) -> pd.Series:
-    """The long-only two-asset mean-variance weights maximising
-    ``w @ expected_return - risk_aversion / 2 * w @ covariance @ w``, subject to
-    the two weights summing to 1 and each lying within ``bounds``.
+    """The long-only two-asset weights maximising the benchmark-relative
+    mean-variance objective ``a @ expected_signal - risk_aversion / 2 * a @
+    covariance @ a``, where ``a`` is the tilt from ``BASELINE_WEIGHTS``, subject
+    to the two weights summing to 1 and each lying within ``bounds``.
 
-    Two assets collapse that constrained problem to one free variable — equity's
-    weight, bond being its complement — which has a closed form: maximising
-    over the free variable gives the unconstrained optimum below, then clipped
-    to ``bounds``. When the two assets' returns are so alike that splitting
-    between them changes no risk at all (equal variance, perfect correlation),
-    there is nothing for the covariance term to decide between them, and the
-    midpoint of ``bounds`` is used rather than dividing by zero.
+    Two assets collapse that to one free variable — equity's tilt, bond's being
+    its negative — with a closed form, then clipped to ``bounds``. When the two
+    assets' returns are so alike that tilting between them changes no risk at
+    all (equal variance, perfect correlation), the covariance can't size the
+    tilt, and the benchmark is kept rather than dividing by zero.
     """
     equity, bond = ASSETS
     w_equity = weight_breakdown(
-        expected_return, covariance, risk_aversion=risk_aversion, bounds=bounds
+        expected_signal, covariance, risk_aversion=risk_aversion, bounds=bounds
     ).equity
     return pd.Series({equity: w_equity, bond: 1 - w_equity})
 
 
 def weight_schedule(
-    forecasts: Mapping[TargetRole, pd.Series],
+    signals: Mapping[TargetRole, pd.Series],
     prices: Mapping[TargetRole, pd.Series],
     *,
     horizon: int,
     train_window: int,
     test_window: int,
     embargo: int,
-    risk_aversion: float = DEFAULT_RISK_AVERSION,
+    risk_aversion: float = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
 ) -> pd.DataFrame:
     """The full weight schedule ``portfolio.backtest.run_backtest`` chains
     through history: one row of equity/bond weights per rebalance date, solved
-    from each active model's forecast and the equity/bond covariance over that
+    from each active model's signal and the equity/bond covariance over that
     rebalance's own training window.
 
-    A rebalance whose expected return is missing (a model had no prediction
-    that day) or whose training window can't support a covariance estimate is
-    left out rather than guessed at.
+    A rebalance whose signal is missing (a model had no prediction that day) or
+    whose training window can't support a covariance estimate is left out rather
+    than guessed at.
     """
     rebalance_dates = common_rebalance_dates(
         prices, horizon=horizon, train_window=train_window, test_window=test_window, embargo=embargo
     )
-    returns = expected_returns(rebalance_dates, forecasts)
+    returns = expected_returns(rebalance_dates, signals)
     rows: dict[pd.Timestamp, pd.Series] = {}
     for date in rebalance_dates:
         row = returns.loc[date]

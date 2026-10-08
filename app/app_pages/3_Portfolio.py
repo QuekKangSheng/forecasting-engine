@@ -1,5 +1,5 @@
 """Portfolio Optimizer page: combine the active equity and bond models' saved
-forecasts into a mean-variance weight schedule, then backtest that schedule
+signals into a 50/50-anchored weight schedule, then backtest that schedule
 against the equal-weight benchmark (FYP-19).
 
 Reads whichever settings (horizon, walk-forward windows) produced the active
@@ -44,8 +44,9 @@ ui.inject()
 
 st.title("Portfolio Optimizer")
 st.caption(
-    "A long-only, two-asset mean-variance allocation between the active equity "
-    "and bond models, re-derived at every rebalance."
+    "A long-only, two-asset allocation that starts from 50/50 and tilts towards "
+    "whichever index the active models' signals favour, re-derived every forecast "
+    "horizon."
 )
 
 equity_active = active_model.get_active_model(EQUITY)
@@ -111,30 +112,32 @@ prices = {
     BOND: indexed[target_columns[BOND]].dropna(),
 }
 
-forecasts = {
-    EQUITY: active_model.get_active_model_forecast(EQUITY),
-    BOND: active_model.get_active_model_forecast(BOND),
+signals = {
+    EQUITY: active_model.get_active_model_signal(EQUITY),
+    BOND: active_model.get_active_model_signal(BOND),
 }
-if forecasts[EQUITY] is None or forecasts[BOND] is None:
+if signals[EQUITY] is None or signals[BOND] is None:
     st.info(
-        "The active model's forecast wasn't saved — set it active again on the Models "
-        "page to capture it.",
+        "The active model's signal wasn't saved — it was set active before signals were "
+        "captured. Run it again on the Models page and set it active again.",
         icon=":material/info:",
     )
     st.stop()
 
 with st.expander("Settings"):
-    risk_aversion = st.number_input(
-        "Risk aversion (λ)",
-        min_value=0.1,
-        value=optimize.DEFAULT_RISK_AVERSION,
-        step=0.5,
-        help=glossary.term("Risk aversion (λ)"),
+    risk_level = st.select_slider(
+        "Risk aversion",
+        options=list(optimize.RISK_AVERSION_SCALE),
+        value=optimize.DEFAULT_RISK_LEVEL,
+        format_func=lambda level: {1: "1 · risk-loving", 5: "5 · risk-averse"}.get(
+            level, str(level)
+        ),
+        help=glossary.term("Risk aversion"),
     )
+    risk_aversion = optimize.risk_aversion_for(risk_level)
     st.caption(
-        "Higher keeps the allocation near the lowest-risk mix whatever the forecasts "
-        "say; lower follows the forecasts. About 1–2 is risk-seeking, 3–5 moderate, "
-        "8 or more conservative."
+        "1 follows the signals as far as the limits below allow; 5 stays close to "
+        f"50/50 whatever they say. Level {risk_level} is λ = {risk_aversion:g}."
     )
     # Equity and bond always sum to 100%, so one floor bounds both: at least this
     # much in each means at most 100% minus it in the other.
@@ -151,7 +154,7 @@ with st.expander("Settings"):
     st.caption(f"Each index stays between {lower:.0%} and {upper:.0%}.")
 
 schedule = optimize.weight_schedule(
-    forecasts,
+    signals,
     prices,
     horizon=equity_active.horizon,
     train_window=equity_active.train_window,
@@ -177,9 +180,9 @@ cols = st.columns(2)
 cols[0].metric(equity_name, f"{latest[EQUITY]:.0%}")
 cols[1].metric(bond_name, f"{latest[BOND]:.0%}")
 
-latest_forecast = optimize.expected_returns(pd.DatetimeIndex([latest_date]), forecasts).iloc[0]
+latest_signal = optimize.expected_returns(pd.DatetimeIndex([latest_date]), signals).iloc[0]
 breakdown = optimize.weight_breakdown(
-    latest_forecast,
+    latest_signal,
     optimize.covariance_at_rebalance(
         latest_date,
         prices,
@@ -197,17 +200,17 @@ cap = (
     else ""
 )
 st.caption(
-    f"How this was set: the lowest-risk mix is {breakdown.lowest_risk:.0%} {equity_name}. "
-    f"The forecasts ({equity_name} {latest_forecast[EQUITY]:+.2%}, {bond_name} "
-    f"{latest_forecast[BOND]:+.2%} over {equity_active.horizon} days) {direction} "
-    f"{abs(breakdown.forecast_tilt):.0%} at risk aversion {risk_aversion:g}, giving "
-    f"{breakdown.unconstrained:.0%}{cap}."
+    f"How this was set: the benchmark holds {breakdown.anchor:.0%} {equity_name}. The "
+    f"signals — what each model adds to its training-mean return — ({equity_name} "
+    f"{latest_signal[EQUITY]:+.2%}, {bond_name} {latest_signal[BOND]:+.2%} over "
+    f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%} at risk "
+    f"aversion {risk_level}, giving {breakdown.unconstrained:.0%}{cap}."
 )
 
 st.markdown(
     ui.eyebrow(
         "Weights per rebalance",
-        "Each rebalance's allocation, re-derived from that date's forecasts and risk.",
+        "Each rebalance's allocation, re-derived from that date's signals and risk.",
     ),
     unsafe_allow_html=True,
 )
@@ -257,7 +260,8 @@ costs = backtest.costs_bps
 st.caption(
     f"Backtest {backtest.start:%d %b %Y} to {backtest.end:%d %b %Y}. The optimised "
     f"portfolio is rebalanced at each of the {len(schedule)} rebalances above (every "
-    f"{equity_active.test_window} trading days); the benchmark is reset to 50/50 "
+    f"{equity_active.horizon} trading days, the forecast horizon); the benchmark is reset "
+    "to 50/50 "
     f"{REBALANCE_FREQUENCY}. Trading costs: {costs[EQUITY]:g} bp equity, "
     f"{costs[BOND]:g} bp bond. Forecasts from {'; '.join(backtest.active_models)}."
 )

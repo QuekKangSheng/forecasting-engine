@@ -1,5 +1,6 @@
 """The DuckDB active-model-per-role log."""
 
+from dataclasses import replace
 from datetime import datetime
 
 import pandas as pd
@@ -10,6 +11,7 @@ from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.store.active_model import (
     get_active_model,
     get_active_model_forecast,
+    get_active_model_signal,
     set_active_model,
     settings_match,
 )
@@ -224,10 +226,44 @@ def test_a_differing_setting_is_reported_as_a_mismatch(db, overridden):
     set_active_model(
         TargetRole.EQUITY, "Polynomial", _result(), high_risk=False, db_path=db, **SETTINGS
     )
-    set_active_model(
-        TargetRole.BOND, "ML", _result(), high_risk=False, db_path=db, **bond_settings
-    )
+    set_active_model(TargetRole.BOND, "ML", _result(), high_risk=False, db_path=db, **bond_settings)
 
     equity = get_active_model(TargetRole.EQUITY, db_path=db)
     bond = get_active_model(TargetRole.BOND, db_path=db)
     assert settings_match(equity, bond) is False
+
+
+# --- the signal: each forecast less its fold's training mean ----------------------
+
+
+def test_each_forecasts_baseline_is_saved_so_its_signal_can_be_read_back(db):
+    dates = pd.date_range("2026-01-01", periods=3, freq="D")
+    forecast = pd.Series([0.012, -0.004, 0.03], index=dates)
+    baseline = pd.Series([0.002, 0.002, 0.01], index=dates)
+    result = replace(_result(forecast=forecast), baseline=baseline, signal_rank_ic=0.05)
+    set_active_model(
+        TargetRole.EQUITY, "Polynomial", result, high_risk=False, db_path=db, **SETTINGS
+    )
+
+    signal = get_active_model_signal(TargetRole.EQUITY, db_path=db)
+    assert list(signal) == pytest.approx([0.01, -0.006, 0.02])
+    assert get_active_model(TargetRole.EQUITY, db_path=db).signal_rank_ic == 0.05
+
+
+def test_a_model_saved_without_baselines_has_no_signal(db):
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    set_active_model(
+        TargetRole.EQUITY,
+        "Polynomial",
+        _result(forecast=pd.Series([0.01, 0.02], index=dates)),
+        high_risk=False,
+        db_path=db,
+        **SETTINGS,
+    )
+
+    assert get_active_model_signal(TargetRole.EQUITY, db_path=db) is None
+    assert get_active_model_forecast(TargetRole.EQUITY, db_path=db) is not None
+
+
+def test_with_no_active_model_the_signal_is_none(db):
+    assert get_active_model_signal(TargetRole.EQUITY, db_path=db) is None

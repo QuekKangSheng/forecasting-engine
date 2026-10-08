@@ -75,7 +75,7 @@ hosting step is needed.
 
 **Forecasting and validation**
 
-- **Model families**, each forecasting a 1- or 5-day forward return:
+- **Model families**, each forecasting a 1-, 5-, 10- or 20-day forward return:
   - a naive training-mean baseline, the bar every model has to beat;
   - the Fama-French five-factor benchmark (equity only);
   - a polynomial, one at a time: derived automatically from the signals, or the
@@ -86,9 +86,9 @@ hosting step is needed.
 - **Walk-forward validation** — every model is trained on a past window and
   scored on the days after it, with an embargo between the two, under one shared
   set of settings that the results table states.
-- **Overfitting checks** — pooled out-of-sample Rank IC, PBO (probability of
-  backtest overfitting), crash-day diagnostics, and promotion gates on Rank IC
-  and PBO.
+- **Overfitting checks** — Signal Rank IC (what a model adds to its training-mean
+  forecast, out of sample), PBO (probability of backtest overfitting), crash-day
+  diagnostics, and promotion gates on Signal Rank IC and PBO.
 - **Active model** — the model chosen to carry forward for each index, saved in
   DuckDB, with a confirmation step for a model that failed both gates.
 - **Directional P&L** — for one model and one index, what holding the index only
@@ -98,8 +98,9 @@ hosting step is needed.
 
 **Portfolio**
 
-- **Mean-variance optimiser** — combines the active equity and bond forecasts
-  with recent risk into long-only weights at each rebalance.
+- **Optimiser** — starts from 50/50 and tilts towards whichever index the active
+  models' signals favour, sized by recent risk and a 1–5 risk-aversion scale,
+  rebalanced every forecast horizon.
 - **Backtest against 50/50** — runs the optimised weights and a monthly-reset
   50/50 benchmark through the same days, before and after trading costs, and
   compares Sharpe, Sortino, Calmar and maximum drawdown side by side.

@@ -43,9 +43,11 @@ TERMS: Mapping[str, str] = {
         "validation is used. No term is picked out in advance."
     ),
     "Forecast horizon": (
-        "How many trading days ahead to predict. Each horizon is run and "
-        "reported separately — the two are never averaged, because a signal "
-        "that works over a week often does nothing over a day."
+        "How many trading days ahead to predict: 1, 5, 10 or 20 (about a month). "
+        "Each horizon is run and reported separately, never averaged, because a "
+        "signal that works over a fortnight often does nothing over a day. The "
+        "portfolio rebalances once per horizon, so a forecast is held for exactly "
+        "as long as it looks ahead."
     ),
     "Walk-forward": (
         "The model is trained on a block of history, then graded on the days "
@@ -57,7 +59,7 @@ TERMS: Mapping[str, str] = {
     ),
     "Walk-forward train window (days)": (
         "How much history the model studies before each grading period "
-        "(120 days ≈ 6 months). Longer gives the fit more to learn from; "
+        "(252 days ≈ 1 year). Longer gives the fit more to learn from; "
         "shorter keeps it closer to current market conditions."
     ),
     "Walk-forward test window (days)": (
@@ -70,7 +72,7 @@ TERMS: Mapping[str, str] = {
         "graded on. A 5-day forecast made on the last training day is only "
         "settled 5 days later, so without the gap the model would be trained "
         "on an outcome it is about to be graded on — a leak that makes results "
-        "look far better than they are. Fixed at the longest horizon."
+        "look far better than they are. Fixed at the longest horizon, 20 days."
     ),
     "Signal lag": (
         "Every signal is shifted forward a day, so a value dated today is one "
@@ -85,14 +87,24 @@ TERMS: Mapping[str, str] = {
         "edge, so treat a large value as a reason to look for a leak rather "
         "than a cause for celebration."
     ),
+    "Signal Rank IC": (
+        "What the signals add, scored: each forecast less its training block's "
+        "average return, compared in order with what actually happened, on data "
+        "the model never trained on. The headline number, and the one the "
+        "promotion gate is set on. The training average is left out because it "
+        "moves with recent performance whatever the signals say, so it can drown "
+        "a real signal or pass a model that has none. The two s.e.s beside it "
+        "are standard errors, one allowing for overlapping labels, one for errors "
+        "shared within a test window: a value within about two of the larger of "
+        "zero may be luck."
+    ),
     "OOS Rank IC": (
-        "Out-of-sample Rank IC: the same idea as IC, but comparing the *order* "
-        "of predictions with the order of outcomes, on data the model never "
-        "trained on. Using ranks stops one wild day from dominating the score, "
-        "which is why this is the headline number and the one the promotion "
-        "gate is set on. The two s.e.s beside it are standard errors, one "
-        "allowing for overlapping labels, one for errors shared within a test "
-        "window: a value within about two of the larger of zero may be luck."
+        "Out-of-sample Rank IC of the whole forecast, its level included: the "
+        "order of predictions against the order of outcomes, on data the model "
+        "never trained on. Shown for comparison with the Signal Rank IC; it is "
+        "not gated, because a forecast's level shifts with each training block's "
+        "average whatever the signals say. Far apart from the Signal Rank IC "
+        "means the level, not the signals, drove this score."
     ),
     "Rank IC within folds": (
         "The OOS Rank IC again, but with each fold's forecasts ranked only against "
@@ -103,7 +115,7 @@ TERMS: Mapping[str, str] = {
         "means most of that score came from levels, not from the signals."
     ),
     "Beyond 2 s.e.": (
-        "Whether the OOS Rank IC is more than two standard errors from zero, "
+        "Whether the Signal Rank IC is more than two standard errors from zero, "
         "judged on the larger of the two standard errors. No means a score of "
         "this size could easily be luck, even if it meets the gate. A diagnostic "
         "only: it does not change whether the gate is met."
@@ -174,8 +186,8 @@ TERMS: Mapping[str, str] = {
         "says nothing about direction, only weight."
     ),
     "Promotion gate": (
-        "The bar a model has to clear before it is considered for use: OOS Rank "
-        "IC above the threshold and PBO below it. The badge shows each "
+        "The bar a model has to clear before it is considered for use: Signal "
+        "Rank IC above the threshold and PBO below it. The badge shows each "
         "separately, so a model that scores well but overfits is visibly not "
         "promotable."
     ),
@@ -185,23 +197,22 @@ TERMS: Mapping[str, str] = {
         "the prior one immediately. A model that failed both promotion gates "
         "can still be set active, but asks for confirmation first."
     ),
-    "Risk aversion (λ)": (
-        "The optimiser picks the weights that maximise expected return minus "
-        "λ/2 × variance, both over the forecast horizon. With two assets that "
-        "comes to: equity weight = lowest-risk mix + (equity forecast − bond "
-        "forecast) / (λ × variance of the difference between the two). So λ "
-        "only scales how far the forecasts move the allocation away from the "
-        "lowest-risk mix. Near 0 the forecasts decide everything; very high "
-        "keeps the lowest-risk mix whatever they say. As a guide, 1–2 is "
-        "risk-seeking, 3–5 moderate (market-implied values sit around 2–4), and "
-        "8 or more conservative."
+    "Risk aversion": (
+        "How far the portfolio may stray from 50/50 on the strength of the "
+        "signals, on a scale of 1 (risk-loving) to 5 (risk-averse). The optimiser "
+        "starts at 50/50 and tilts: equity weight = 50% + (equity signal − bond "
+        "signal) / (λ × variance of the difference between the two indices' "
+        "returns), where a signal is what a model adds to its training-average "
+        "return. Risk is measured as distance from 50/50, so 1 (λ = 1) follows "
+        "the signals as far as the limits allow and 5 (λ = 100) barely moves. "
+        "Each step triples λ."
     ),
     "Weight bounds": (
         "The least either index may hold. Equity and bond always add up to "
         "100%, so a 20% floor on each also caps each at 80%. It stops a small, "
-        "noisy difference between the two forecasts swinging the portfolio to "
-        "one extreme. The optimiser does not start from 50/50 and tilt: it "
-        "solves for the weights directly, and the floor only clips the result."
+        "noisy difference between the two signals swinging the portfolio to "
+        "one extreme. The optimiser starts from 50/50 and tilts; the floor only "
+        "clips how far."
     ),
     "Directional P&L": (
         "What you would have earned by holding this index only when the model "

@@ -26,13 +26,15 @@ flowchart TD
     K["11. Selection and PBO<br/>validation/harness, validation/pbo"] --> L
     L["12. Gates<br/>validation/gates"]
     J --> M["13. Naive baseline row<br/>models/naive"]
-    N["14. Portfolio backtest vs 50/50<br/>portfolio/backtest, portfolio/performance"] --> P
+    J --> Q["17. Optimiser: 50/50 tilted by the signals<br/>portfolio/optimize"]
+    Q --> N["14. Portfolio backtest vs 50/50<br/>portfolio/backtest, portfolio/performance"]
+    N --> P
     J --> O["15. Directional P&L vs buy-and-hold<br/>portfolio/directional"]
     P["16. Historical VaR and CVaR<br/>risk/tail"]
 ```
 
-Step 14 consumes an optimiser's weight schedule rather than the steps above: it
-judges an allocation, not a forecast. Step 15 replays one model's out-of-sample
+Step 14 consumes the optimiser's weight schedule (step 17), built from the active
+models' signals: it judges an allocation, not a forecast. Step 15 replays one model's out-of-sample
 forecasts for one index.
 
 ## 1. Ingestion and parsing
@@ -134,7 +136,8 @@ date of the price each label reaches, which the splitter uses to purge.
   training window is the `train` rows ending `embargo` rows before its test
   window (defaults `DEFAULT_TRAIN_WINDOW` and `DEFAULT_TEST_WINDOW`). Training
   windows may reach back into the tuning period.
-- **Embargo.** `EMBARGO_DAYS`, the longest horizon, whichever horizon is chosen.
+- **Embargo.** `EMBARGO_DAYS`, the longest horizon (20 days), whichever horizon is
+  chosen.
 - **Purge.** A training row is dropped if its label's price (`label_end`) is dated
   on or after the test window opens, or if it lies within `h` rows of it.
   `window_before` applies the same purge to tuning windows.
@@ -250,10 +253,19 @@ values end to end, then computes once:
 
 - **IC**: the Pearson correlation of prediction and outcome. It mixes the scales
   of different folds' fits, so it is not gated.
-- **OOS Rank IC**: the Spearman correlation, computed as the Pearson correlation
-  of ranks.
+- **Signal Rank IC** (`validation/harness.signal_forecasts`), the gated figure:
+  the Rank IC of each fold's predictions less that fold's training-window mean
+  target, pooled. The training mean is what the naive baseline forecasts, so this
+  scores what a model adds to it. A forecast's level moves with its fold's
+  training mean whatever the signals say, and on the Sep 2026 Bloomberg data that
+  trailing mean ranked future equity returns the wrong way (pooled Rank IC down to
+  −0.25 at a 20-day horizon): pooled whole, the level swamped signals that were
+  there. `ModelRunResult.baseline` keeps each date's training mean, so the
+  portfolio optimiser can read the signal back.
+- **OOS Rank IC**: the Spearman correlation of the whole forecast, its level
+  included, computed as the Pearson correlation of ranks. Shown, not gated.
 - **RMSE.**
-- **Two Newey-West standard errors of the Rank IC** (`validation/metrics.rank_ic_se`).
+- **Two Newey-West standard errors of each of those Rank ICs** (`validation/metrics.rank_ic_se`).
   Each regresses the standardised ranks of the outcome on those of the prediction
   with a HAC covariance: "s.e. (h−1 lags)" allows for overlapping h-day labels,
   and "s.e. (test-window lags)" uses as many lags as a test window has rows,
@@ -267,7 +279,7 @@ values end to end, then computes once:
   live S&P data a forecast using no signal scored +0.10 that way. Within folds it
   scores nothing. A fold that forecasts one value throughout contributes exactly
   zero.
-- **Beyond 2 s.e.**: whether the pooled Rank IC is more than
+- **Beyond 2 s.e.**: whether the Signal Rank IC is more than
   `SIGNIFICANCE_SE_MULTIPLE` of the larger of its two standard errors from zero.
 - **Constant folds**: how many folds forecast a single value for their whole
   test window.
@@ -281,14 +293,14 @@ values end to end, then computes once:
 
 Where a family has several setups (the derived polynomial's grid; tuned XGBoost
 vs. tuned LightGBM), `validation/harness.select_best_candidate` reports the setup
-with the best pooled OOS Rank IC.
+with the best Signal Rank IC.
 
 PBO is computed by CSCV (`validation/pbo.compute_pbo`):
 
 1. Keep the rows where every setup has a prediction.
 2. Split those rows into `N_BLOCKS` contiguous blocks.
-3. For every way of calling half the blocks in-sample, rank the setups by Rank IC
-   on that half.
+3. For every way of calling half the blocks in-sample, rank the setups by Signal
+   Rank IC on that half.
 4. PBO is the share of splits where the in-sample winner's out-of-sample
    percentile rank (ties averaged) is at or below one half.
 
@@ -299,13 +311,13 @@ Optuna's trials, since tuning has its own period.
 
 `validation/gates.evaluate_candidate` promotes a model only if both hold:
 
-- pooled OOS Rank IC is greater than `OOS_RANK_IC_GATE` (strictly);
+- the Signal Rank IC is greater than `SIGNAL_RANK_IC_GATE` (strictly);
 - PBO is at most `PBO_GATE`.
 
 A model with no configuration search (FF5, a user polynomial, the naive
 baseline) has no PBO; it is shown ungated rather than failing. The standard
-errors do not enter the gate, and nor do the Rank IC within folds, Beyond 2
-s.e. and Constant folds: those are shown beside it so a reader can see when a
+errors do not enter the gate, and nor do the plain OOS Rank IC, the Rank IC
+within folds, Beyond 2 s.e. and Constant folds: those are shown beside it so a reader can see when a
 score that meets the gate could be luck or comes from forecast levels alone.
 
 ## 13. Naive baseline
@@ -314,7 +326,8 @@ score that meets the gate could be luck or comes from forecast levels alone.
 return over its own training window. It forecasts only on rows where every panel
 signal is present, the rows the polynomial and machine learning can score, so the
 comparison is like for like. It is scored exactly like the other models, runs on
-every Run for both targets, and is not gated. A constant forecast never flags a
+every Run for both targets, and is not gated. Its signal is zero by definition, so
+its Signal Rank IC is undefined ("—"). A constant forecast never flags a
 crash day, so its crash recall is 0 and its precision is shown as "—".
 
 ## 14. Portfolio backtest
@@ -389,9 +402,9 @@ the model never trained on.
    it, as if it were the whole period: steps begin on its first date and both
    cumulative returns start from zero there. The chart zooms and pans in the
    browser alone, so it never reruns the page.
-2. **Steps.** At `h` = 1, one call per date. At `h` = 5 the dates are stepped
-   every 5 dates from the first, so each step's 5-day return ends where the next
-   begins and compounding never counts a day twice. Each horizon is reported
+2. **Steps.** At `h` = 1, one call per date. At a longer `h` the dates are
+   stepped every `h` dates from the first, so each step's `h`-day return ends
+   where the next begins and compounding never counts a day twice. Each horizon is reported
    separately; the page shows the one its results were run under.
 3. **Strategy.** Fully invested in the index on a step whose forecast is above
    zero, in cash otherwise, earning that step's realised return or nothing. The
@@ -431,6 +444,46 @@ The Portfolio page shows these under the performance table, tagged "Historical",
 for both portfolios on the chosen basis (before or after costs), with each
 path's maximum drawdown beside them.
 
+## 17. Portfolio optimiser
+
+`portfolio/optimize.weight_schedule` turns the active equity and bond models'
+signals into the weight schedule step 14 backtests.
+
+1. **Signals, not forecasts.** Each active model's saved forecast less its
+   fold's training-mean target (`store/active_model.get_active_model_signal`),
+   as scored by the Signal Rank IC (§10). The training means are left out:
+   equity's is far above bond's in most windows and swings with recent
+   performance, so in the optimiser it pinned the allocation to a bound on most
+   rebalances whatever the signals said.
+2. **Rebalance dates.** Every `h`-th date of the out-of-sample period, on the
+   calendar both indices share, from the first walk-forward test window's start
+   (`common_rebalance_dates`). Each allocation is held for exactly the horizon
+   its forecast looks ahead; a 5-day forecast held 20 days says nothing about the
+   last 15. With perfect foresight on the Sep 2026 data, rebalancing every 20
+   days, a 5-day forecast reached a Sharpe of 1.15 and a 20-day one 1.91, against
+   0.83 for 50/50.
+3. **Covariance.** Daily equity/bond return covariance over the model's own
+   train window, ending `EMBARGO_DAYS` before the rebalance and purged like a
+   training window, scaled to `h` days (`covariance_at_rebalance`).
+4. **Weights.** The benchmark-relative mean-variance problem: maximise
+   `a·s − λ/2 · a'Σa`, where `a` is the tilt from `BASELINE_WEIGHTS`, `s` the
+   two signals and `Σ` the covariance. With two assets,
+   `w_equity = 0.5 + (s_equity − s_bond) / (λ · D)`, with
+   `D = σ_e² − 2σ_eb + σ_b²`, then clipped to the bounds (default
+   `DEFAULT_WEIGHT_BOUNDS`, set on the page as a minimum in each index). Risk
+   is how far the portfolio strays from 50/50, so with no signal the portfolio is
+   the benchmark, and when `D` is zero the benchmark is kept.
+5. **Risk aversion.** Chosen on the sponsor's 1-5 scale, 1 most risk-loving and
+   5 most risk-averse, and mapped to `λ` by `RISK_AVERSION_SCALE` (default
+   `DEFAULT_RISK_LEVEL`). Each step roughly triples `λ`. A working calibration:
+   at a 10-day horizon and a 252-day window on the Sep 2026 data, level 1 sits at
+   a bound on most rebalances where a signal is present, and level 5 keeps nine
+   rebalances in ten within about 12 points of 50/50.
+
+A rebalance whose signal is missing, or whose window can't support a covariance,
+is left out. The Portfolio page shows, for the latest rebalance, the benchmark
+weight, the signals and the tilt they gave.
+
 ## Parameters
 
 Values are Python literals as the code holds them.
@@ -451,10 +504,10 @@ Values are Python literals as the code holds them.
 | `_TOTAL_RETURN_FIELD` | `forecasting_engine.ingest.align` | `"TOT_RETURN_INDEX"` |
 | `_PRICE_FIELD` | `forecasting_engine.ingest.align` | `"PX_LAST"` |
 | `_QUOTE_FIELDS` | `forecasting_engine.ingest.align` | `frozenset({"PX_BID", "PX_ASK"})` |
-| `HORIZONS` | `model_settings` | `(1, 5)` |
-| `DEFAULT_HORIZON` | `model_settings` | `5` |
-| `EMBARGO_DAYS` | `model_settings` | `5` |
-| `DEFAULT_TRAIN_WINDOW` | `model_settings` | `120` |
+| `HORIZONS` | `model_settings` | `(1, 5, 10, 20)` |
+| `DEFAULT_HORIZON` | `model_settings` | `20` |
+| `EMBARGO_DAYS` | `model_settings` | `20` |
+| `DEFAULT_TRAIN_WINDOW` | `model_settings` | `252` |
 | `DEFAULT_TEST_WINDOW` | `model_settings` | `20` |
 | `DEFAULT_MAX_TERMS` | `model_settings` | `10` |
 | `TUNING_ROWS` | `forecasting_engine.validation.splitters` | `504` |
@@ -485,7 +538,7 @@ Values are Python literals as the code holds them.
 | `FLAG_PERCENTILE` | `forecasting_engine.validation.crash` | `0.05` |
 | `TAIL_STD_MULTIPLE` | `forecasting_engine.validation.crash` | `2.0` |
 | `N_BLOCKS` | `forecasting_engine.validation.pbo` | `16` |
-| `OOS_RANK_IC_GATE` | `forecasting_engine.validation.gates` | `0.02` |
+| `SIGNAL_RANK_IC_GATE` | `forecasting_engine.validation.gates` | `0.02` |
 | `PBO_GATE` | `forecasting_engine.validation.gates` | `0.5` |
 | `SIGNIFICANCE_SE_MULTIPLE` | `forecasting_engine.reporting.model_metrics` | `2.0` |
 | `TRADING_DAYS_PER_YEAR` | `forecasting_engine.portfolio.performance` | `252` |
@@ -495,3 +548,6 @@ Values are Python literals as the code holds them.
 | `REBALANCE_FREQUENCY` | `forecasting_engine.portfolio.backtest` | `"monthly"` |
 | `VAR_CONFIDENCES` | `forecasting_engine.risk.tail` | `(0.95, 0.99)` |
 | `VAR_WINDOW` | `forecasting_engine.risk.tail` | `252` |
+| `RISK_AVERSION_SCALE` | `forecasting_engine.portfolio.optimize` | `{1: 1.0, 2: 3.0, 3: 10.0, 4: 30.0, 5: 100.0}` |
+| `DEFAULT_RISK_LEVEL` | `forecasting_engine.portfolio.optimize` | `3` |
+| `DEFAULT_WEIGHT_BOUNDS` | `forecasting_engine.portfolio.optimize` | `(0.2, 0.8)` |

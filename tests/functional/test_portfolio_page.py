@@ -23,7 +23,6 @@ BOND_COL = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
 N_DAYS = 60
 
 
-
 @pytest.fixture(autouse=True)
 def isolated_active_model_db(monkeypatch, tmp_path):
     """The optimiser reads/writes DuckDB at a default, cwd-relative path."""
@@ -63,7 +62,12 @@ def _forecast(committed, seed=0, n_dates=40) -> pd.Series:
     return pd.Series(rng.normal(0, 0.02, n_dates), index=dates)
 
 
-def _result(forecast=None) -> ModelRunResult:
+def _result(forecast=None, *, with_baseline=True) -> ModelRunResult:
+    """A result whose forecast sits 0.1% above its fold's training mean throughout,
+    so its signal is ``forecast`` less 0.001."""
+    baseline = None
+    if forecast is not None and with_baseline:
+        baseline = forecast * 0 + 0.001
     return ModelRunResult(
         ic=0.05,
         oos_rank_ic=0.04,
@@ -71,12 +75,18 @@ def _result(forecast=None) -> ModelRunResult:
         pbo=0.3,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
         forecast=forecast,
+        baseline=baseline,
+        signal_rank_ic=0.04,
     )
 
 
-def _set_active(role, forecast=None, **overrides):
+def _set_active(role, forecast=None, *, with_baseline=True, **overrides):
     active_model.set_active_model(
-        role, "Polynomial", _result(forecast=forecast), high_risk=False, **{**SETTINGS, **overrides}
+        role,
+        "Polynomial",
+        _result(forecast=forecast, with_baseline=with_baseline),
+        high_risk=False,
+        **{**SETTINGS, **overrides},
     )
 
 
@@ -154,6 +164,16 @@ def test_with_no_saved_forecast_shows_a_guiding_message():
     assert any("wasn't saved" in text for text in _infos(app))
 
 
+def test_a_model_set_active_before_signals_were_saved_asks_to_be_set_again():
+    committed = _committed()
+    _set_active(EQUITY, forecast=_forecast(committed), with_baseline=False)
+    _set_active(BOND, forecast=_forecast(committed))
+    app = _page(committed)
+
+    assert not app.exception
+    assert any("set it active again" in text for text in _infos(app))
+
+
 # --- happy path ----------------------------------------------------------------
 
 
@@ -203,7 +223,7 @@ def test_the_backtest_date_range_rebalancing_and_costs_are_stated():
 
     captions = _captions(app)
     assert "Backtest " in captions and " to " in captions
-    assert "every 10 trading days" in captions
+    assert "every 3 trading days, the forecast horizon" in captions
     assert "reset to 50/50 monthly" in captions
     assert "3 bp equity, 5 bp bond" in captions
     assert "S&P 500: Polynomial" in captions
@@ -224,8 +244,22 @@ def test_after_costs_is_the_default_and_before_costs_can_be_chosen():
 def test_the_latest_weights_say_how_they_were_set():
     captions = _captions(_happy_page())
 
-    assert "How this was set: the lowest-risk mix is" in captions
-    assert "at risk aversion 4" in captions
+    assert "How this was set: the benchmark holds 50%" in captions
+    assert "at risk aversion 3" in captions
+
+
+def test_risk_aversion_is_a_1_to_5_scale_defaulting_to_the_middle():
+    app = _happy_page()
+    (scale,) = [s for s in app.select_slider if s.label == "Risk aversion"]
+    assert list(scale.options) == ["1 · risk-loving", "2", "3", "4", "5 · risk-averse"]
+    assert scale.value == 3
+    tilt = float(app.metric[0].value.strip("%")) / 100 - 0.5
+
+    scale.set_value(5).run()
+
+    assert not app.exception
+    assert abs(float(app.metric[0].value.strip("%")) / 100 - 0.5) <= abs(tilt)
+    assert "Level 5 is λ = 100." in _captions(app)
 
 
 def test_a_minimum_in_each_index_bounds_both_weights():

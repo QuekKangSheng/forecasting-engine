@@ -61,7 +61,7 @@ DOCUMENTED = {
     ("forecasting_engine.validation.crash", "FLAG_PERCENTILE"),
     ("forecasting_engine.validation.crash", "TAIL_STD_MULTIPLE"),
     ("forecasting_engine.validation.pbo", "N_BLOCKS"),
-    ("forecasting_engine.validation.gates", "OOS_RANK_IC_GATE"),
+    ("forecasting_engine.validation.gates", "SIGNAL_RANK_IC_GATE"),
     ("forecasting_engine.validation.gates", "PBO_GATE"),
     ("forecasting_engine.reporting.model_metrics", "SIGNIFICANCE_SE_MULTIPLE"),
     ("forecasting_engine.portfolio.performance", "TRADING_DAYS_PER_YEAR"),
@@ -71,6 +71,9 @@ DOCUMENTED = {
     ("forecasting_engine.portfolio.backtest", "REBALANCE_FREQUENCY"),
     ("forecasting_engine.risk.tail", "VAR_CONFIDENCES"),
     ("forecasting_engine.risk.tail", "VAR_WINDOW"),
+    ("forecasting_engine.portfolio.optimize", "RISK_AVERSION_SCALE"),
+    ("forecasting_engine.portfolio.optimize", "DEFAULT_RISK_LEVEL"),
+    ("forecasting_engine.portfolio.optimize", "DEFAULT_WEIGHT_BOUNDS"),
 }
 
 

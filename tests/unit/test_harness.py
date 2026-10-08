@@ -266,9 +266,7 @@ def test_select_best_candidate_picks_the_higher_rank_ic_candidate():
 def _screening_fixture(signals: dict[str, object], n: int = 60) -> FeaturePanel:
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
     frame = pd.DataFrame({**signals, "fwd_return_1d": list(range(n))}, index=idx)
-    return FeaturePanel(
-        frame=frame, signals=tuple(signals), targets=("fwd_return_1d",), lag_days=1
-    )
+    return FeaturePanel(frame=frame, signals=tuple(signals), targets=("fwd_return_1d",), lag_days=1)
 
 
 def _strong_and_flat() -> FeaturePanel:
@@ -516,3 +514,79 @@ def test_summarize_counts_the_folds_whose_forecast_never_varies():
 
     assert result.constant_forecasts is not None
     assert (result.constant_forecasts.folds, result.constant_forecasts.constant) == (6, 5)
+
+
+# --- the Signal Rank IC: what the signals add to each fold's training mean -------
+
+
+def _fold_around(i: int, train_mean: float, signal: list[float], realised: list[float]):
+    """A fold whose training-window target averages ``train_mean`` and whose
+    forecast is that mean plus ``signal``."""
+    fold = _fold(i, [train_mean + s for s in signal], realised)
+    return replace(fold, realised_train=pd.Series(train_mean, index=fold.train))
+
+
+def test_a_forecast_that_is_only_its_training_mean_adds_no_signal():
+    # Each fold forecasts its training mean, and the higher means land on the
+    # higher-returning folds: pooled that ranks well, but the signals add nothing.
+    rng = np.random.default_rng(0)
+    folds = tuple(
+        _fold_around(i, level, [0.0] * 20, list(level + rng.normal(0, 0.01, 20)))
+        for i, level in enumerate([-0.02, -0.01, 0.0, 0.01, 0.02])
+    )
+    result, _ = summarize(folds)
+
+    assert result.oos_rank_ic > 0.5
+    assert result.signal_rank_ic != result.signal_rank_ic  # NaN: a constant zero ranks nothing
+    assert (result.signal == 0.0).all()
+
+
+def test_the_signal_rank_ic_ignores_how_each_folds_training_mean_moves():
+    rng = np.random.default_rng(1)
+    outcomes = [rng.normal(0, 0.01, 30) for _ in range(4)]
+    signals = [list(realised + rng.normal(0, 0.01, 30)) for realised in outcomes]
+
+    def run(means):
+        folds = tuple(
+            _fold_around(i, mean, signal, list(realised))
+            for i, (mean, signal, realised) in enumerate(zip(means, signals, outcomes, strict=True))
+        )
+        return summarize(folds)[0]
+
+    flat, swinging = run([0.0] * 4), run([0.05, -0.04, 0.03, -0.06])
+
+    assert swinging.oos_rank_ic != pytest.approx(flat.oos_rank_ic)
+    assert swinging.signal_rank_ic == pytest.approx(flat.signal_rank_ic)
+    assert flat.signal_rank_ic > 0.3
+    assert swinging.signal_rank_ic_se is not None
+    assert swinging.signal_rank_ic_se_test is not None
+
+
+def test_the_baseline_is_each_dates_fold_training_mean():
+    folds = (
+        _fold_around(0, 0.01, [0.002, -0.001], [0.0, 0.0]),
+        _fold_around(1, -0.02, [0.004, 0.0], [0.0, 0.0]),
+    )
+    result, _ = summarize(folds)
+
+    assert list(result.baseline) == pytest.approx([0.01, 0.01, -0.02, -0.02])
+    assert list(result.signal) == pytest.approx([0.002, -0.001, 0.004, 0.0])
+    assert list(result.forecast - result.baseline) == pytest.approx(list(result.signal))
+
+
+def test_selection_chooses_by_signal_not_by_level():
+    rng = np.random.default_rng(2)
+    means = [-0.02, -0.01, 0.0, 0.01, 0.02, 0.03, -0.03, 0.015]
+    outcomes = [list(m + rng.normal(0, 0.01, 25)) for m in means]
+    # "level" forecasts each fold's training mean, which happens to track the
+    # outcomes' levels; "signal" adds a real within-fold signal to a flat mean.
+    pairs = list(enumerate(zip(means, outcomes, strict=True)))
+    level = tuple(_fold_around(i, m, [0.0] * 25, o) for i, (m, o) in pairs)
+    signal = tuple(
+        _fold_around(i, 0.0, list(np.array(o) - m + rng.normal(0, 0.01, 25)), o)
+        for i, (m, o) in pairs
+    )
+
+    best, _ = select_best_candidate({"level": level, "signal": signal}, n_blocks=4)
+
+    assert best == "signal"

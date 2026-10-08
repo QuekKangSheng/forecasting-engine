@@ -19,6 +19,7 @@ from streamlit.testing.v1 import AppTest
 
 import model_jobs
 import model_runs
+import model_settings
 from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest import fama_french
@@ -50,11 +51,23 @@ SPX = "SPX_Index_PX_LAST"
 AGG = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
 POLY = "Polynomial (derived)"
 USER_POLY = "Polynomial (user-supplied)"
-#: The page's defaults: 5-day horizon, 120/20 walk-forward windows, a 10-term
-#: cap on the derived polynomial and a blank user-supplied function.
+#: The settings these tests run the page under (see ``small_data_defaults``):
+#: 5-day horizon, 120/20 walk-forward windows, a 10-term cap on the derived
+#: polynomial and a blank user-supplied function.
 DEFAULT_SHARED = (5, 120, 20)
 DEFAULT_MODEL_SETTINGS = {POLY: 10, USER_POLY: ("", ())}
 NAIVE = "Naive (training mean)"
+
+
+@pytest.fixture(autouse=True)
+def small_data_defaults(request, monkeypatch):
+    """The fixture data is 200 rows, too short for the real 252-day default train
+    window, so the page starts at a 5-day horizon and a 120-day window instead.
+    A test marked ``real_defaults`` sees the page's own defaults."""
+    if "real_defaults" in request.keywords:
+        return
+    monkeypatch.setattr(model_settings, "DEFAULT_HORIZON", 5)
+    monkeypatch.setattr(model_settings, "DEFAULT_TRAIN_WINDOW", 120)
 
 
 @pytest.fixture(autouse=True)
@@ -95,6 +108,7 @@ def _result(
     return ModelRunResult(
         ic=0.05,
         oos_rank_ic=oos_rank_ic,
+        signal_rank_ic=oos_rank_ic,
         rmse=0.01,
         pbo=pbo,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
@@ -228,16 +242,17 @@ def test_the_model_checkboxes_default_to_every_family_and_none_is_compulsory():
     assert all(box.value and not box.disabled for box in boxes.values())
 
 
+@pytest.mark.real_defaults
 def test_settings_hold_the_horizon_windows_and_embargo():
     app = _page()
 
     (settings,) = [e for e in app.expander if e.label == "Settings"]
     (horizon,) = settings.segmented_control
-    assert list(horizon.options) == ["1 day", "5 days"]
-    assert horizon.value == 5
+    assert list(horizon.options) == ["1 day", "5 days", "10 days", "20 days"]
+    assert horizon.value == 20
     windows = {n.label: n.value for n in settings.number_input}
     assert windows == {
-        "Walk-forward train window (days)": 120,
+        "Walk-forward train window (days)": 252,
         "Walk-forward test window (days)": 20,
     }
     assert any(c.value.startswith("Embargo is fixed") for c in settings.caption)
@@ -271,14 +286,14 @@ def splitter_calls(monkeypatch):
     return calls
 
 
-@pytest.mark.parametrize("chosen", [1, 5])
-def test_the_embargo_is_five_whichever_horizon_is_chosen(splitter_calls, chosen):
+@pytest.mark.parametrize("chosen", [1, 5, 10, 20])
+def test_the_embargo_is_twenty_whichever_horizon_is_chosen(splitter_calls, chosen):
     app = _page()
     (horizon,) = [c for c in app.segmented_control if c.label == "Forecast horizon"]
     horizon.set_value(chosen).run()
 
     assert not app.exception
-    assert splitter_calls[-1]["embargo"] == 5
+    assert splitter_calls[-1]["embargo"] == 20
 
 
 def test_every_model_is_scored_only_after_the_tuning_period(splitter_calls):
@@ -373,7 +388,7 @@ def test_each_model_gets_a_one_line_gate_summary():
     app = _page({EQUITY: {POLY: _polynomial_run(failing), "FF5 Benchmark": benchmark}})
 
     text = _markdown(app)
-    assert "**Polynomial (derived)**: gate failed on OOS Rank IC and PBO." in text
+    assert "**Polynomial (derived)**: gate failed on Signal Rank IC and PBO." in text
     assert "**FF5 Benchmark**: not gated" in text
 
 
@@ -524,9 +539,7 @@ def test_screening_shows_transform_latest_fold_and_folds_included(screened):
 
 
 def test_screening_is_taken_from_ml_when_the_polynomial_did_not_screen(screened):
-    app = _page(
-        {EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run(_result(screened))}}
-    )
+    app = _page({EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run(_result(screened))}})
     assert _screening_table(app)["Signal"].tolist() == [
         "VIX_Index_PX_LAST",
         "LUACOAS_Index_PX_LAST",
@@ -731,9 +744,7 @@ def stub_ml(monkeypatch):
 def _tuning_log() -> TuningLog:
     def tune(first: str, last: str, trials: int, depth: int) -> Tune:
         params = {"max_depth": depth, "learning_rate": 0.05}
-        return Tune(
-            pd.Timestamp(first), pd.Timestamp(last), 40, trials, {"xgboost": params}
-        )
+        return Tune(pd.Timestamp(first), pd.Timestamp(last), 40, trials, {"xgboost": params})
 
     return TuningLog(
         tunes=(tune("2024-01-01", "2024-02-23", 50, 3), tune("2024-03-01", "2024-04-25", 20, 4)),
@@ -744,9 +755,7 @@ def _tuning_log() -> TuningLog:
 
 def _factors(dates: pd.Series) -> pd.DataFrame:
     rng = np.random.default_rng(1)
-    return pd.DataFrame(
-        {"Date": dates, **{c: rng.normal(size=len(dates)) for c in FACTOR_COLUMNS}}
-    )
+    return pd.DataFrame({"Date": dates, **{c: rng.normal(size=len(dates)) for c in FACTOR_COLUMNS}})
 
 
 def _run_equity(app: AppTest, formula: str = "2 * VIX_Index_PX_LAST") -> AppTest:
@@ -761,9 +770,7 @@ def _press_run(app: AppTest) -> AppTest:
     return app
 
 
-def test_run_fits_every_ticked_model_and_one_failure_does_not_stop_the_rest(
-    monkeypatch, stub_ml
-):
+def test_run_fits_every_ticked_model_and_one_failure_does_not_stop_the_rest(monkeypatch, stub_ml):
     def unavailable():
         raise FactorFetchError("OSError: no route to host")
 
@@ -1101,7 +1108,7 @@ def test_the_results_state_the_settings_every_row_was_run_under():
 
     assert (
         "Every row was run under: 5-day horizon · walk-forward train 120 / test 20 days · "
-        "embargo 5 days · signals lagged 1 day"
+        "embargo 20 days · signals lagged 1 day"
     ) in captions
 
 
@@ -1149,9 +1156,7 @@ def _with_forecast(forecast: pd.Series, realised: pd.Series, **kwargs) -> ModelR
 def _directional_page(**kwargs) -> AppTest:
     forecast = _oos([0.01, -0.01] * 50)
     realised = _oos([0.02, -0.03] * 50)
-    return _page(
-        {EQUITY: {POLY: _polynomial_run(_with_forecast(forecast, realised, **kwargs))}}
-    )
+    return _page({EQUITY: {POLY: _polynomial_run(_with_forecast(forecast, realised, **kwargs))}})
 
 
 def _metric(app: AppTest, label: str) -> str:
@@ -1205,7 +1210,7 @@ def test_a_window_picked_with_the_slider_recomputes_every_figure():
 
 
 def test_the_directional_check_says_how_to_see_the_other_horizon():
-    assert "switch to 1 day in Settings and run again" in _captions(_directional_page())
+    assert "switch to 1, 10 or 20 days in Settings and run again" in _captions(_directional_page())
 
 
 def test_the_directional_check_defaults_to_the_active_model():
