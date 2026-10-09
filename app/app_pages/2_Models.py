@@ -99,6 +99,10 @@ NAIVE, FF5, DERIVED, USER, ML = MODEL_ORDER
 
 ACTIVE_MODEL_CANDIDATES = (DERIVED, USER, ML)
 
+#: Single-configuration models gated on Signal Rank IC alone (no PBO to gate). The
+#: derived polynomial is a forecasting model, not a benchmark like FF5.
+SIGNAL_GATED = (DERIVED,)
+
 #: The polynomial's two sources; exactly one runs.
 DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
 
@@ -617,8 +621,8 @@ def _cell_html(cell: Cell) -> str:
 def _show_table(results: dict[str, ModelRunResult]) -> None:
     # A hand-built table has no Streamlit help=, so each heading explains
     # itself through the browser's own title tooltip.
-    rows = build_metrics_rows(results)
-    header = "".join(_header_html(col) for col in TABLE_COLUMNS)
+    rows = build_metrics_rows(results, gated=SIGNAL_GATED)
+    header ="".join(_header_html(col) for col in TABLE_COLUMNS)
     body = "".join(
         "<tr>" + "".join(f"<td>{_cell_html(row[col])}</td>" for col in TABLE_COLUMNS) + "</tr>"
         for row in rows
@@ -633,13 +637,14 @@ def _show_table(results: dict[str, ModelRunResult]) -> None:
 def _gate_line(name: str, result: ModelRunResult) -> str:
     if name == NAIVE:
         return f"**{name}**: the baseline to beat — not gated."
-    if result.pbo is None:
+    if result.pbo is None and name not in SIGNAL_GATED:
         return f"**{name}**: not gated — no configuration search, so no PBO."
     outcome = evaluate_candidate(result.gated_rank_ic, result.pbo)
+    no_pbo = " (one configuration, so no PBO)" if result.pbo is None else ""
     if outcome.promoted:
-        return f"**{name}**: gate met."
+        return f"**{name}**: gate met{no_pbo}."
     failed = " and ".join(GATE_NAMES[g] for g in outcome.failed_gates)
-    return f"**{name}**: gate failed on {failed}."
+    return f"**{name}**: gate failed on {failed}{no_pbo}."
 
 
 def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> None:

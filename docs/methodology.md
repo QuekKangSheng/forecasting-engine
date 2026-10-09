@@ -315,7 +315,10 @@ Optuna's trials, since tuning has its own period.
 - PBO is at most `PBO_GATE`.
 
 A model with no configuration search (FF5, a user polynomial, the naive
-baseline) has no PBO; it is shown ungated rather than failing. The standard
+baseline) has no PBO; it is shown ungated rather than failing. The derived
+polynomial also has one configuration, but it is a forecasting model rather than
+a benchmark, so it is gated on the Signal Rank IC alone, with PBO shown as N/A
+(`app/app_pages/2_Models.py`, `SIGNAL_GATED`). The standard
 errors do not enter the gate, and nor do the plain OOS Rank IC, the Rank IC
 within folds, Beyond 2 s.e. and Constant folds: those are shown beside it so a reader can see when a
 score that meets the gate could be luck or comes from forecast levels alone.

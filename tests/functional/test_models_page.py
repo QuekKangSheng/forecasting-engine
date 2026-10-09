@@ -1295,3 +1295,6 @@ def test_running_the_sign_ruled_fit_shows_its_equation_in_the_four_gauges(stub_m
     assert run.result.pbo is None
     assert run.result.rows_scored == _stored_runs(app)[NAIVE].result.rows_scored
     assert "shrunk toward one common positive slope" in _captions(app)
+    # A forecasting model, so gated on Signal Rank IC even with no PBO; not a benchmark.
+    assert "**Polynomial (derived)**: gate" in _markdown(app)
+    assert "(one configuration, so no PBO)" in _markdown(app)
