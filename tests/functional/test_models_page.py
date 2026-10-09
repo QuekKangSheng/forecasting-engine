@@ -1240,3 +1240,75 @@ def test_a_run_without_saved_forecasts_shows_no_directional_check():
 
     assert "Would the forecast's direction have paid?" not in _markdown(app)
     assert not [s for s in app.selectbox if s.label == "Forecasts from"]
+
+
+# --- the sign-ruled derived polynomial -------------------------------------------
+
+SIGN_RULED = "Sign-ruled (economic signs, all history)"
+LASSO_SEARCH = "Lasso search (screened signals)"
+ECONOMIC = {
+    "LF98OAS_Index_PX_LAST": "LF98OAS Index",
+    "LUACOAS_Index_PX_LAST": "LUACOAS Index",
+    "VIX_Index_PX_LAST": "VIX Index",
+    "USYC2Y10_Index_PX_LAST": "USYC2Y10 Index",
+}
+
+
+def _economic_page(*, bond: bool = False) -> AppTest:
+    """The page on data holding every input the sign-ruled fit needs."""
+    committed = _committed(bond=bond)
+    rng = np.random.default_rng(7)
+    n = len(committed)
+    committed["LF98OAS_Index_PX_LAST"] = 4 + np.cumsum(rng.normal(scale=0.05, size=n))
+    committed["USYC2Y10_Index_PX_LAST"] = 30 + np.cumsum(rng.normal(size=n))
+    sources = {c: ColumnSource(security=s, field="PX_LAST") for c, s in ECONOMIC.items()}
+    sources[SPX] = ColumnSource(security="SPX Index", field="PX_LAST")
+    if bond:
+        sources[AGG] = ColumnSource(security="LBUSTRUU Index", field="TOT_RETURN_INDEX_GROSS_DVDS")
+    return _page(bond=bond, sources=sources, committed=committed)
+
+
+def _methods(app: AppTest):
+    return [r for r in app.radio if r.label == "Derivation method"]
+
+
+def test_the_equity_polynomial_defaults_to_the_sign_ruled_fit_when_its_inputs_are_there():
+    app = _economic_page()
+    (method,) = _methods(app)
+    assert method.options == [SIGN_RULED, LASSO_SEARCH]
+    assert method.value == SIGN_RULED
+    assert "all earlier rows" in _captions(app)
+
+
+def test_without_its_inputs_the_derived_polynomial_is_the_lasso_search_and_says_why():
+    app = _page()
+    assert _methods(app) == []
+    assert "needs LF98OAS" in _captions(app)
+
+
+def test_the_bond_tab_offers_only_the_lasso_search():
+    app = _economic_page(bond=True)
+    assert len(_methods(app)) == 1  # the equity tab's only
+    assert "equity target only" in _captions(app)
+
+
+def test_running_the_sign_ruled_fit_shows_its_equation_in_the_four_gauges(stub_ml):
+    app = _press_run(_untick(_economic_page(), "Fama-French 5", "Machine learning"))
+
+    assert not app.exception
+    run = _stored_runs(app)[POLY]
+    assert run.description.name == "SignRuledPolynomial"
+    assert set(run.description.terms) == set(ECONOMIC)
+    assert run.result.pbo is None
+    assert run.result.rows_scored == _stored_runs(app)[NAIVE].result.rows_scored
+    assert "shrunk toward one common positive slope" in _captions(app)
+
+
+def test_switching_method_keeps_each_methods_result_apart(stub_ml):
+    app = _press_run(_untick(_economic_page(), "Fama-French 5", "Machine learning"))
+    sign_ruled = _stored_runs(app)[POLY]
+    _methods(app)[0].set_value(LASSO_SEARCH).run()
+    assert POLY not in _stored_runs(app)
+    # Switching back finds the sign-ruled result saved under its own setting.
+    _methods(app)[0].set_value(SIGN_RULED).run()
+    assert _stored_runs(app)[POLY].description == sign_ruled.description

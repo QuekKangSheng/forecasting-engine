@@ -135,7 +135,10 @@ date of the price each label reaches, which the splitter uses to purge.
 - **Windows.** Test windows of `test` rows roll forward by `test` rows. Each
   training window is the `train` rows ending `embargo` rows before its test
   window (defaults `DEFAULT_TRAIN_WINDOW` and `DEFAULT_TEST_WINDOW`). Training
-  windows may reach back into the tuning period.
+  windows may reach back into the tuning period. With `train=None` each training
+  window is every row before the embargo (an expanding window); the sign-ruled
+  polynomial uses one, opening its first test window where the page's splitter
+  does, so every model is scored on the same dates.
 - **Embargo.** `EMBARGO_DAYS`, the longest horizon (20 days), whichever horizon is
   chosen.
 - **Purge.** A training row is dropped if its label's price (`label_end`) is dated
@@ -192,7 +195,36 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
   fold's `a + b × (formula)` and the signal table beside the box (column,
   security, field, transform, 1-day lag, latest value after both). One
   configuration, so no PBO.
-- **Derived polynomial** (`models/polynomial.DerivedPolynomial`). The grid is
+- **Derived polynomial, sign-ruled** (`models/sign_ruled.SignRuledPolynomial`;
+  the default derivation method wherever its inputs are present, equity only).
+  It comes from the October 2026 model research, chosen from about 300 trials
+  under a selection rule written before the held-back data was scored. Inputs are `ECONOMIC_INPUTS`: HY OAS, IG OAS, VIX and the
+  2s10s slope, each read as a level whatever the transform map says, and each
+  with a sign of +1 (a higher value, a higher expected return). Per fold, on an
+  expanding window:
+  1. each input is turned by its sign, clipped to its training mean ± `CLIP_SD`
+     standard deviations and standardised, `z = (x − mean) / sd`;
+  2. the forecast's level is the mean of the first `LEVEL_ROWS` training
+     labels, not the training mean, which drifts and ranks equity returns the
+     wrong way;
+  3. the slopes are the posterior mean of a Bayesian regression whose prior pulls
+     them toward one common slope `m ≥ 0` (an exchangeable horseshoe; `m` has
+     prior scale `COMMON_SLOPE_SCALE`). The likelihood is divided by the labels'
+     overlap, `1 / (1 − lag-1 autocorrelation)`, capped at `MAX_OVERLAP`, so
+     `h`-day labels count as about `n / h` independent periods;
+  4. the posterior is drawn by Gibbs sampling, `CHAINS` chains of `BURN_IN`
+     discarded and `KEPT_SWEEPS` kept sweeps from `SEED`, so a fit is
+     reproducible.
+
+  The equation is `level + Σ β·z`, one term per input, shown with each input's
+  mean, SD and clip range. A fold needs at least `_MIN_TRAINING_ROWS` complete
+  rows. One configuration, so no PBO. The app's version reproduces the research
+  model's forecasts exactly. Its edge is modest and regime-dependent: in testing
+  it was the only derived polynomial to hold up on held-back data (Oct 2024 –
+  Sep 2026), but over half of that score came from one quarter (the spring 2025
+  spread spike and rebound), and the 1990–2016 history points the other way.
+- **Derived polynomial, lasso search** (`models/polynomial.DerivedPolynomial`;
+  the method wherever the sign-ruled fit's inputs are missing, and on bond). The grid is
   every degree in `CANDIDATE_DEGREES` with every regularizer in
   `CANDIDATE_REGULARIZERS` (Lasso, and ElasticNet with an L1 share of 0.5, as in
   `_REGULARIZERS`); degree may never exceed `MAX_DEGREE`. Per fold:
@@ -526,6 +558,15 @@ Values are Python literals as the code holds them.
 | `_ALPHA_EPS` | `forecasting_engine.models.polynomial` | `1e-3` |
 | `_PATH_CHUNK` | `forecasting_engine.models.polynomial` | `10` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.polynomial` | `10` |
+| `ECONOMIC_INPUTS` | `forecasting_engine.models.sign_ruled` | `{"equity": {"LF98OAS": 1, "LUACOAS": 1, "VIX": 1, "USYC2Y10": 1}}` |
+| `LEVEL_ROWS` | `forecasting_engine.models.sign_ruled` | `252` |
+| `COMMON_SLOPE_SCALE` | `forecasting_engine.models.sign_ruled` | `0.2` |
+| `MAX_OVERLAP` | `forecasting_engine.models.sign_ruled` | `63.0` |
+| `CHAINS` | `forecasting_engine.models.sign_ruled` | `24` |
+| `BURN_IN` | `forecasting_engine.models.sign_ruled` | `150` |
+| `KEPT_SWEEPS` | `forecasting_engine.models.sign_ruled` | `150` |
+| `SEED` | `forecasting_engine.models.sign_ruled` | `20261008` |
+| `_MIN_TRAINING_ROWS` | `forecasting_engine.models.sign_ruled` | `30` |
 | `_FIXED_PARAMS` | `forecasting_engine.models.boosted` | `{"xgboost": {"verbosity": 0}, "lightgbm": {"verbose": -1, "subsample_freq": 1}}` |
 | `_LEAF_KEYS` | `forecasting_engine.models.boosted` | `{"xgboost": "min_child_weight", "lightgbm": "min_child_samples"}` |
 | `SEARCH_SPACE` | `forecasting_engine.models.boosted` | `{"n_estimators": (20, 100, False), "max_depth": (2, 4, False), "learning_rate": (0.01, 0.3, True), "subsample": (0.5, 1.0, False), "colsample_bytree": (0.5, 1.0, False), "reg_lambda": (1e-3, 10.0, True), "reg_alpha": (1e-3, 10.0, True), "min_leaf": (5, 100, True)}` |

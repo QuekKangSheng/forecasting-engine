@@ -1,8 +1,9 @@
 """PurgedWalkForward: the only splitter in the codebase.
 
-Rolls a fixed-size train/test window forward across a FeaturePanel's index,
-dropping an embargo gap between train and test so overlapping forward-return
-labels can't leak across the split.
+Rolls a train/test window forward across a FeaturePanel's index, dropping an
+embargo gap between train and test so overlapping forward-return labels can't
+leak across the split. The train window is either a fixed number of rows or,
+with ``train=None``, every row before the embargo (an expanding window).
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ TUNING_ROWS: int = 504
 
 
 class PurgedWalkForward:
-    def __init__(self, train: int, test: int, embargo: int, tuning_rows: int = 0):
+    def __init__(self, train: int | None, test: int, embargo: int, tuning_rows: int = 0):
+        """``train=None`` trains each fold on every row before its embargo."""
         self.train = train
         self.test = test
         self.embargo = embargo
@@ -29,7 +31,7 @@ class PurgedWalkForward:
         self, panel: FeaturePanel
     ) -> Iterator[tuple[pd.DatetimeIndex, pd.DatetimeIndex]]:
         index = panel.frame.index
-        test_start = max(self.train, self.tuning_rows) + self.embargo
+        test_start = max(self.train or 0, self.tuning_rows) + self.embargo
         while test_start + self.test <= len(index):
             yield (
                 self.window_before(panel, test_start, self.train),
@@ -37,9 +39,11 @@ class PurgedWalkForward:
             )
             test_start += self.test
 
-    def window_before(self, panel: FeaturePanel, test_start: int, rows: int) -> pd.DatetimeIndex:
-        """Up to ``rows`` rows ending ``embargo`` rows before position ``test_start``,
-        less any whose label reaches the test window.
+    def window_before(
+        self, panel: FeaturePanel, test_start: int, rows: int | None
+    ) -> pd.DatetimeIndex:
+        """Up to ``rows`` rows (every row, if ``None``) ending ``embargo`` rows before
+        position ``test_start``, less any whose label reaches the test window.
 
         A row's label looks ``panel.horizon`` days past its own date. If that
         reaches the test window, the label needs a price the model isn't
@@ -49,7 +53,7 @@ class PurgedWalkForward:
         """
         index = panel.frame.index
         natural_end = test_start - self.embargo
-        start = max(0, natural_end - rows)
+        start = 0 if rows is None else max(0, natural_end - rows)
         purge_boundary = min(natural_end, test_start - panel.horizon)
         if panel.label_end is not None:
             reaching = _first_label_reaching(
@@ -60,11 +64,17 @@ class PurgedWalkForward:
 
     def too_short(self, panel: FeaturePanel) -> str:
         """Why ``split`` produced no folds, for a portfolio manager."""
-        needed = max(self.train, self.tuning_rows) + self.embargo + self.test
+        needed = max(self.train or 0, self.tuning_rows) + self.embargo + self.test
+        if self.train is None:
+            before = f"a {self.tuning_rows}-row tuning period (training uses every earlier row)"
+        else:
+            before = (
+                f"the longer of a {self.tuning_rows}-row tuning period and a "
+                f"{self.train}-row train window"
+            )
         return (
             f"the committed data has {len(panel.frame):,} target dates, too few for one "
-            f"walk-forward fold: the first test window needs {needed:,} (the longer of a "
-            f"{self.tuning_rows}-row tuning period and a {self.train}-row train window, a "
+            f"walk-forward fold: the first test window needs {needed:,} ({before}, a "
             f"{self.embargo}-row embargo, then {self.test} test rows)."
         )
 

@@ -4,8 +4,8 @@ one walk-forward harness under one set of settings and compared side by side
 (FYP-161), with FYP-162's check of whether a forecast's direction would have paid.
 
 Reads the dataset committed via "Use Updated Data" on the Data page. No maths
-lives here — fitting is in forecasting_engine.models.polynomial / famafrench /
-boosted; the walk-forward loop is in forecasting_engine.validation.harness;
+lives here — fitting is in forecasting_engine.models.polynomial / sign_ruled /
+famafrench / boosted; the walk-forward loop is in forecasting_engine.validation.harness;
 table formatting is in forecasting_engine.reporting.model_metrics.
 """
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 import functools
 import html
 import time
+from collections.abc import Mapping
 
 import pandas as pd
 import streamlit as st
@@ -57,6 +58,12 @@ from forecasting_engine.models.polynomial import (
     run_derived_polynomial,
     run_user_polynomial,
 )
+from forecasting_engine.models.sign_ruled import VERSION as SIGN_RULED_VERSION
+from forecasting_engine.models.sign_ruled import (
+    SignRuledInputsError,
+    economic_signs,
+    run_sign_ruled_polynomial,
+)
 from forecasting_engine.portfolio.directional import (
     DirectionalDataError,
     directional_pnl,
@@ -99,6 +106,14 @@ ACTIVE_MODEL_CANDIDATES = (DERIVED, USER, ML)
 
 #: The polynomial's two sources; exactly one runs.
 DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
+
+#: How a derived polynomial is found. The sign-ruled fit is the default wherever its
+#: inputs are present (docs/methodology.md, section 9); the lasso search is the
+#: original grid. The derived row's own setting is the sign-ruled fit's versioned
+#: label, so a saved result refits when the fit changes, or the lasso search's term cap.
+SIGN_RULED = "Sign-ruled (economic signs, all history)"
+LASSO_SEARCH = "Lasso search (screened signals)"
+SIGN_RULED_SETTING = f"{SIGN_RULED} v{SIGN_RULED_VERSION}"
 
 ROLE_NAMES: dict[TargetRole, str] = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
 
@@ -288,16 +303,37 @@ def _keep(widget_key: str, value: object) -> None:
     st.session_state[f"{widget_key}_kept"] = value
 
 
+SIGN_RULED_CAPTION = (
+    "A degree-1 polynomial in HY OAS, IG OAS, VIX and the 2s10s slope, read as levels "
+    "and each oriented so that a higher value means a higher expected return. Its "
+    "slopes are shrunk toward one common positive slope, and every fold trains on all "
+    "earlier rows, whatever the train window above says. In testing, no term above "
+    "degree 1 helped out of sample. Expect a modest edge, earned mostly when credit "
+    "spreads and VIX spike and then come back down."
+)
+
+
 def _polynomial_settings(
-    key: str, panel: FeaturePanel, run_poly: bool
+    key: str,
+    panel: FeaturePanel,
+    run_poly: bool,
+    signs: Mapping[str, int] | None,
+    unavailable: str | None,
 ) -> tuple[str | None, dict[str, object]]:
     """Which polynomial runs, if any, and each polynomial row's own setting.
 
     Only the chosen source's input is shown. Each row depends only on its own
-    setting, so switching source or unticking clears nothing."""
-    terms_key, formula_key = f"terms_{key}", f"formula_{key}"
+    setting, so switching source or unticking clears nothing. ``signs`` are the
+    sign-ruled fit's inputs, or ``None`` (with ``unavailable`` saying why) when
+    this target's data can't support it, which leaves the lasso search."""
+    terms_key, formula_key, method_key = f"terms_{key}", f"formula_{key}", f"method_{key}"
+    method = str(_kept(method_key, SIGN_RULED)) if signs else LASSO_SEARCH
     settings: dict[str, object] = {
-        DERIVED: int(_kept(terms_key, DEFAULT_MAX_TERMS)),
+        DERIVED: (
+            SIGN_RULED_SETTING
+            if method == SIGN_RULED
+            else int(_kept(terms_key, DEFAULT_MAX_TERMS))
+        ),
         USER: _user_function(key, str(_kept(formula_key, "")), panel),
     }
     if not run_poly:
@@ -313,10 +349,27 @@ def _polynomial_settings(
         key=f"poly_source_{key}",
     )
     if source == DERIVE_OPTION:
+        if signs:
+            methods = (SIGN_RULED, LASSO_SEARCH)
+            method = st.radio(
+                "Derivation method",
+                methods,
+                index=methods.index(method),
+                horizontal=True,
+                key=method_key,
+                help=glossary.term("Derivation method"),
+            )
+            _keep(method_key, method)
+        else:
+            st.caption(f"Lasso search only: {unavailable}")
+        if method == SIGN_RULED:
+            settings[DERIVED] = SIGN_RULED_SETTING
+            st.caption(SIGN_RULED_CAPTION)
+            return DERIVED, settings
         max_terms = st.number_input(
             "Max terms per candidate (optional cap)",
             min_value=1,
-            value=settings[DERIVED],
+            value=int(_kept(terms_key, DEFAULT_MAX_TERMS)),
             step=1,
             key=terms_key,
             help=glossary.term("Max terms"),
@@ -439,6 +492,34 @@ def _run_derived(
         columns=panel.signals,
     )
     return model_runs.ModelRun(result, description, function=fn)
+
+
+def _run_sign_ruled(
+    signs: Mapping[str, int],
+    frame: pd.DataFrame,
+    price_col: str,
+    horizon: int,
+    splitter: PurgedWalkForward,
+) -> model_runs.ModelRun:
+    result, description, panel = run_sign_ruled_polynomial(
+        frame, signs, price_col, horizon, splitter
+    )
+    fn = from_description(
+        description,
+        origin=Origin.DERIVED,
+        target=price_col,
+        horizon=horizon,
+        columns=panel.signals,
+    )
+    return model_runs.ModelRun(result, description, function=fn)
+
+
+def _economic_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None]:
+    """The sign-ruled fit's inputs for ``role``, or why it can't run here."""
+    try:
+        return economic_signs(signal_cols, sources, role), None
+    except SignRuledInputsError as exc:
+        return None, str(exc)
 
 
 def _run_user(
@@ -717,6 +798,12 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
             "by a signal, or expands to more than 50 terms), so it has no term table."
         )
         return
+    if run.description.name == "SignRuledPolynomial":
+        st.caption(
+            "Sign-ruled fit: inputs read as levels, slopes shrunk toward one common "
+            "positive slope, every fold trained on all earlier rows. Shown: the latest "
+            "fold's fit."
+        )
     if fn.origin == Origin.DERIVED:
         _show_no_signal_folds(run.result.screening)
         _show_fold_term_count(fn, run.result.terms)
@@ -1030,7 +1117,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     panel = align_and_lag(indexed, signal_cols, price_col, horizon=horizon, transforms=transforms)
     _show_alignment(panel, target_name)
 
-    polynomial, settings = _polynomial_settings(key, panel, run_poly)
+    signs, unavailable = _economic_signs(role)
+    polynomial, settings = _polynomial_settings(key, panel, run_poly, signs, unavailable)
     tab_runs = model_runs.tab(stored, role, settings)
     models = [NAIVE]
     user_formula, user_bindings = settings[USER]
@@ -1050,7 +1138,11 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if (clicked or run_all) and not nothing_to_run and not running:
         runners = {
             NAIVE: functools.partial(_run_naive, panel, splitter),
-            DERIVED: functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter),
+            DERIVED: (
+                functools.partial(_run_sign_ruled, signs, indexed, price_col, horizon, splitter)
+                if settings[DERIVED] == SIGN_RULED_SETTING
+                else functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter)
+            ),
             USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
             ML: functools.partial(_run_ml, panel, splitter),
