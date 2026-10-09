@@ -16,9 +16,15 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from forecasting_engine.parallel import map_processes, workers
+
 N_BLOCKS: int = 16
 """Number of contiguous blocks to split history into. Must be even; 16 is the
 standard CSCV choice."""
+
+_PARALLEL_MIN_ROWS: int = 500
+"""Below this many rows the splits are scored in this process: starting worker
+processes would take longer than the scoring."""
 
 
 @dataclass(frozen=True)
@@ -54,12 +60,33 @@ def compute_pbo(
     predicted = pd.concat([p for p, _ in configs.values()], axis=1, keys=names)
     realised = next(iter(configs.values()))[1].rename("realised")
     frame = pd.concat([predicted, realised], axis=1).dropna().sort_index().to_numpy(dtype=float)
-    blocks = np.array_split(np.arange(len(frame)), n_blocks)
-    half = n_blocks // 2
+    splits = list(combinations(range(n_blocks), n_blocks // 2))
 
+    # Every split is scored on its own, so a long history's splits are shared
+    # across processes and the counts added up: the same answer, sooner.
+    if len(frame) >= _PARALLEL_MIN_ROWS:
+        count = workers(len(splits))
+        chunks = [splits[i::count] for i in range(count)]
+        counts = map_processes(
+            _count_below_median, [frame] * len(chunks), [n_blocks] * len(chunks), chunks
+        )
+        below_median = sum(counts)
+    else:
+        below_median = _count_below_median(frame, n_blocks, splits)
+
+    return PBOResult(
+        pbo=below_median / len(splits),
+        configurations_tested=names,
+        n_combinations_tested=len(splits),
+    )
+
+
+def _count_below_median(frame: np.ndarray, n_blocks: int, splits: list[tuple[int, ...]]) -> int:
+    """How many of ``splits`` (each a tuple of in-sample block numbers) leave the
+    in-sample winner at or below the out-of-sample median."""
+    blocks = np.array_split(np.arange(len(frame)), n_blocks)
     below_median = 0
-    n_combinations = 0
-    for is_blocks in combinations(range(n_blocks), half):
+    for is_blocks in splits:
         oos_blocks = [b for b in range(n_blocks) if b not in is_blocks]
         is_rows = np.concatenate([blocks[b] for b in is_blocks])
         oos_rows = np.concatenate([blocks[b] for b in oos_blocks])
@@ -68,13 +95,7 @@ def compute_pbo(
         oos = _rank_ics(frame[oos_rows])
         if _relative_rank(oos, best_config) <= 0.5:
             below_median += 1
-        n_combinations += 1
-
-    return PBOResult(
-        pbo=below_median / n_combinations,
-        configurations_tested=names,
-        n_combinations_tested=n_combinations,
-    )
+    return below_median
 
 
 def _rank_ics(rows: np.ndarray) -> np.ndarray:

@@ -20,7 +20,10 @@ Then run the dashboard:
 uv run streamlit run app/Home.py
 ```
 
-It opens at <http://localhost:8501>. The pages follow the order a portfolio
+It opens at <http://localhost:8501>. A Run spreads independent work over up to
+4 processes; on a machine with more cores, set `FORECASTING_WORKERS` (for
+example `FORECASTING_WORKERS=8`) before starting it. The results are the same
+either way. The pages follow the order a portfolio
 manager works in:
 
 1. **Data** — upload the terminal's original Bloomberg history exports (CSV or

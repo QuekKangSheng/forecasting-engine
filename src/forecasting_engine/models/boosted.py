@@ -35,6 +35,7 @@ from xgboost import XGBRegressor
 
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
+from forecasting_engine.parallel import map_processes
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.validation.harness import (
     FoldResult,
@@ -53,10 +54,13 @@ _LIBRARIES: dict[str, type] = {"xgboost": XGBRegressor, "lightgbm": LGBMRegresso
 
 #: Fixed, non-tuned settings per library. ``subsample_freq`` is what makes
 #: LightGBM honour the tuned ``subsample`` at all — without it the fraction is
-#: silently ignored.
+#: silently ignored. One thread each: both libraries' fits otherwise depend on how
+#: many cores the machine has (on the Sep 2026 data the same run picked XGBoost
+#: on 16 threads and LightGBM on one), and on a few hundred rows extra threads
+#: cost more than they save.
 _FIXED_PARAMS: dict[str, dict] = {
-    "xgboost": {"verbosity": 0},
-    "lightgbm": {"verbose": -1, "subsample_freq": 1},
+    "xgboost": {"verbosity": 0, "n_jobs": 1},
+    "lightgbm": {"verbose": -1, "subsample_freq": 1, "n_jobs": 1},
 }
 
 #: Fewest training rows a leaf may be built on, named per library: XGBoost counts
@@ -286,27 +290,68 @@ def run_boosted(
     for window in windows:
         _require_tuning_folds(_restrict(panel, window), mini)
 
-    tunes: list[Tune] = []
-    for number, window in enumerate(windows):
-        trials = n_trials if number == 0 else retune_trials
-        previous = tunes[-1].params if tunes else {}
-        params = {
-            library: tune_hyperparameters(
-                panel, window, library, splitter, n_trials=trials, warm_start=previous.get(library)
-            )
-            for library in _LIBRARIES
-        }
-        tunes.append(Tune(window[0], window[-1], len(window), trials, params))
-
-    per_candidate = {
-        library: _evaluate_by_tune(panel, folds, fold_tunes, tunes, library)
-        for library in _LIBRARIES
-    }
+    # Each library's tunes and fits depend only on that library's own earlier
+    # tunes, so the two run in parallel.
+    libraries = list(_LIBRARIES)
+    outcomes = map_processes(
+        _tune_and_evaluate,
+        libraries,
+        *(
+            [argument] * len(libraries)
+            for argument in (panel, splitter, windows, folds, fold_tunes, n_trials, retune_trials)
+        ),
+    )
+    tunes = [
+        Tune(
+            window[0],
+            window[-1],
+            len(window),
+            n_trials if number == 0 else retune_trials,
+            {
+                library: chosen[number]
+                for library, (chosen, _) in zip(libraries, outcomes, strict=True)
+            },
+        )
+        for number, window in enumerate(windows)
+    ]
+    per_candidate = {library: fits for library, (_, fits) in zip(libraries, outcomes, strict=True)}
     best_name, pbo_value = select_best_candidate(per_candidate, n_blocks=n_blocks)
     result, _description = summarize(per_candidate[best_name], pbo=pbo_value)
     latest = _fitted_params(best_name, tunes[fold_tunes[-1]])
     description = _explain_last_fold(panel, per_candidate[best_name][-1], best_name, latest)
     return result, description, TuningLog(tuple(tunes), tuple(fold_tunes), best_name)
+
+
+def _tune_and_evaluate(
+    library: str,
+    panel: FeaturePanel,
+    splitter: PurgedWalkForward,
+    windows: list[pd.DatetimeIndex],
+    folds: list[tuple[pd.DatetimeIndex, pd.DatetimeIndex]],
+    fold_tunes: list[int],
+    n_trials: int,
+    retune_trials: int,
+) -> tuple[list[dict], tuple[FoldResult, ...]]:
+    """One library's whole run: every tune in order, each starting from that
+    library's previous best, then every fold fitted with its tune. Module-level,
+    so a worker process can run it."""
+    chosen: list[dict] = []
+    for number, window in enumerate(windows):
+        chosen.append(
+            tune_hyperparameters(
+                panel,
+                window,
+                library,
+                splitter,
+                n_trials=n_trials if number == 0 else retune_trials,
+                warm_start=chosen[-1] if chosen else None,
+            )
+        )
+    tunes = [
+        Tune(window[0], window[-1], len(window), 0, {library: params})
+        for window, params in zip(windows, chosen, strict=True)
+    ]
+    return chosen, _evaluate_by_tune(panel, folds, fold_tunes, tunes, library)
 
 
 def _schedule(starts: list[int], retune_every: int) -> tuple[list[int], list[int]]:
@@ -324,6 +369,16 @@ def _schedule(starts: list[int], retune_every: int) -> tuple[list[int], list[int
 def _restrict(panel: FeaturePanel, window: pd.DatetimeIndex) -> FeaturePanel:
     label_end = None if panel.label_end is None else panel.label_end.loc[window]
     return replace(panel, frame=panel.frame.loc[window], label_end=label_end)
+
+
+def fits_tuning_period(train: int, test: int, embargo: int, tuning_rows: int) -> bool:
+    """Whether a ``tuning_rows``-row tuning window holds the ``MIN_TUNING_FOLDS``
+    mini walk-forward folds tuning needs at these train/test/embargo windows. A
+    train window as long as the tuning period leaves no room for any."""
+    window = pd.bdate_range("2000-01-03", periods=tuning_rows)
+    inside = FeaturePanel(frame=pd.DataFrame(index=window), signals=(), targets=())
+    folds = sum(1 for _ in PurgedWalkForward(train, test, embargo).split(inside))
+    return folds >= MIN_TUNING_FOLDS
 
 
 def _require_tuning_folds(inside: FeaturePanel, mini: PurgedWalkForward) -> None:

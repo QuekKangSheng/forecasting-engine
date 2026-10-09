@@ -134,8 +134,10 @@ date of the price each label reaches, which the splitter uses to purge.
   machine-learning tuning never touches a reported result.
 - **Windows.** Test windows of `test` rows roll forward by `test` rows. Each
   training window is the `train` rows ending `embargo` rows before its test
-  window (defaults `DEFAULT_TRAIN_WINDOW` and `DEFAULT_TEST_WINDOW`). Training
-  windows may reach back into the tuning period.
+  window (defaults `DEFAULT_TRAIN_WINDOW` and `DEFAULT_TEST_WINDOW`). The train
+  window is one of `TRAIN_WINDOWS`, not any number: trying windows until one
+  scores well is overfitting that no single run's PBO sees. Training windows may
+  reach back into the tuning period.
 - **Embargo.** `EMBARGO_DAYS`, the longest horizon (20 days), whichever horizon is
   chosen.
 - **Purge.** A training row is dropped if its label's price (`label_end`) is dated
@@ -173,6 +175,14 @@ family's result.
 Each family is fit per fold on the training window and predicts the test window.
 A row missing any signal a model uses is left out of that model's fitting and
 scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
+
+Work that does not depend on other work runs in separate processes
+(`parallel.map_processes`, started fresh rather than forked): the derived
+polynomial's configurations, each machine-learning library's tunes and fits, and
+PBO's splits. The answer is the same as running them in turn; on the Sep 2026
+data a polynomial run took 97 s instead of about 250 s, and machine learning 196 s
+instead of 371 s, with 4 processes. `FORECASTING_WORKERS` sets how many processes
+a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn).
 
 - **Fama-French 5** (`models/famafrench.py`, equity target only). OLS with an
   intercept of the target on the five `FACTOR_COLUMNS`, lagged like any signal.
@@ -231,7 +241,10 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
   (`_LEAF_KEYS`) capped at `LEAF_CAP_SHARE` of a fit's training rows.
   Hyperparameters come from Optuna (TPE, seed 0) over `SEARCH_SPACE`, scored by
   pooled Rank IC over a mini walk-forward inside the tuning window, with the main
-  run's train/test/embargo. A trial with undefined Rank IC scores worst.
+  run's train/test/embargo. A trial with undefined Rank IC scores worst. Both
+  libraries fit on one thread: otherwise their fits depend on how many cores
+  the machine has, and the same run could pick a different library on a laptop
+  than on the hosted app.
   - The first tune uses the `TUNING_ROWS` rows before the first test window,
     with `N_TRIALS` trials.
   - A re-tune happens at the first fold whose test window opens `RETUNE_EVERY`
@@ -239,7 +252,9 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
     test window, purged by `label_end`, and runs `RETUNE_TRIALS` trials,
     starting from the previous best.
   - Each fold uses the most recent tune. A tuning window holding fewer than
-    `MIN_TUNING_FOLDS` mini folds is refused before any tuning starts.
+    `MIN_TUNING_FOLDS` mini folds is refused before any tuning starts, and the
+    Models page offers machine learning only when it can hold them
+    (`fits_tuning_period`): never at a train window as long as `TUNING_ROWS`.
   - Tuning searches over every signal; each fold's fit uses its screened
     signals.
   - A fold needs at least `_MIN_TRAINING_ROWS` complete rows.
@@ -507,6 +522,7 @@ Values are Python literals as the code holds them.
 | `HORIZONS` | `model_settings` | `(1, 5, 10, 20)` |
 | `DEFAULT_HORIZON` | `model_settings` | `20` |
 | `EMBARGO_DAYS` | `model_settings` | `20` |
+| `TRAIN_WINDOWS` | `model_settings` | `(126, 252, 504)` |
 | `DEFAULT_TRAIN_WINDOW` | `model_settings` | `252` |
 | `DEFAULT_TEST_WINDOW` | `model_settings` | `20` |
 | `DEFAULT_MAX_TERMS` | `model_settings` | `10` |
@@ -526,7 +542,7 @@ Values are Python literals as the code holds them.
 | `_ALPHA_EPS` | `forecasting_engine.models.polynomial` | `1e-3` |
 | `_PATH_CHUNK` | `forecasting_engine.models.polynomial` | `10` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.polynomial` | `10` |
-| `_FIXED_PARAMS` | `forecasting_engine.models.boosted` | `{"xgboost": {"verbosity": 0}, "lightgbm": {"verbose": -1, "subsample_freq": 1}}` |
+| `_FIXED_PARAMS` | `forecasting_engine.models.boosted` | `{"xgboost": {"verbosity": 0, "n_jobs": 1}, "lightgbm": {"verbose": -1, "subsample_freq": 1, "n_jobs": 1}}` |
 | `_LEAF_KEYS` | `forecasting_engine.models.boosted` | `{"xgboost": "min_child_weight", "lightgbm": "min_child_samples"}` |
 | `SEARCH_SPACE` | `forecasting_engine.models.boosted` | `{"n_estimators": (20, 100, False), "max_depth": (2, 4, False), "learning_rate": (0.01, 0.3, True), "subsample": (0.5, 1.0, False), "colsample_bytree": (0.5, 1.0, False), "reg_lambda": (1e-3, 10.0, True), "reg_alpha": (1e-3, 10.0, True), "min_leaf": (5, 100, True)}` |
 | `LEAF_CAP_SHARE` | `forecasting_engine.models.boosted` | `0.25` |

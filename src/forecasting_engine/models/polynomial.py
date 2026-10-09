@@ -21,6 +21,7 @@ from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
+from forecasting_engine.parallel import map_processes
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.validation.harness import (
     FoldResult,
@@ -541,14 +542,17 @@ def run_derived_polynomial(
     """
     if not candidates:
         raise PolynomialConfigError("deriving a function needs at least one candidate.")
+    # Each configuration's walk-forward is independent of the others, so they
+    # run in parallel and come back in order.
+    fits = map_processes(
+        _evaluate_candidate,
+        [(c.degree, c.regularizer, c.max_terms) for c in candidates],
+        [panel] * len(candidates),
+        [splitter] * len(candidates),
+    )
     per_candidate = {
-        f"degree{c.degree}_{c.regularizer}": evaluate(
-            lambda c=c: DerivedPolynomial(c.degree, c.regularizer, c.max_terms),
-            panel,
-            splitter,
-            screen=True,
-        )
-        for c in candidates
+        f"degree{c.degree}_{c.regularizer}": folds
+        for c, folds in zip(candidates, fits, strict=True)
     }
     _require_folds(next(iter(per_candidate.values()), ()), panel, splitter)
     if len(per_candidate) == 1:
@@ -559,6 +563,17 @@ def run_derived_polynomial(
         return summarize(only_folds, pbo=None)
     best_name, pbo_value = select_best_candidate(per_candidate, n_blocks=n_blocks)
     return summarize(per_candidate[best_name], pbo=pbo_value)
+
+
+def _evaluate_candidate(
+    config: tuple[int, str, int | None], panel: FeaturePanel, splitter: PurgedWalkForward
+) -> tuple[FoldResult, ...]:
+    """One configuration's screened walk-forward: module-level, so a worker
+    process can run it."""
+    degree, regularizer, max_terms = config
+    return evaluate(
+        lambda: DerivedPolynomial(degree, regularizer, max_terms), panel, splitter, screen=True
+    )
 
 
 def _require_folds(

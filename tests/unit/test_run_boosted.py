@@ -144,18 +144,19 @@ def test_no_tuning_label_reaches_the_test_window_it_tunes_for():
 
 
 def test_a_retune_starts_from_the_previous_best(monkeypatch):
-    warm_starts = []
+    warm_starts: dict[str, list] = {}
     real = boosted.tune_hyperparameters
 
-    def recording(*args, warm_start=None, **kwargs):
-        warm_starts.append(warm_start)
-        return real(*args, warm_start=warm_start, **kwargs)
+    def recording(panel, window, library, *args, warm_start=None, **kwargs):
+        warm_starts.setdefault(library, []).append(warm_start)
+        return real(panel, window, library, *args, warm_start=warm_start, **kwargs)
 
     monkeypatch.setattr(boosted, "tune_hyperparameters", recording)
     _result, _description, tuning = _run(retune_every=30)
 
-    assert warm_starts[:2] == [None, None]  # the first tune, one per library
-    assert warm_starts[2] == tuning.tunes[0].params["xgboost"]
+    for library, starts in warm_starts.items():
+        assert starts[0] is None  # each library's first tune starts cold
+        assert starts[1] == tuning.tunes[0].params[library]
 
 
 def test_the_explained_last_fold_uses_the_latest_tune(monkeypatch):

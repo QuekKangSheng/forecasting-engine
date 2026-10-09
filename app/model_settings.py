@@ -20,8 +20,16 @@ EMBARGO_DAYS: int = max(HORIZONS)
 #: +0.075; +0.034 at 5 days, about zero at 10), and the optimiser rebalances every
 #: horizon days, so a 20-day forecast is held for its own 20 days.
 DEFAULT_HORIZON: int = 20
-#: Working default, not sponsor-confirmed: about a year. Shorter windows' fold
-#: means and signal slopes swung the most on the Sep 2026 data.
+#: The train windows offered: about six months, one year and two years. A short
+#: list rather than any number, because trying windows until one scores well is
+#: overfitting no single run's PBO can see. 60 days is too short for the derived
+#: polynomial's own validation at a 20-day horizon; at 504 days machine learning
+#: has no room to tune inside its 504-day tuning period.
+TRAIN_WINDOWS: tuple[int, ...] = (126, 252, 504)
+
+#: Working default, not sponsor-confirmed: about a year. On the Sep 2026 data
+#: two years gave the equity signal the highest Signal Rank IC but failed PBO,
+#: and rules out machine learning.
 DEFAULT_TRAIN_WINDOW: int = 252
 DEFAULT_TEST_WINDOW: int = 20
 DEFAULT_MAX_TERMS: int = 10

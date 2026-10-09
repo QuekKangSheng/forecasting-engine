@@ -67,7 +67,11 @@ def small_data_defaults(request, monkeypatch):
     if "real_defaults" in request.keywords:
         return
     monkeypatch.setattr(model_settings, "DEFAULT_HORIZON", 5)
+    monkeypatch.setattr(model_settings, "TRAIN_WINDOWS", (120, 252))
     monkeypatch.setattr(model_settings, "DEFAULT_TRAIN_WINDOW", 120)
+    # The fixture's 40-row tuning period is too short for machine learning to
+    # tune in for real; its runs are stubbed, so let the page offer it.
+    monkeypatch.setattr(boosted, "fits_tuning_period", lambda *args: True)
 
 
 @pytest.fixture(autouse=True)
@@ -247,15 +251,31 @@ def test_settings_hold_the_horizon_windows_and_embargo():
     app = _page()
 
     (settings,) = [e for e in app.expander if e.label == "Settings"]
-    (horizon,) = settings.segmented_control
+    horizon, train = settings.segmented_control
     assert list(horizon.options) == ["1 day", "5 days", "10 days", "20 days"]
     assert horizon.value == 20
+    assert train.label == "Walk-forward train window (days)"
+    assert list(train.options) == ["126 days", "252 days", "504 days"]
+    assert train.value == 252
     windows = {n.label: n.value for n in settings.number_input}
-    assert windows == {
-        "Walk-forward train window (days)": 252,
-        "Walk-forward test window (days)": 20,
-    }
+    assert windows == {"Walk-forward test window (days)": 20}
     assert any(c.value.startswith("Embargo is fixed") for c in settings.caption)
+
+
+@pytest.mark.real_defaults
+def test_a_two_year_train_window_rules_out_machine_learning_and_says_why(monkeypatch):
+    monkeypatch.setattr(splitters, "TUNING_ROWS", 504)
+    app = _page()
+    (ml,) = [c for c in app.checkbox if c.label == "Machine learning"]
+    assert not ml.disabled
+
+    (train,) = [c for c in app.segmented_control if c.label.startswith("Walk-forward train")]
+    train.set_value(504).run()
+
+    assert not app.exception
+    (ml,) = [c for c in app.checkbox if c.label == "Machine learning"]
+    assert ml.disabled
+    assert "Machine learning can't run with a 504-day train window" in _captions(app)
 
 
 def test_the_embargo_and_signal_lag_are_not_inputs():
@@ -647,8 +667,8 @@ def _two_tabs() -> dict:
 
 def test_changing_a_shared_setting_clears_every_tabs_results():
     app = _page(_two_tabs(), bond=True)
-    (train,) = [n for n in app.number_input if n.label.startswith("Walk-forward train")]
-    train.set_value(130).run()
+    (train,) = [c for c in app.segmented_control if c.label.startswith("Walk-forward train")]
+    train.set_value(252).run()
 
     assert not app.exception
     assert _stored_runs(app, EQUITY) == {}
@@ -1132,8 +1152,8 @@ def test_a_user_supplied_function_can_be_set_active():
 
 def test_a_shared_change_says_why_the_results_went():
     app = _page(_two_tabs(), bond=True)
-    (train,) = [n for n in app.number_input if n.label.startswith("Walk-forward train")]
-    train.set_value(130).run()
+    (train,) = [c for c in app.segmented_control if c.label.startswith("Walk-forward train")]
+    train.set_value(252).run()
 
     assert "were cleared because the data or a shared setting changed" in _captions(app)
 

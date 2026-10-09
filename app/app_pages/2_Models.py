@@ -38,7 +38,7 @@ from forecasting_engine.ingest.align import (
 )
 from forecasting_engine.ingest.fama_french import FactorFetchError
 from forecasting_engine.models.base import ModelDescription
-from forecasting_engine.models.boosted import BoostedConfigError, run_boosted
+from forecasting_engine.models.boosted import BoostedConfigError, fits_tuning_period, run_boosted
 from forecasting_engine.models.famafrench import (
     FACTOR_COLUMNS,
     FamaFrenchDataError,
@@ -90,6 +90,7 @@ from model_settings import (
     DEFAULT_TRAIN_WINDOW,
     EMBARGO_DAYS,
     HORIZONS,
+    TRAIN_WINDOWS,
 )
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
@@ -201,15 +202,16 @@ with st.expander("Settings"):
         format_func=lambda days: f"{days} day" if days == 1 else f"{days} days",
         help=glossary.term("Forecast horizon"),
     )
-    cols = st.columns(2)
-    train = cols[0].number_input(
+    train = st.segmented_control(
         "Walk-forward train window (days)",
-        min_value=10,
-        value=DEFAULT_TRAIN_WINDOW,
-        step=10,
+        TRAIN_WINDOWS,
+        default=DEFAULT_TRAIN_WINDOW,
+        required=True,
+        format_func=lambda days: f"{days} days",
         help=glossary.term("Walk-forward train window (days)"),
     )
-    test = cols[1].number_input(
+    cols = st.columns(2)
+    test = cols[0].number_input(
         "Walk-forward test window (days)",
         min_value=1,
         value=DEFAULT_TEST_WINDOW,
@@ -1021,7 +1023,17 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     run_ff5 = role == TargetRole.EQUITY and check_cols[1].checkbox(
         "Fama-French 5", value=True, key=f"run_ff5_{key}"
     )
-    run_ml = check_cols[-2].checkbox("Machine learning", value=True, key=f"run_ml_{key}")
+    ml_fits = fits_tuning_period(int(train), int(test), EMBARGO_DAYS, TUNING_ROWS)
+    ml_ticked = check_cols[-2].checkbox(
+        "Machine learning", value=True, key=f"run_ml_{key}", disabled=not ml_fits
+    )
+    run_ml = ml_fits and ml_ticked
+    if not ml_fits:
+        st.caption(
+            f"Machine learning can't run with a {int(train)}-day train window: it tunes on "
+            f"the first {TUNING_ROWS} dates, which leaves no room for its own walk-forward "
+            "folds. Choose a shorter train window to run it."
+        )
     _show_active_status(role, target_name)
     if not signal_cols:
         st.info("Need at least one other signal column, alongside the target, to model.")

@@ -58,9 +58,12 @@ TERMS: Mapping[str, str] = {
         "flatters it."
     ),
     "Walk-forward train window (days)": (
-        "How much history the model studies before each grading period "
-        "(252 days ≈ 1 year). Longer gives the fit more to learn from; "
-        "shorter keeps it closer to current market conditions."
+        "How much history the model studies before each grading period: 126, "
+        "252 or 504 days (about six months, one year or two). Longer gives the "
+        "fit more to learn from; shorter keeps it closer to current market "
+        "conditions. Only these three are offered, because trying windows until "
+        "one scores well is itself a way to overfit. Machine learning can't run "
+        "at 504 days."
     ),
     "Walk-forward test window (days)": (
         "The days right after each training block, used only for grading. "

@@ -30,6 +30,7 @@ DOCUMENTED = {
     ("model_settings", "HORIZONS"),
     ("model_settings", "DEFAULT_HORIZON"),
     ("model_settings", "EMBARGO_DAYS"),
+    ("model_settings", "TRAIN_WINDOWS"),
     ("model_settings", "DEFAULT_TRAIN_WINDOW"),
     ("model_settings", "DEFAULT_TEST_WINDOW"),
     ("model_settings", "DEFAULT_MAX_TERMS"),
