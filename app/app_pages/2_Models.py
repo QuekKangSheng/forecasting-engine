@@ -926,7 +926,8 @@ def _directional_default(role: TargetRole, options: list[str], runs) -> int:
         return options.index(current.model_name)
     for i, name in enumerate(options):
         result = runs[name].result
-        if result.pbo is not None and evaluate_candidate(result.gated_rank_ic, result.pbo).promoted:
+        gated = result.pbo is not None or name in SIGNAL_GATED
+        if gated and evaluate_candidate(result.gated_rank_ic, result.pbo).promoted:
             return i
     forecasting = [i for i, name in enumerate(options) if name in ACTIVE_MODEL_CANDIDATES]
     return forecasting[0] if forecasting else 0
