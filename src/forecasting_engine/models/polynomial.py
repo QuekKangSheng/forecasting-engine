@@ -21,6 +21,7 @@ from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
+from forecasting_engine.models.shrinkage import ShrinkagePolynomial
 from forecasting_engine.parallel import map_processes
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.validation.harness import (
@@ -492,7 +493,7 @@ def _time_series_cv(n_rows: int, gap: int) -> TimeSeriesSplit:
 
 # ── Bridging to the shared comparison view (ModelRunResult) ─────────────────
 
-CANDIDATE_DEGREES: tuple[int, ...] = (1, 2, 3)
+CANDIDATE_DEGREES: tuple[int, ...] = (1, 2, 3, 4, 5)
 CANDIDATE_REGULARIZERS: tuple[str, ...] = ("lasso", "elasticnet")
 
 CANDIDATE_CONFIGS: tuple[DerivedPolynomial, ...] = tuple(
@@ -500,11 +501,15 @@ CANDIDATE_CONFIGS: tuple[DerivedPolynomial, ...] = tuple(
     for degree in CANDIDATE_DEGREES
     for regularizer in CANDIDATE_REGULARIZERS
 )
-"""Working default (not sponsor-confirmed): the configuration grid PBO's CSCV
-compares against itself for the derived-fit path. Revisit once Alpha Norm gives
-compute-budget guidance — degree 4-5 candidates are omitted here to keep a
-walk-forward run's wall-clock reasonable, even though FYP-43 allows degree up to 5
-for a single fit."""
+"""The lasso and elastic-net configurations in the derived polynomial's grid: every
+degree the sponsor allows (up to 5) with each regularizer. On the Sep 2026 data
+degrees 4 and 5 were never the best configuration, but they cost about two minutes
+a run and PBO counts them, so a grid that reaches them is checked for overfitting
+like any other."""
+
+SHRINKAGE: str = "shrinkage"
+"""The grid's other candidate: ``shrinkage.ShrinkagePolynomial``, a degree-1 fit
+whose slopes are shrunk toward one common slope."""
 
 
 def run_user_polynomial(
@@ -526,8 +531,11 @@ def run_derived_polynomial(
     splitter: PurgedWalkForward,
     candidates: tuple[DerivedPolynomial, ...] = CANDIDATE_CONFIGS,
     n_blocks: int = N_BLOCKS,
+    *,
+    shrinkage: bool = True,
 ) -> tuple[ModelRunResult, ModelDescription]:
-    """Evaluates every candidate in ``candidates``, compares them via PBO
+    """Evaluates every candidate in ``candidates``, and the shrinkage polynomial
+    unless ``shrinkage`` is false, compares them via PBO
     (``compute_pbo`` needs several configurations' return series — a single
     fitted model has nothing to compute PBO against), then reports the
     candidate with the best pooled OOS Rank IC alongside that shared PBO score.
@@ -540,19 +548,19 @@ def run_derived_polynomial(
     a signal below FYP-102's inclusion threshold, judged on that fold's own
     train window, is left out of that fold's fit.
     """
-    if not candidates:
+    configs = [(c.degree, c.regularizer, c.max_terms) for c in candidates]
+    if shrinkage:
+        configs.append((1, SHRINKAGE, None))
+    if not configs:
         raise PolynomialConfigError("deriving a function needs at least one candidate.")
     # Each configuration's walk-forward is independent of the others, so they
     # run in parallel and come back in order.
     fits = map_processes(
-        _evaluate_candidate,
-        [(c.degree, c.regularizer, c.max_terms) for c in candidates],
-        [panel] * len(candidates),
-        [splitter] * len(candidates),
+        _evaluate_candidate, configs, [panel] * len(configs), [splitter] * len(configs)
     )
     per_candidate = {
-        f"degree{c.degree}_{c.regularizer}": folds
-        for c, folds in zip(candidates, fits, strict=True)
+        SHRINKAGE if regularizer == SHRINKAGE else f"degree{degree}_{regularizer}": folds
+        for (degree, regularizer, _), folds in zip(configs, fits, strict=True)
     }
     _require_folds(next(iter(per_candidate.values()), ()), panel, splitter)
     if len(per_candidate) == 1:
@@ -571,6 +579,8 @@ def _evaluate_candidate(
     """One configuration's screened walk-forward: module-level, so a worker
     process can run it."""
     degree, regularizer, max_terms = config
+    if regularizer == SHRINKAGE:
+        return evaluate(ShrinkagePolynomial, panel, splitter, screen=True)
     return evaluate(
         lambda: DerivedPolynomial(degree, regularizer, max_terms), panel, splitter, screen=True
     )

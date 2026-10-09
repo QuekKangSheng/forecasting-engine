@@ -347,7 +347,7 @@ def test_deriving_from_one_candidate_reports_no_pbo_rather_than_crashing():
     splitter = PurgedWalkForward(train=40, test=10, embargo=2)
 
     result, description = run_derived_polynomial(
-        panel, splitter, candidates=(DerivedPolynomial(degree=1),)
+        panel, splitter, candidates=(DerivedPolynomial(degree=1),), shrinkage=False
     )
 
     assert result.pbo is None
@@ -359,7 +359,7 @@ def test_deriving_with_no_candidates_says_so_in_plain_words():
     splitter = PurgedWalkForward(train=40, test=10, embargo=2)
 
     with pytest.raises(PolynomialConfigError, match="at least one"):
-        run_derived_polynomial(panel, splitter, candidates=())
+        run_derived_polynomial(panel, splitter, candidates=(), shrinkage=False)
 
 
 # --- scaling and validation stay inside the training window, in time order ----

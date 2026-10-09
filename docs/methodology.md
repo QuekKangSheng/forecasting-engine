@@ -132,12 +132,20 @@ date of the price each label reaches, which the splitter uses to purge.
 - **Tuning period.** The first `TUNING_ROWS` rows are reserved. No test window
   starts before `max(train, TUNING_ROWS) + embargo`, for every model family, so
   machine-learning tuning never touches a reported result.
-- **Windows.** Test windows of `test` rows roll forward by `test` rows. Each
-  training window is the `train` rows ending `embargo` rows before its test
-  window (defaults `DEFAULT_TRAIN_WINDOW` and `DEFAULT_TEST_WINDOW`). The train
-  window is one of `TRAIN_WINDOWS`, not any number: trying windows until one
-  scores well is overfitting that no single run's PBO sees. Training windows may
-  reach back into the tuning period.
+- **Windows.** Test windows of `test` rows roll forward by `test` rows (default
+  `DEFAULT_TEST_WINDOW`). Each training window is the `TRAIN_WINDOW` rows ending
+  `embargo` rows before its test window, and may reach back into the tuning
+  period. The train window is fixed rather than a setting: trying windows until
+  one scores well is overfitting that no single run's PBO sees.
+- **Expanding window.** The derived polynomial on the targets in
+  `EXPANDING_DERIVED` (equity) trains each fold on every row before its embargo
+  instead (`splitters.expanding`, a splitter with `train=None`). Its test windows
+  are the same as every other model's, opening after the tuning period, so every
+  row of the results table is scored on the same dates and both targets forecast
+  the same rebalance days. On the Sep 2026 data an expanding window lifted every
+  equity model's Signal Rank IC (lasso +0.08 to +0.11, shrinkage +0.11 to +0.14
+  over four fold placements) and lowered every bond model's (lasso +0.07 to
+  −0.04), so bond keeps `TRAIN_WINDOW`.
 - **Embargo.** `EMBARGO_DAYS`, the longest horizon (20 days), whichever horizon is
   chosen.
 - **Purge.** A training row is dropped if its label's price (`label_end`) is dated
@@ -202,10 +210,13 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   fold's `a + b × (formula)` and the signal table beside the box (column,
   security, field, transform, 1-day lag, latest value after both). One
   configuration, so no PBO.
-- **Derived polynomial** (`models/polynomial.DerivedPolynomial`). The grid is
+- **Derived polynomial** (`models/polynomial.run_derived_polynomial`). The grid is
   every degree in `CANDIDATE_DEGREES` with every regularizer in
   `CANDIDATE_REGULARIZERS` (Lasso, and ElasticNet with an L1 share of 0.5, as in
-  `_REGULARIZERS`); degree may never exceed `MAX_DEGREE`. Per fold:
+  `_REGULARIZERS`), `models/polynomial.DerivedPolynomial`, plus one shrinkage
+  candidate (`SHRINKAGE`, below); degree may never exceed `MAX_DEGREE`. Every
+  candidate fits the signals that fold's screening kept (§8). For the lasso and
+  elastic-net candidates, per fold:
   1. each raw signal is clipped to its training mean ± `CLIP_SD` standard
      deviations, and those bounds are shown beside the equation;
   2. each clipped signal is standardised with the same mean and SD,
@@ -236,6 +247,49 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
      it, e.g. `z(VIX) = (VIX − 18.20) / 6.100`.
 
   A fold needs at least `_MIN_TRAINING_ROWS` complete rows.
+
+  The **shrinkage candidate** (`models/shrinkage.ShrinkagePolynomial`) is a
+  degree-1 fit whose slopes are shrunk toward one common slope. Signals that move
+  together (the two credit spreads and VIX) are averaged rather than picked
+  between, which a lasso does not do: it keeps one of a correlated group and drops
+  the rest. Per fold, on the screened signals and the training rows only:
+  1. each signal's direction is the sign of its training Rank IC;
+  2. oriented, clipped to its mean ± `CLIP_SD` standard deviations and
+     standardised, `z = (x − mean) / sd`;
+  3. the slopes are the posterior mean of a Bayesian regression whose prior
+     pulls them toward one common slope `m ≥ 0` (an exchangeable horseshoe; `m`
+     has prior scale `COMMON_SLOPE_SCALE`). The likelihood is divided by the
+     labels' overlap, `1 / (1 − lag-1 autocorrelation)`, capped at
+     `MAX_OVERLAP`, so `h`-day labels count as about `n / h` independent periods;
+  4. the posterior is drawn by Gibbs sampling, `CHAINS` chains of `BURN_IN`
+     discarded and `KEPT_SWEEPS` kept sweeps from `SEED`, so a fit is
+     reproducible;
+  5. the level is the training mean, as for every other model, so what it adds
+     to the naive forecast is its slopes alone.
+
+  The equation is `mean + Σ β·z`, one term per signal, written in each signal's
+  own direction. A fold needs at least `_MIN_TRAINING_ROWS` complete rows. The
+  shrinkage idea comes from the October 2026 model research (below); the
+  literature behind it is Campbell & Thompson (2008) on economically restricted
+  return forecasts and Rapach, Strauss & Zhou (2010) on combining correlated
+  predictors. On the Sep 2026 data it was the best candidate for both targets at
+  every fold placement tried; degrees 4 and 5 were never chosen.
+- **Research benchmark, not run on the page** (`models/sign_ruled.SignRuledPolynomial`).
+  The October 2026 model research chose, from about 300 trials, a shrinkage fit
+  on four fixed equity inputs, `ECONOMIC_INPUTS` (HY OAS, IG OAS, VIX and the
+  2s10s slope, all read as levels, each with a sign of +1), with the forecast's
+  level fixed at the mean of the first `LEVEL_ROWS` training labels, on an
+  expanding window. On the Sep 2026 data it scored the highest equity Rank IC of
+  anything tried, +0.24 (+0.32 on Oct 2024 – Sep 2026), against +0.12 for the
+  screened shrinkage candidate. It is not the derived polynomial because its
+  inputs, their signs and its level were chosen by looking at results over Aug
+  2016 – Sep 2024, which overlaps the scored period, and no PBO can count those
+  choices; only Oct 2024 – Sep 2026 is out of sample for it (+0.32, t about 2.2
+  on about 24 independent 20-day periods). Its research notes say over half of
+  that came from one quarter (the spring 2025 spread spike and rebound) and that
+  the 1990–2016 history points the other way. Its fixed inputs also ignore any
+  other signal in the data. It is kept in the code so the result can be
+  reproduced.
 - **Machine learning** (`models/boosted.py`). XGBoost and LightGBM, each with
   `_FIXED_PARAMS` and gain feature importance, and minimum leaf size
   (`_LEAF_KEYS`) capped at `LEAF_CAP_SHARE` of a fit's training rows.
@@ -522,8 +576,8 @@ Values are Python literals as the code holds them.
 | `HORIZONS` | `model_settings` | `(1, 5, 10, 20)` |
 | `DEFAULT_HORIZON` | `model_settings` | `20` |
 | `EMBARGO_DAYS` | `model_settings` | `20` |
-| `TRAIN_WINDOWS` | `model_settings` | `(126, 252, 504)` |
-| `DEFAULT_TRAIN_WINDOW` | `model_settings` | `252` |
+| `TRAIN_WINDOW` | `model_settings` | `252` |
+| `EXPANDING_DERIVED` | `model_settings` | `frozenset({"equity"})` |
 | `DEFAULT_TEST_WINDOW` | `model_settings` | `20` |
 | `DEFAULT_MAX_TERMS` | `model_settings` | `10` |
 | `TUNING_ROWS` | `forecasting_engine.validation.splitters` | `504` |
@@ -533,7 +587,18 @@ Values are Python literals as the code holds them.
 | `MAX_AGE` | `forecasting_engine.ingest.fama_french` | `timedelta(days=30)` |
 | `_TIMEOUT_SECONDS` | `forecasting_engine.ingest.fama_french` | `30` |
 | `MAX_DEGREE` | `forecasting_engine.models.polynomial` | `5` |
-| `CANDIDATE_DEGREES` | `forecasting_engine.models.polynomial` | `(1, 2, 3)` |
+| `CANDIDATE_DEGREES` | `forecasting_engine.models.polynomial` | `(1, 2, 3, 4, 5)` |
+| `SHRINKAGE` | `forecasting_engine.models.polynomial` | `"shrinkage"` |
+| `CLIP_SD` | `forecasting_engine.models.shrinkage` | `4.0` |
+| `COMMON_SLOPE_SCALE` | `forecasting_engine.models.shrinkage` | `0.2` |
+| `MAX_OVERLAP` | `forecasting_engine.models.shrinkage` | `63.0` |
+| `CHAINS` | `forecasting_engine.models.shrinkage` | `24` |
+| `BURN_IN` | `forecasting_engine.models.shrinkage` | `150` |
+| `KEPT_SWEEPS` | `forecasting_engine.models.shrinkage` | `150` |
+| `SEED` | `forecasting_engine.models.shrinkage` | `20261008` |
+| `_MIN_TRAINING_ROWS` | `forecasting_engine.models.shrinkage` | `30` |
+| `ECONOMIC_INPUTS` | `forecasting_engine.models.sign_ruled` | `{"equity": {"LF98OAS": 1, "LUACOAS": 1, "VIX": 1, "USYC2Y10": 1}}` |
+| `LEVEL_ROWS` | `forecasting_engine.models.sign_ruled` | `252` |
 | `CANDIDATE_REGULARIZERS` | `forecasting_engine.models.polynomial` | `("lasso", "elasticnet")` |
 | `CLIP_SD` | `forecasting_engine.models.polynomial` | `4.0` |
 | `INNER_CV_SPLITS` | `forecasting_engine.models.polynomial` | `5` |

@@ -8,6 +8,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import bloomberg_extraction_panel
+import model_settings
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
@@ -34,6 +35,13 @@ def no_tuning_period(monkeypatch):
     """Rebalance dates are built with the harness's own TUNING_ROWS (504) in
     the loop, same as a real model run — too large for this small fixture."""
     monkeypatch.setattr("forecasting_engine.portfolio.optimize.TUNING_ROWS", 0)
+
+
+@pytest.fixture(autouse=True)
+def short_train_window(monkeypatch):
+    """The covariance is estimated over the models' fixed train window (252 days),
+    longer than this 60-day fixture."""
+    monkeypatch.setattr(model_settings, "TRAIN_WINDOW", 15)
 
 
 def _committed() -> pd.DataFrame:
@@ -124,12 +132,25 @@ def test_with_only_bond_active_names_equity_as_missing():
 
 def test_mismatched_settings_blocks_with_an_explanation():
     committed = _committed()
-    _set_active(EQUITY, forecast=_forecast(committed), train_window=15)
-    _set_active(BOND, forecast=_forecast(committed), train_window=20)
+    _set_active(EQUITY, forecast=_forecast(committed), test_window=10)
+    _set_active(BOND, forecast=_forecast(committed), test_window=5)
     app = _page(committed)
 
     assert not app.exception
     assert any("different settings" in w.value for w in app.warning)
+
+
+def test_an_equity_model_trained_on_every_earlier_date_combines_with_a_bond_model():
+    # The equity derived polynomial records no train window (an expanding one);
+    # both still forecast the same days over the same horizon.
+    committed = _committed()
+    _set_active(EQUITY, forecast=_forecast(committed, seed=1), train_window=None)
+    _set_active(BOND, forecast=_forecast(committed, seed=2))
+    app = _page(committed)
+
+    assert not app.exception
+    assert not any("different settings" in w.value for w in app.warning)
+    assert len(app.metric) == 2
 
 
 def test_active_models_set_on_another_dataset_are_refused():

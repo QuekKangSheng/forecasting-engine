@@ -218,7 +218,7 @@ def test_matching_settings_are_reported_as_matching(db):
 
 @pytest.mark.parametrize(
     "overridden",
-    ["horizon", "train_window", "test_window", "dataset_fingerprint"],
+    ["horizon", "test_window", "dataset_fingerprint"],
 )
 def test_a_differing_setting_is_reported_as_a_mismatch(db, overridden):
     bond_settings = dict(SETTINGS)
@@ -231,6 +231,25 @@ def test_a_differing_setting_is_reported_as_a_mismatch(db, overridden):
     equity = get_active_model(TargetRole.EQUITY, db_path=db)
     bond = get_active_model(TargetRole.BOND, db_path=db)
     assert settings_match(equity, bond) is False
+
+
+def test_differing_train_windows_still_match(db):
+    # Equity's derived polynomial trains on every earlier date (no train window)
+    # while bond trains on the latest 252: both still forecast the same days.
+    set_active_model(
+        TargetRole.EQUITY,
+        "Polynomial",
+        _result(),
+        high_risk=False,
+        db_path=db,
+        **{**SETTINGS, "train_window": None},
+    )
+    set_active_model(TargetRole.BOND, "ML", _result(), high_risk=False, db_path=db, **SETTINGS)
+
+    equity = get_active_model(TargetRole.EQUITY, db_path=db)
+    bond = get_active_model(TargetRole.BOND, db_path=db)
+    assert equity.train_window is None
+    assert settings_match(equity, bond) is True
 
 
 # --- the signal: each forecast less its fold's training mean ----------------------

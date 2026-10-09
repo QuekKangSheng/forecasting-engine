@@ -259,9 +259,8 @@ def select_best_candidate(
     candidate was judged against.
 
     Used by any ``run_*`` function that has more than one fixed configuration to
-    choose between — ``DerivedPolynomial``'s degree/regularizer grid,
-    ``BoostedForecaster``'s tuned XGBoost vs. tuned LightGBM. A single
-    configuration (FF5, a user-supplied polynomial) has nothing to compare
+    choose between — ``BoostedForecaster``'s tuned XGBoost vs. tuned LightGBM.
+    A single configuration (FF5, a polynomial) has nothing to compare
     against and reports ``pbo=None`` directly to ``summarize()`` instead of
     calling this. Selection, PBO and the gate all use the Signal Rank IC.
     """

@@ -6,7 +6,7 @@ run-store design.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
 import pandas as pd
@@ -174,15 +174,21 @@ class ModelRunResult:
 
 
 def build_metrics_rows(
-    results: Mapping[str, ModelRunResult], decimals: int = 4
+    results: Mapping[str, ModelRunResult],
+    decimals: int = 4,
+    gated: Collection[str] = (),
 ) -> list[dict[str, Cell]]:
-    """One row per model in ``results``, in MODEL_ORDER (then any others)."""
+    """One row per model in ``results``, in MODEL_ORDER (then any others).
+
+    A model with a configuration search is gated on Signal Rank IC and PBO. One
+    without (``pbo is None``) is a benchmark, ungated, unless it is named in
+    ``gated``: then its Signal Rank IC is gated and its PBO reads N/A."""
     names = [n for n in MODEL_ORDER if n in results] + [n for n in results if n not in MODEL_ORDER]
-    return [_row(name, results[name], decimals) for name in names]
+    return [_row(name, results[name], decimals, name in gated) for name in names]
 
 
-def _row(name: str, result: ModelRunResult, decimals: int) -> dict[str, Cell]:
-    can_be_gated = result.pbo is not None
+def _row(name: str, result: ModelRunResult, decimals: int, gated: bool) -> dict[str, Cell]:
+    can_be_gated = result.pbo is not None or gated
     signal_text = _with_errors(
         result.gated_rank_ic, result.signal_rank_ic_se, result.signal_rank_ic_se_test, decimals
     )

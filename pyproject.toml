@@ -12,6 +12,7 @@ dependencies = [
     "pandas-market-calendars>=5.4.0",
     "pandera[pandas]>=0.33.1",
     "scikit-learn>=1.5",
+    "scipy>=1.11",
     "statsmodels>=0.14",
     "xgboost>=2.0",
     "lightgbm>=4.0",

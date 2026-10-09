@@ -36,7 +36,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     tail_rows,
 )
 from forecasting_engine.store import active_model
-from model_settings import EMBARGO_DAYS
+from model_settings import EMBARGO_DAYS, TRAIN_WINDOW
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 
@@ -66,11 +66,10 @@ if missing:
 if not active_model.settings_match(equity_active, bond_active):
     st.warning(
         "The active equity and bond models were run under different settings — "
-        f"equity: {equity_active.horizon}-day horizon, {equity_active.train_window}/"
-        f"{equity_active.test_window}-day train/test window; bond: "
-        f"{bond_active.horizon}-day horizon, {bond_active.train_window}/"
-        f"{bond_active.test_window}-day train/test window. Re-run both under the same "
-        "settings on the Models page, then set them active again.",
+        f"equity: {equity_active.horizon}-day horizon, {equity_active.test_window}-day "
+        f"test window; bond: {bond_active.horizon}-day horizon, {bond_active.test_window}-"
+        "day test window. Re-run both under the same settings on the Models page, then "
+        "set them active again.",
         icon=":material/warning:",
     )
     st.stop()
@@ -157,7 +156,7 @@ schedule = optimize.weight_schedule(
     signals,
     prices,
     horizon=equity_active.horizon,
-    train_window=equity_active.train_window,
+    train_window=TRAIN_WINDOW,
     test_window=equity_active.test_window,
     embargo=EMBARGO_DAYS,
     risk_aversion=risk_aversion,
@@ -187,7 +186,7 @@ breakdown = optimize.weight_breakdown(
         latest_date,
         prices,
         horizon=equity_active.horizon,
-        train_window=equity_active.train_window,
+        train_window=TRAIN_WINDOW,
         embargo=EMBARGO_DAYS,
     ),
     risk_aversion=risk_aversion,

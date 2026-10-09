@@ -56,6 +56,18 @@ def test_ff5_gets_no_gate_badge_and_na_pbo():
     assert row["PBO"] == Cell(NO_CONFIG_SEARCH)
 
 
+def test_a_single_configuration_model_named_as_gated_is_badged_on_signal_rank_ic_alone():
+    results = {
+        "Polynomial (derived)": _result(0.03, 0.03, 0.015, None),
+        "FF5 Benchmark": _result(0.02, 0.025, 0.02, None),
+    }
+    ff5, derived = build_metrics_rows(results, gated=("Polynomial (derived)",))
+
+    assert derived["Signal Rank IC"] == Cell("0.0300", "success")
+    assert derived["PBO"] == Cell(NO_CONFIG_SEARCH)
+    assert ff5["Signal Rank IC"] == Cell("0.0250")
+
+
 def test_polynomial_gets_success_tone_when_both_gates_pass():
     results = {"Polynomial": _result(0.03, 0.03, 0.015, 0.4)}
     row = build_metrics_rows(results)[0]

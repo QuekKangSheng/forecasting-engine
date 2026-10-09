@@ -17,7 +17,7 @@ table, at the cost of deviating from classical factor-attribution methodology.
 column, not an "excess return" (target minus the risk-free rate) as classical Fama-French
 monthly asset-pricing work would use. ``RF`` is still merged into the frame by
 ``merge_factors()`` if this needs revisiting; skipping the subtraction keeps
-``FamaFrench5`` structurally identical to ``DerivedPolynomial`` (same target column,
+``FamaFrench5`` structurally identical to the polynomial models (same target column,
 same shape) and keeps every model's IC/RankIC/RMSE comparable.
 """
 
@@ -95,7 +95,7 @@ def factor_coverage(factors_frame: pd.DataFrame, panel: FeaturePanel) -> FactorC
 class FamaFrench5:
     """An ordinary least-squares fit of the panel's target on the five (lagged)
     Fama-French factors. Reports every factor's coefficient — there is no
-    regularization to zero any out, unlike ``DerivedPolynomial``."""
+    regularization or shrinkage to zero any out."""
 
     name: str = field(default="FamaFrench5", init=False)
 
@@ -122,7 +122,7 @@ class FamaFrench5:
 
         # statsmodels' OLS.predict() propagates NaN row-wise rather than
         # rejecting outright, but masking incomplete rows first keeps this
-        # consistent with DerivedPolynomial's predict() and avoids relying on
+        # consistent with the polynomial models' predict() and avoids relying on
         # that propagation behaviour.
         raw = panel.frame.loc[idx, list(FACTOR_COLUMNS)].dropna()
         if raw.empty:

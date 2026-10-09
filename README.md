@@ -81,8 +81,9 @@ hosting step is needed.
 - **Model families**, each forecasting a 1-, 5-, 10- or 20-day forward return:
   - a naive training-mean baseline, the bar every model has to beat;
   - the Fama-French five-factor benchmark (equity only);
-  - a polynomial, one at a time: derived automatically from the signals, or the
-    user's own shape (placeholders pointed at signals) with only a scale and
+  - a polynomial, one at a time: derived automatically from the signals (a grid of
+    lasso and elastic-net fits up to degree 5 and a shrinkage fit, chosen per run),
+    or the user's own shape (placeholders pointed at signals) with only a scale and
     intercept fitted;
   - machine learning: XGBoost and LightGBM, tuned with Optuna on a rolling
     schedule, with SHAP feature attribution.

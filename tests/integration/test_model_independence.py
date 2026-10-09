@@ -32,6 +32,11 @@ def _splitter() -> PurgedWalkForward:
     return PurgedWalkForward(train=20, test=5, embargo=2, tuning_rows=45)
 
 
+def _derived_splitter() -> PurgedWalkForward:
+    """The derived grid's shrinkage fit needs at least 30 training rows."""
+    return PurgedWalkForward(train=40, test=5, embargo=2, tuning_rows=45)
+
+
 def _ml(panel):
     result, _description, _tuning = run_boosted(
         panel, _splitter(), n_trials=_N_TRIALS, retune_trials=_N_TRIALS, n_blocks=4
@@ -44,10 +49,10 @@ def test_ml_alone_and_ml_with_every_other_model_score_identically():
     alone = _ml(panel)
 
     run_naive(panel, _splitter())
-    derived, _ = run_derived_polynomial(panel, _splitter(), n_blocks=4)
+    derived, _ = run_derived_polynomial(panel, _derived_splitter(), n_blocks=4)
     run_user_polynomial("sig_a", panel, _splitter())
     together = _ml(panel)
-    derived_after_ml, _ = run_derived_polynomial(panel, _splitter(), n_blocks=4)
+    derived_after_ml, _ = run_derived_polynomial(panel, _derived_splitter(), n_blocks=4)
 
     assert together.pbo == alone.pbo
     assert together.oos_rank_ic == alone.oos_rank_ic

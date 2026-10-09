@@ -148,3 +148,21 @@ def test_too_short_says_how_many_dates_the_first_fold_needs():
     message = PurgedWalkForward(train=10, test=3, embargo=2, tuning_rows=30).too_short(_panel(20))
     assert "20 target dates" in message
     assert "needs 35" in message
+
+
+def test_an_expanding_window_trains_on_every_earlier_row():
+    panel = _panel(20)
+    folds = list(PurgedWalkForward(train=None, test=3, embargo=2, tuning_rows=8).split(panel))
+    index = panel.frame.index
+    # The first test window opens after the tuning rows and the embargo.
+    assert folds[0][1][0] == index[10]
+    assert list(folds[0][0]) == list(index[0:8])
+    # Each later window starts at the first row and grows by one test window.
+    assert list(folds[1][0]) == list(index[0:11])
+    assert len(folds) == 3
+
+
+def test_an_expanding_window_says_so_when_the_data_is_too_short():
+    message = PurgedWalkForward(train=None, test=3, embargo=2, tuning_rows=30).too_short(_panel(20))
+    assert "every earlier row" in message
+    assert "35" in message  # 30 tuning rows + 2 embargo + 3 test rows

@@ -56,7 +56,8 @@ class ActiveModelRecord:
     high_risk: bool
     set_at: datetime
     horizon: int
-    train_window: int
+    train_window: int | None
+    """``None`` for a model trained on every earlier date (an expanding window)."""
     test_window: int
     dataset_fingerprint: str
     signal_rank_ic: float | None = None
@@ -70,7 +71,7 @@ def set_active_model(
     *,
     high_risk: bool,
     horizon: int,
-    train_window: int,
+    train_window: int | None,
     test_window: int,
     dataset_fingerprint: str,
     db_path: Path = DEFAULT_DB_PATH,
@@ -222,11 +223,12 @@ def get_active_model_signal(
 
 
 def settings_match(a: ActiveModelRecord, b: ActiveModelRecord) -> bool:
-    """Whether ``a`` and ``b`` were produced under the same horizon, walk-forward
-    windows and dataset — the check a two-asset run needs before combining them."""
+    """Whether ``a`` and ``b`` were produced under the same horizon, test windows and
+    dataset — the check a two-asset run needs before combining them. Their train
+    windows may differ (equity's derived polynomial trains on every earlier date):
+    what matters is that both forecast the same days over the same horizon."""
     return (
         a.horizon == b.horizon
-        and a.train_window == b.train_window
         and a.test_window == b.test_window
         and a.dataset_fingerprint == b.dataset_fingerprint
     )

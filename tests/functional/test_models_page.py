@@ -61,14 +61,13 @@ NAIVE = "Naive (training mean)"
 
 @pytest.fixture(autouse=True)
 def small_data_defaults(request, monkeypatch):
-    """The fixture data is 200 rows, too short for the real 252-day default train
-    window, so the page starts at a 5-day horizon and a 120-day window instead.
-    A test marked ``real_defaults`` sees the page's own defaults."""
+    """The fixture data is 200 rows, too short for the real 252-day train window,
+    so the page runs at a 5-day horizon and a 120-day window instead. A test marked
+    ``real_defaults`` sees the page's own settings."""
     if "real_defaults" in request.keywords:
         return
     monkeypatch.setattr(model_settings, "DEFAULT_HORIZON", 5)
-    monkeypatch.setattr(model_settings, "TRAIN_WINDOWS", (120, 252))
-    monkeypatch.setattr(model_settings, "DEFAULT_TRAIN_WINDOW", 120)
+    monkeypatch.setattr(model_settings, "TRAIN_WINDOW", 120)
     # The fixture's 40-row tuning period is too short for machine learning to
     # tune in for real; its runs are stubbed, so let the page offer it.
     monkeypatch.setattr(boosted, "fits_tuning_period", lambda *args: True)
@@ -251,31 +250,34 @@ def test_settings_hold_the_horizon_windows_and_embargo():
     app = _page()
 
     (settings,) = [e for e in app.expander if e.label == "Settings"]
-    horizon, train = settings.segmented_control
+    (horizon,) = settings.segmented_control
     assert list(horizon.options) == ["1 day", "5 days", "10 days", "20 days"]
     assert horizon.value == 20
-    assert train.label == "Walk-forward train window (days)"
-    assert list(train.options) == ["126 days", "252 days", "504 days"]
-    assert train.value == 252
     windows = {n.label: n.value for n in settings.number_input}
     assert windows == {"Walk-forward test window (days)": 20}
     assert any(c.value.startswith("Embargo is fixed") for c in settings.caption)
 
 
 @pytest.mark.real_defaults
-def test_a_two_year_train_window_rules_out_machine_learning_and_says_why(monkeypatch):
-    monkeypatch.setattr(splitters, "TUNING_ROWS", 504)
+def test_the_train_windows_are_fixed_and_stated_not_chosen():
     app = _page()
-    (ml,) = [c for c in app.checkbox if c.label == "Machine learning"]
-    assert not ml.disabled
 
-    (train,) = [c for c in app.segmented_control if c.label.startswith("Walk-forward train")]
-    train.set_value(504).run()
+    (settings,) = [e for e in app.expander if e.label == "Settings"]
+    assert not [c for c in settings.segmented_control if "train" in c.label.lower()]
+    assert not [n for n in settings.number_input if "train" in n.label.lower()]
+    assert (
+        "Train windows are fixed: the equity derived polynomial trains on every earlier "
+        "date; every other model on the latest 252 dates."
+    ) in _captions(app)
+
+
+def test_the_equity_derived_polynomial_trains_on_every_earlier_date(splitter_calls, stub_ml):
+    app = _press_run(_untick(_page(), "Fama-French 5", "Machine learning"))
 
     assert not app.exception
-    (ml,) = [c for c in app.checkbox if c.label == "Machine learning"]
-    assert ml.disabled
-    assert "Machine learning can't run with a 504-day train window" in _captions(app)
+    trains = {call["train"] for call in splitter_calls}
+    assert None in trains  # the derived polynomial's expanding window
+    assert 120 in trains  # every other model's window
 
 
 def test_the_embargo_and_signal_lag_are_not_inputs():
@@ -667,8 +669,8 @@ def _two_tabs() -> dict:
 
 def test_changing_a_shared_setting_clears_every_tabs_results():
     app = _page(_two_tabs(), bond=True)
-    (train,) = [c for c in app.segmented_control if c.label.startswith("Walk-forward train")]
-    train.set_value(252).run()
+    (test,) = [n for n in app.number_input if n.label.startswith("Walk-forward test")]
+    test.set_value(25).run()
 
     assert not app.exception
     assert _stored_runs(app, EQUITY) == {}
@@ -1127,8 +1129,9 @@ def test_the_results_state_the_settings_every_row_was_run_under():
     captions = _captions(_page({EQUITY: {POLY: _polynomial_run()}}))
 
     assert (
-        "Every row was run under: 5-day horizon · walk-forward train 120 / test 20 days · "
-        "embargo 20 days · signals lagged 1 day"
+        "Every row was run under: 5-day horizon · walk-forward train 120 days (equity "
+        "derived polynomial: every earlier date) / test 20 days · embargo 20 days · "
+        "signals lagged 1 day"
     ) in captions
 
 
@@ -1152,8 +1155,8 @@ def test_a_user_supplied_function_can_be_set_active():
 
 def test_a_shared_change_says_why_the_results_went():
     app = _page(_two_tabs(), bond=True)
-    (train,) = [c for c in app.segmented_control if c.label.startswith("Walk-forward train")]
-    train.set_value(252).run()
+    (test,) = [n for n in app.number_input if n.label.startswith("Walk-forward test")]
+    test.set_value(25).run()
 
     assert "were cleared because the data or a shared setting changed" in _captions(app)
 

@@ -114,7 +114,7 @@ def test_every_headline_metric_explains_itself(models_page, metric):
 
 def test_the_walk_forward_windows_explain_what_walk_forward_means(models_page):
     helps = _helps(models_page)
-    assert "Walk-forward train window (days)" in helps
+    assert glossary.term("Walk-forward train window (days)") in helps.values()
     assert "Walk-forward test window (days)" in helps
 
 

@@ -57,6 +57,7 @@ from forecasting_engine.models.polynomial import (
     run_derived_polynomial,
     run_user_polynomial,
 )
+from forecasting_engine.models.shrinkage import ShrinkageDataError
 from forecasting_engine.portfolio.directional import (
     DirectionalDataError,
     directional_pnl,
@@ -82,21 +83,25 @@ from forecasting_engine.reporting.polynomial_function import (
 )
 from forecasting_engine.store import active_model
 from forecasting_engine.validation.gates import evaluate_candidate, is_high_risk
-from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
+from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward, expanding
 from model_settings import (
     DEFAULT_HORIZON,
     DEFAULT_MAX_TERMS,
     DEFAULT_TEST_WINDOW,
-    DEFAULT_TRAIN_WINDOW,
     EMBARGO_DAYS,
+    EXPANDING_DERIVED,
     HORIZONS,
-    TRAIN_WINDOWS,
+    TRAIN_WINDOW,
 )
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
 NAIVE, FF5, DERIVED, USER, ML = MODEL_ORDER
 
 ACTIVE_MODEL_CANDIDATES = (DERIVED, USER, ML)
+
+#: Forecasting models gated on Signal Rank IC alone when they ran one configuration
+#: (no PBO to gate), unlike a benchmark such as FF5.
+SIGNAL_GATED = (DERIVED,)
 
 #: The polynomial's two sources; exactly one runs.
 DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
@@ -141,8 +146,10 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "pbo": "PBO"}
 
 #: Bumped whenever what a saved result holds changes meaning, so a result saved
 #: by older code is refitted rather than shown under today's columns. 2: the
-#: gate moved to the Signal Rank IC and results carry each fold's baseline.
-RESULT_VERSION = 2
+#: gate moved to the Signal Rank IC and results carry each fold's baseline. 3: the
+#: derived grid reaches degree 5, adds the shrinkage fit, and trains equity on
+#: every earlier date.
+RESULT_VERSION = 3
 
 st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
 ui.inject()
@@ -202,12 +209,10 @@ with st.expander("Settings"):
         format_func=lambda days: f"{days} day" if days == 1 else f"{days} days",
         help=glossary.term("Forecast horizon"),
     )
-    train = st.segmented_control(
-        "Walk-forward train window (days)",
-        TRAIN_WINDOWS,
-        default=DEFAULT_TRAIN_WINDOW,
-        required=True,
-        format_func=lambda days: f"{days} days",
+    train = TRAIN_WINDOW
+    st.caption(
+        f"Train windows are fixed: the equity derived polynomial trains on every earlier "
+        f"date; every other model on the latest {TRAIN_WINDOW} dates.",
         help=glossary.term("Walk-forward train window (days)"),
     )
     cols = st.columns(2)
@@ -243,7 +248,8 @@ stored = model_runs.stored(st.session_state, shared_settings)
 
 #: What every row on the page was run under, stated beside the results (FYP-161).
 SETTINGS_STAMP = (
-    f"{horizon}-day horizon · walk-forward train {int(train)} / test {int(test)} days · "
+    f"{horizon}-day horizon · walk-forward train {int(train)} days (equity derived "
+    f"polynomial: every earlier date) / test {int(test)} days · "
     f"embargo {EMBARGO_DAYS} days · signals lagged {PRODUCTION_LAG_DAYS} day · "
     f"first {TUNING_ROWS} dates kept for tuning"
 )
@@ -254,6 +260,20 @@ ACTIVE_SETTINGS: dict[str, int | str] = {
     "test_window": int(test),
     "dataset_fingerprint": str(dataset_fingerprint(merged)),
 }
+
+
+def _active_settings(role: TargetRole, model_name: str) -> dict[str, int | str | None]:
+    """The settings an active model is recorded under. A model trained on every
+    earlier date has no train window, so none is recorded."""
+    if model_name == DERIVED and role in EXPANDING_DERIVED:
+        return {**ACTIVE_SETTINGS, "train_window": None}
+    return ACTIVE_SETTINGS
+
+
+def _derived_splitter(role: TargetRole) -> PurgedWalkForward:
+    """The derived polynomial's splitter: the same test windows on every target, but
+    trained on every earlier date on the targets in ``EXPANDING_DERIVED``."""
+    return expanding(splitter) if role in EXPANDING_DERIVED else splitter
 
 
 def _show_alignment(panel: FeaturePanel, target_name: str) -> None:
@@ -496,6 +516,7 @@ def _run_naive(panel: FeaturePanel, splitter: PurgedWalkForward) -> model_runs.M
 #: Errors whose message is written for a portfolio manager.
 MODEL_ERRORS = (
     PolynomialConfigError,
+    ShrinkageDataError,
     FamaFrenchDataError,
     BoostedConfigError,
     FactorFetchError,
@@ -598,7 +619,7 @@ def _cell_html(cell: Cell) -> str:
 def _show_table(results: dict[str, ModelRunResult]) -> None:
     # A hand-built table has no Streamlit help=, so each heading explains
     # itself through the browser's own title tooltip.
-    rows = build_metrics_rows(results)
+    rows = build_metrics_rows(results, gated=SIGNAL_GATED)
     header = "".join(_header_html(col) for col in TABLE_COLUMNS)
     body = "".join(
         "<tr>" + "".join(f"<td>{_cell_html(row[col])}</td>" for col in TABLE_COLUMNS) + "</tr>"
@@ -614,13 +635,14 @@ def _show_table(results: dict[str, ModelRunResult]) -> None:
 def _gate_line(name: str, result: ModelRunResult) -> str:
     if name == NAIVE:
         return f"**{name}**: the baseline to beat — not gated."
-    if result.pbo is None:
+    if result.pbo is None and name not in SIGNAL_GATED:
         return f"**{name}**: not gated — no configuration search, so no PBO."
     outcome = evaluate_candidate(result.gated_rank_ic, result.pbo)
+    no_pbo = " (one configuration, so no PBO)" if result.pbo is None else ""
     if outcome.promoted:
-        return f"**{name}**: gate met."
+        return f"**{name}**: gate met{no_pbo}."
     failed = " and ".join(GATE_NAMES[g] for g in outcome.failed_gates)
-    return f"**{name}**: gate failed on {failed}."
+    return f"**{name}**: gate failed on {failed}{no_pbo}."
 
 
 def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> None:
@@ -836,7 +858,7 @@ def _confirm_high_risk(
     cols = st.columns(2)
     if cols[0].button("Set active anyway", type="primary", key=f"confirm_{role.value}"):
         active_model.set_active_model(
-            role, model_name, result, high_risk=True, **ACTIVE_SETTINGS
+            role, model_name, result, high_risk=True, **_active_settings(role, model_name)
         )
         st.session_state.pop(pending_key, None)
         st.rerun()
@@ -878,7 +900,7 @@ def _show_active_picker(
         else:
             st.session_state.pop(pending_key, None)
             active_model.set_active_model(
-                role, selected, result, high_risk=False, **ACTIVE_SETTINGS
+                role, selected, result, high_risk=False, **_active_settings(role, selected)
             )
             st.rerun()
     pending = st.session_state.get(pending_key)
@@ -896,7 +918,8 @@ def _directional_default(role: TargetRole, options: list[str], runs) -> int:
         return options.index(current.model_name)
     for i, name in enumerate(options):
         result = runs[name].result
-        if result.pbo is not None and evaluate_candidate(result.gated_rank_ic, result.pbo).promoted:
+        gated = result.pbo is not None or name in SIGNAL_GATED
+        if gated and evaluate_candidate(result.gated_rank_ic, result.pbo).promoted:
             return i
     forecasting = [i for i, name in enumerate(options) if name in ACTIVE_MODEL_CANDIDATES]
     return forecasting[0] if forecasting else 0
@@ -1062,7 +1085,9 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if (clicked or run_all) and not nothing_to_run and not running:
         runners = {
             NAIVE: functools.partial(_run_naive, panel, splitter),
-            DERIVED: functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter),
+            DERIVED: functools.partial(
+                _run_derived, settings[DERIVED], panel, price_col, _derived_splitter(role)
+            ),
             USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
             ML: functools.partial(_run_ml, panel, splitter),
