@@ -25,7 +25,7 @@ from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest import fama_french
 from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile, ResolvedFactors
 from forecasting_engine.ingest.provenance import SourceFile
-from forecasting_engine.models import boosted
+from forecasting_engine.models import boosted, sign_ruled
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import Tune, TuningLog
 from forecasting_engine.models.famafrench import FACTOR_COLUMNS, FactorCoverage
@@ -52,10 +52,10 @@ AGG = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
 POLY = "Polynomial (derived)"
 USER_POLY = "Polynomial (user-supplied)"
 #: The settings these tests run the page under (see ``small_data_defaults``):
-#: 5-day horizon, 120/20 walk-forward windows, a 10-term cap on the derived
-#: polynomial and a blank user-supplied function.
+#: 5-day horizon, 120/20 walk-forward windows, the derived polynomial's version and
+#: a blank user-supplied function.
 DEFAULT_SHARED = (5, 120, 20)
-DEFAULT_MODEL_SETTINGS = {POLY: 10, USER_POLY: ("", ())}
+DEFAULT_MODEL_SETTINGS = {POLY: f"sign-ruled v{sign_ruled.VERSION}", USER_POLY: ("", ())}
 NAIVE = "Naive (training mean)"
 
 
@@ -678,11 +678,11 @@ def test_changing_a_function_clears_only_that_tabs_user_supplied_row():
     assert set(_stored_runs(app, BOND)) == {POLY, USER_POLY}
 
 
-def test_changing_the_term_cap_clears_only_that_tabs_derived_row():
+def test_a_new_version_of_the_derived_fit_clears_only_that_tabs_derived_row(monkeypatch):
     tabs = {EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run()}}
     app = _page(tabs)
-    (cap,) = [n for n in app.number_input if n.label.startswith("Max terms")]
-    cap.set_value(5).run()
+    monkeypatch.setattr(sign_ruled, "VERSION", sign_ruled.VERSION + 1)
+    app.run()
 
     assert set(_stored_runs(app)) == {"Machine Learning"}
 
@@ -698,22 +698,19 @@ def test_switching_the_polynomial_source_clears_nothing_and_keeps_each_input():
     tabs = {EQUITY: {POLY: _polynomial_run(), USER_POLY: _polynomial_run()}}
     app = _page(tabs)
     _source(app).set_value(OWN).run()
-    assert not [n for n in app.number_input if n.label.startswith("Max terms")]
     _source(app).set_value(DERIVE).run()
 
     assert set(_stored_runs(app)) == {POLY, USER_POLY}
-    (cap,) = [n for n in app.number_input if n.label.startswith("Max terms")]
-    assert cap.value == 10
 
 
 def test_only_the_chosen_sources_input_is_shown():
-    app = _page()
-    assert [n for n in app.number_input if n.label.startswith("Max terms")]
+    app = _economic_page()
+    assert "shrunk toward one common positive slope" in _captions(app)
     assert not [t for t in app.text_input if t.label.startswith("Function")]
 
     _source(app).set_value(OWN).run()
 
-    assert not [n for n in app.number_input if n.label.startswith("Max terms")]
+    assert "shrunk toward one common positive slope" not in _captions(app)
     assert [t for t in app.text_input if t.label.startswith("Function")]
 
 
@@ -784,7 +781,7 @@ def test_run_fits_every_ticked_model_and_one_failure_does_not_stop_the_rest(monk
 
 
 def test_the_naive_baseline_runs_every_time_on_the_polynomials_rows(stub_ml):
-    app = _press_run(_untick(_page(), "Fama-French 5", "Machine learning"))
+    app = _press_run(_untick(_economic_page(), "Fama-French 5", "Machine learning"))
 
     runs = _stored_runs(app)
     assert runs[NAIVE].result.rows_scored == runs[POLY].result.rows_scored
@@ -843,7 +840,7 @@ def test_each_tab_has_its_own_model_checkboxes():
 
 @pytest.mark.parametrize(("source", "ran"), [("derive", POLY), ("own", USER_POLY)])
 def test_only_the_chosen_polynomial_runs(stub_ml, source, ran):
-    app = _untick(_page(), "Fama-French 5", "Machine learning")
+    app = _untick(_economic_page(), "Fama-French 5", "Machine learning")
     app = _run_equity(app) if source == "own" else _press_run(app)
 
     assert set(_stored_runs(app)) == {NAIVE, ran}
@@ -1244,8 +1241,6 @@ def test_a_run_without_saved_forecasts_shows_no_directional_check():
 
 # --- the sign-ruled derived polynomial -------------------------------------------
 
-SIGN_RULED = "Sign-ruled (economic signs, all history)"
-LASSO_SEARCH = "Lasso search (screened signals)"
 ECONOMIC = {
     "LF98OAS_Index_PX_LAST": "LF98OAS Index",
     "LUACOAS_Index_PX_LAST": "LUACOAS Index",
@@ -1268,28 +1263,26 @@ def _economic_page(*, bond: bool = False) -> AppTest:
     return _page(bond=bond, sources=sources, committed=committed)
 
 
-def _methods(app: AppTest):
-    return [r for r in app.radio if r.label == "Derivation method"]
-
-
-def test_the_equity_polynomial_defaults_to_the_sign_ruled_fit_when_its_inputs_are_there():
+def test_deriving_automatically_explains_the_sign_ruled_fit_and_offers_no_other():
     app = _economic_page()
-    (method,) = _methods(app)
-    assert method.options == [SIGN_RULED, LASSO_SEARCH]
-    assert method.value == SIGN_RULED
     assert "all earlier rows" in _captions(app)
+    assert not [r for r in app.radio if r.label == "Derivation method"]
+    assert not [n for n in app.number_input if n.label.startswith("Max terms")]
 
 
-def test_without_its_inputs_the_derived_polynomial_is_the_lasso_search_and_says_why():
+def test_without_its_inputs_no_derived_polynomial_runs_and_the_page_says_why(stub_ml):
     app = _page()
-    assert _methods(app) == []
     assert "needs LF98OAS" in _captions(app)
+    app = _press_run(_untick(app, "Fama-French 5"))
+    assert POLY not in _stored_runs(app)
 
 
-def test_the_bond_tab_offers_only_the_lasso_search():
+def test_the_bond_tab_has_no_derived_polynomial(stub_ml):
     app = _economic_page(bond=True)
-    assert len(_methods(app)) == 1  # the equity tab's only
     assert "equity target only" in _captions(app)
+    (_equity_run, bond_run) = [b for b in app.button if b.label == "Run"]
+    bond_run.click().run()
+    assert POLY not in _stored_runs(app, BOND)
 
 
 def test_running_the_sign_ruled_fit_shows_its_equation_in_the_four_gauges(stub_ml):
@@ -1302,13 +1295,3 @@ def test_running_the_sign_ruled_fit_shows_its_equation_in_the_four_gauges(stub_m
     assert run.result.pbo is None
     assert run.result.rows_scored == _stored_runs(app)[NAIVE].result.rows_scored
     assert "shrunk toward one common positive slope" in _captions(app)
-
-
-def test_switching_method_keeps_each_methods_result_apart(stub_ml):
-    app = _press_run(_untick(_economic_page(), "Fama-French 5", "Machine learning"))
-    sign_ruled = _stored_runs(app)[POLY]
-    _methods(app)[0].set_value(LASSO_SEARCH).run()
-    assert POLY not in _stored_runs(app)
-    # Switching back finds the sign-ruled result saved under its own setting.
-    _methods(app)[0].set_value(SIGN_RULED).run()
-    assert _stored_runs(app)[POLY].description == sign_ruled.description

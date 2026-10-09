@@ -26,31 +26,14 @@ TERMS: Mapping[str, str] = {
         "a setting changed."
     ),
     "Function source": (
-        "Choose one. **Derive automatically** searches a small grid of polynomial "
-        "degrees and regularizers and reports the best one. Regularization pushes "
-        "weak terms to exactly zero, so the result stays short enough to read.\n\n"
+        "Choose one. **Derive automatically** fits the sign-ruled polynomial (equity "
+        "only): one term each for HY OAS, IG OAS, VIX and the 2s10s slope, as levels, "
+        "with their slopes pulled toward one shared positive value, since all four "
+        "measure the pay for holding risk. It trains on all earlier rows.\n\n"
         "**Use your own function** takes the shape you write, using placeholders "
         "such as x and y that you then point at signals, and fits only a scale "
         "and an intercept to it on each training window, so the forecast is a "
-        "return rather than a signal's level. A view you already hold is judged "
-        "under the same settings as every other model. Each gets its own row, "
-        "named for which kind it is."
-    ),
-    "Derivation method": (
-        "How the derived polynomial is found. **Sign-ruled** fits one term each for HY "
-        "OAS, IG OAS, VIX and the 2s10s slope, read as levels, and pulls their slopes "
-        "toward one shared positive value, because all four measure how much investors "
-        "are paid to hold risk. It trains on all earlier rows. In testing it was the "
-        "only derived polynomial that held up on held-back data, though its edge is "
-        "modest and came mostly when spreads and VIX spiked and then fell.\n\n"
-        "**Lasso search** screens every signal, expands them up to degree 3, and lets "
-        "regularization choose the terms."
-    ),
-    "Max terms": (
-        "The most terms the derived equation may keep. The cap works through the "
-        "regularization itself: only penalty strengths whose fit keeps this many "
-        "terms or fewer are considered, and the best of those by time-ordered "
-        "validation is used. No term is picked out in advance."
+        "return rather than a signal's level. Each gets its own row."
     ),
     "Forecast horizon": (
         "How many trading days ahead to predict: 1, 5, 10 or 20 (about a month). "

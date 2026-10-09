@@ -1,9 +1,9 @@
-"""FYP-43: the polynomial Forecaster, user-supplied or system-derived.
+"""FYP-43: the user-supplied polynomial Forecaster.
 
-Two ``Forecaster`` implementations (``UserPolynomial``, ``DerivedPolynomial``) plus the
-two functions that run either one through the shared harness and shape the result into
-``reporting.model_metrics.ModelRunResult`` — the fixed contract FYP-45/FYP-14 already
-built the comparison view and promotion gates against.
+``UserPolynomial`` plus the function that runs it through the shared harness and
+shapes the result into ``reporting.model_metrics.ModelRunResult`` — the fixed
+contract FYP-45/FYP-14 already built the comparison view and promotion gates
+against. The derived polynomial is ``models/sign_ruled.py``.
 """
 
 from __future__ import annotations
@@ -13,38 +13,13 @@ import operator
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-import numpy as np
 import pandas as pd
-from sklearn.linear_model import enet_path
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult
-from forecasting_engine.validation.harness import (
-    FoldResult,
-    evaluate,
-    select_best_candidate,
-    summarize,
-)
-from forecasting_engine.validation.pbo import N_BLOCKS
+from forecasting_engine.validation.harness import FoldResult, evaluate, summarize
 from forecasting_engine.validation.splitters import PurgedWalkForward
-
-MAX_DEGREE: int = 5
-"""FYP-43's third acceptance criterion: a degree above this is rejected."""
-
-CLIP_SD: float = 4.0
-"""A derived polynomial's raw inputs are clipped to this many training-window
-standard deviations from the mean, so one extreme value can't be raised to a
-power into an extreme forecast."""
-
-INNER_CV_SPLITS: int = 5
-"""Most time-ordered folds the penalty is validated on."""
-
-_MIN_TRAINING_ROWS: int = 10
-"""Below this, a regularized multi-term fit is more noise than signal — reject
-with a clear message rather than let sklearn fail on a near-empty design matrix."""
 
 
 class PolynomialConfigError(ValueError):
@@ -237,273 +212,7 @@ def placeholders(formula: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(node.id for node in names))
 
 
-# ── DerivedPolynomial: PolynomialFeatures + Lasso/ElasticNet ─────────────────
-
-#: Regularizer -> its L1 share. Lasso is all L1; 0.5 is scikit-learn's
-#: ElasticNetCV default, kept so the regularizer means what it did before.
-_REGULARIZERS: dict[str, float] = {"lasso": 1.0, "elasticnet": 0.5}
-
-#: The penalty grid, as scikit-learn's LassoCV builds it: this many values,
-#: spanning from the smallest penalty that zeroes every term down by this factor.
-_N_ALPHAS: int = 100
-_ALPHA_EPS: float = 1e-3
-
-#: Penalties fitted at a time when walking a capped path, so the walk can stop
-#: soon after the cap is first exceeded.
-_PATH_CHUNK: int = 10
-
-
-@dataclass
-class DerivedPolynomial:
-    """Clips and standardises the panel's signals on the training window, expands
-    them with ``PolynomialFeatures`` up to ``degree``, fits a regularized linear
-    model, and reports only the terms that survive regularization (a non-zero
-    coefficient).
-
-    Expanding standardised signals rather than raw levels matters: a level and
-    its square move almost together (VIX and VIX² correlate at about 0.995 over a
-    window), so the penalty can't tell them apart and terms swing from fold to
-    fold. A centred signal and its square barely correlate."""
-
-    degree: int = 2
-    regularizer: str = "lasso"
-    max_terms: int | None = None
-    name: str = field(default="DerivedPolynomial", init=False)
-
-    def __post_init__(self) -> None:
-        if not (1 <= self.degree <= MAX_DEGREE):
-            raise PolynomialConfigError(
-                f"degree must be between 1 and {MAX_DEGREE}, got {self.degree}."
-            )
-        if self.regularizer not in _REGULARIZERS:
-            known = ", ".join(sorted(_REGULARIZERS))
-            raise PolynomialConfigError(
-                f"regularizer must be one of {known}, got {self.regularizer!r}."
-            )
-        self._poly = PolynomialFeatures(degree=self.degree, include_bias=False)
-        self._scaler = StandardScaler()
-        self._columns: list[str] | None = None
-        self._coef: np.ndarray | None = None
-        self._intercept: float | None = None
-        self._bounds: tuple[pd.Series, pd.Series] | None = None
-        self._centre: tuple[pd.Series, pd.Series] | None = None
-
-    def fit(self, panel: FeaturePanel, train: pd.DatetimeIndex) -> None:
-        signals = list(panel.signals)
-        frame = panel.frame.loc[train, [*signals, panel.targets[0]]].dropna()
-        if len(frame) < _MIN_TRAINING_ROWS:
-            raise PolynomialConfigError(
-                f"not enough complete training rows to fit a degree-{self.degree} "
-                f"polynomial (need at least {_MIN_TRAINING_ROWS}, got {len(frame)})."
-            )
-        # Each signal is clipped to its training mean ± CLIP_SD standard
-        # deviations, then standardised with the same mean and SD, so its
-        # standardised value lies within ± CLIP_SD. A signal with no spread is
-        # only centred.
-        mean, sd = frame[signals].mean(), frame[signals].std()
-        self._bounds = (mean - CLIP_SD * sd, mean + CLIP_SD * sd)
-        self._centre = (mean, sd.where(sd > 0, 1.0))
-        x = pd.DataFrame(
-            self._poly.fit_transform(self._standardise(frame[signals])),
-            columns=self._poly.get_feature_names_out(signals),
-            index=frame.index,
-        )
-        y = frame[panel.targets[0]]
-
-        # The penalty is validated on later rows of this window, so the scaler
-        # is refitted inside every validation split from its earlier rows alone.
-        # Fitting it once up front would let the rows that judge the penalty
-        # help shape what they are judging.
-        l1_ratio = _REGULARIZERS[self.regularizer]
-        cv = _time_series_cv(len(x), gap=panel.horizon)
-        _, self._coef = _choose_alpha(x, y, cv, self.max_terms, l1_ratio)
-        self._columns, self._scaler = _prepare(x)
-        self._intercept = float(y.mean())
-
-    def predict(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> pd.Series:
-        if self._coef is None or self._columns is None:
-            raise RuntimeError("predict() called before fit()")
-        signals = list(panel.signals)
-        predicted = pd.Series(np.nan, index=idx, dtype=float)
-
-        # PolynomialFeatures.transform() rejects NaN outright (align_and_lag's
-        # lag shift leaves the panel's leading rows NaN), so incomplete rows
-        # must be dropped from the *input* before transforming — dropping them
-        # from the expanded output would be too late, the transform already
-        # raised.
-        raw = panel.frame.loc[idx, signals].dropna()
-        if raw.empty:
-            return predicted
-
-        expanded = pd.DataFrame(
-            self._poly.transform(self._standardise(raw)),
-            columns=self._poly.get_feature_names_out(signals),
-            index=raw.index,
-        )[self._columns]
-        predicted.loc[expanded.index] = (
-            self._scaler.transform(expanded) @ self._coef + self._intercept
-        )
-        return predicted
-
-    def describe(self) -> ModelDescription:
-        if self._coef is None or self._columns is None:
-            raise RuntimeError("describe() called before fit()")
-        # Undo the expanded terms' scaling, so the displayed equation in the
-        # standardised signals reproduces predict().
-        raw = self._coef / self._scaler.scale_
-        intercept = self._intercept - float(np.dot(raw, self._scaler.mean_))
-        terms, coefficients = [], []
-        for term, coefficient in zip(self._columns, raw, strict=True):
-            if coefficient != 0:
-                terms.append(term)
-                coefficients.append(float(coefficient))
-        low, high = self._bounds
-        mean, sd = self._centre
-        return ModelDescription(
-            name=self.name,
-            terms=tuple(terms),
-            coefficients=tuple(coefficients),
-            intercept=intercept,
-            input_bounds={s: (float(low[s]), float(high[s])) for s in low.index},
-            standardisation={s: (float(mean[s]), float(sd[s])) for s in mean.index},
-        )
-
-    def _standardise(self, signals: pd.DataFrame) -> pd.DataFrame:
-        """``z = (x − mean) / sd`` of each clipped signal, with training statistics."""
-        low, high = self._bounds
-        mean, sd = self._centre
-        return (signals.clip(lower=low, upper=high, axis=1) - mean) / sd
-
-
-def _prepare(x: pd.DataFrame) -> tuple[list[str], StandardScaler]:
-    """Every term, and a scaler fitted to them from ``x``'s rows only.
-
-    The penalty acts on coefficients, whose size depends on each term's units,
-    so terms are standardised before fitting. No term is dropped here: the
-    penalty alone decides which survive."""
-    return list(x.columns), StandardScaler().fit(x)
-
-
-def _choose_alpha(
-    x: pd.DataFrame,
-    y: pd.Series,
-    cv: TimeSeriesSplit,
-    max_terms: int | None,
-    l1_ratio: float,
-) -> tuple[float, np.ndarray]:
-    """The penalty with the lowest mean squared error over ``cv``'s time-ordered
-    splits, and the whole window's fit at it (coefficients of the standardised
-    terms).
-
-    ``max_terms`` caps the terms through the penalty. The whole window's path is
-    walked from the largest penalty down, and the penalties before the first
-    whose fit has more than ``max_terms`` non-zero coefficients are eligible.
-    The path stops there, so the small penalties a cap rules out, which are
-    also the slowest to fit, are never computed. If the largest penalty already
-    exceeds the cap, it is used."""
-    alphas = _alpha_grid(x, y, l1_ratio)
-    _, scaler = _prepare(x)
-    alphas, path = _capped_path(scaler.transform(x), y, alphas, l1_ratio, max_terms)
-    errors = np.zeros(len(alphas))
-    for train, validate in cv.split(x):
-        x_train, y_train = x.iloc[train], y.iloc[train]
-        _, split_scaler = _prepare(x_train)
-        coefs = _path(split_scaler.transform(x_train), y_train, alphas, l1_ratio)
-        forecast = split_scaler.transform(x.iloc[validate]) @ coefs + float(y_train.mean())
-        errors += ((forecast - y.iloc[validate].to_numpy()[:, None]) ** 2).mean(axis=0)
-    best = int(np.argmin(errors))
-    return float(alphas[best]), path[:, best]
-
-
-def _capped_path(
-    x: np.ndarray, y: pd.Series, alphas: np.ndarray, l1_ratio: float, max_terms: int | None
-) -> tuple[np.ndarray, np.ndarray]:
-    """The penalties a cap leaves eligible, largest first, and the fit at each.
-
-    Fitted ``_PATH_CHUNK`` penalties at a time, each chunk warm-started from the
-    last fit, stopping at the first penalty whose fit keeps more than
-    ``max_terms`` terms."""
-    if max_terms is None or x.shape[1] <= max_terms:  # the cap can't bind
-        return alphas, _path(x, y, alphas, l1_ratio)
-    kept, fits = [], []
-    coef = None
-    for start in range(0, len(alphas), _PATH_CHUNK):
-        chunk = alphas[start : start + _PATH_CHUNK]
-        coefs = _path(x, y, chunk, l1_ratio, coef_init=coef)
-        counts = (coefs != 0).sum(axis=0)
-        over = np.flatnonzero(counts > max_terms)
-        stop = int(over[0]) if len(over) else len(chunk)
-        kept.extend(chunk[:stop])
-        fits.extend(coefs[:, :stop].T)
-        if len(over):
-            break
-        coef = coefs[:, -1]
-    if not kept:  # even the largest penalty keeps too many terms
-        return alphas[:1], _path(x, y, alphas[:1], l1_ratio)
-    return np.array(kept), np.array(fits).T
-
-
-def _path(
-    x: np.ndarray,
-    y: pd.Series,
-    alphas: np.ndarray,
-    l1_ratio: float,
-    coef_init: np.ndarray | None = None,
-) -> np.ndarray:
-    """The fit at every penalty in ``alphas``, one column each, on centred ``y``."""
-    _, coefs, _ = enet_path(
-        x,
-        y.to_numpy() - float(y.mean()),
-        l1_ratio=l1_ratio,
-        alphas=alphas,
-        max_iter=10_000,
-        coef_init=coef_init,
-    )
-    return coefs
-
-
-def _alpha_grid(x: pd.DataFrame, y: pd.Series, l1_ratio: float) -> np.ndarray:
-    """``_N_ALPHAS`` penalties, largest first, from the smallest that zeroes every
-    standardised term down by ``_ALPHA_EPS``.
-
-    Set from the whole window, as LassoCV sets its grid. That fixes only the
-    range searched; which penalty wins is decided by the validation splits."""
-    scaled = StandardScaler().fit_transform(x)
-    largest = float(np.abs(scaled.T @ (y.to_numpy() - y.mean())).max()) / (len(y) * l1_ratio)
-    if not largest > 0:  # a flat target: every penalty gives the same (empty) fit
-        return np.array([1.0])
-    return np.geomspace(largest, largest * _ALPHA_EPS, _N_ALPHAS)
-
-
-def _time_series_cv(n_rows: int, gap: int) -> TimeSeriesSplit:
-    """Up to ``INNER_CV_SPLITS`` time-ordered folds, each validating after a
-    ``gap`` of rows so no training label overlaps it; fewer when the window is
-    too short."""
-    for n_splits in range(INNER_CV_SPLITS, 1, -1):
-        test_size = n_rows // (n_splits + 1)
-        if test_size >= 2 and n_rows - gap - n_splits * test_size >= 2:
-            return TimeSeriesSplit(n_splits=n_splits, gap=gap)
-    raise PolynomialConfigError(
-        f"a {n_rows}-row training window is too short to validate a regularized fit "
-        f"in time order with a {gap}-row gap — lengthen the train window."
-    )
-
-
 # ── Bridging to the shared comparison view (ModelRunResult) ─────────────────
-
-CANDIDATE_DEGREES: tuple[int, ...] = (1, 2, 3)
-CANDIDATE_REGULARIZERS: tuple[str, ...] = ("lasso", "elasticnet")
-
-CANDIDATE_CONFIGS: tuple[DerivedPolynomial, ...] = tuple(
-    DerivedPolynomial(degree=degree, regularizer=regularizer)
-    for degree in CANDIDATE_DEGREES
-    for regularizer in CANDIDATE_REGULARIZERS
-)
-"""Working default (not sponsor-confirmed): the configuration grid PBO's CSCV
-compares against itself for the derived-fit path. Revisit once Alpha Norm gives
-compute-budget guidance — degree 4-5 candidates are omitted here to keep a
-walk-forward run's wall-clock reasonable, even though FYP-43 allows degree up to 5
-for a single fit."""
 
 
 def run_user_polynomial(
@@ -518,47 +227,6 @@ def run_user_polynomial(
     folds = evaluate(lambda: UserPolynomial(formula, dict(bindings or {})), panel, splitter)
     _require_folds(folds, panel, splitter)
     return summarize(folds, pbo=None)
-
-
-def run_derived_polynomial(
-    panel: FeaturePanel,
-    splitter: PurgedWalkForward,
-    candidates: tuple[DerivedPolynomial, ...] = CANDIDATE_CONFIGS,
-    n_blocks: int = N_BLOCKS,
-) -> tuple[ModelRunResult, ModelDescription]:
-    """Evaluates every candidate in ``candidates``, compares them via PBO
-    (``compute_pbo`` needs several configurations' return series — a single
-    fitted model has nothing to compute PBO against), then reports the
-    candidate with the best pooled OOS Rank IC alongside that shared PBO score.
-
-    ``n_blocks`` is forwarded to ``compute_pbo`` — CSCV's cost is combinatorial
-    in it (``C(n_blocks, n_blocks/2)`` splits), so a caller under a tight
-    compute budget (an interactive UI, a test) can lower it from the default.
-
-    Feature selection is screened per fold (``evaluate(..., screen=True)``) —
-    a signal below FYP-102's inclusion threshold, judged on that fold's own
-    train window, is left out of that fold's fit.
-    """
-    if not candidates:
-        raise PolynomialConfigError("deriving a function needs at least one candidate.")
-    per_candidate = {
-        f"degree{c.degree}_{c.regularizer}": evaluate(
-            lambda c=c: DerivedPolynomial(c.degree, c.regularizer, c.max_terms),
-            panel,
-            splitter,
-            screen=True,
-        )
-        for c in candidates
-    }
-    _require_folds(next(iter(per_candidate.values()), ()), panel, splitter)
-    if len(per_candidate) == 1:
-        # PBO asks how often the best of several configurations was luck. One
-        # configuration was never chosen from anything, so it reports no PBO
-        # rather than failing inside CSCV.
-        (only_folds,) = per_candidate.values()
-        return summarize(only_folds, pbo=None)
-    best_name, pbo_value = select_best_candidate(per_candidate, n_blocks=n_blocks)
-    return summarize(per_candidate[best_name], pbo=pbo_value)
 
 
 def _require_folds(

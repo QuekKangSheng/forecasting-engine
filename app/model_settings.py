@@ -24,4 +24,3 @@ DEFAULT_HORIZON: int = 20
 #: means and signal slopes swung the most on the Sep 2026 data.
 DEFAULT_TRAIN_WINDOW: int = 252
 DEFAULT_TEST_WINDOW: int = 20
-DEFAULT_MAX_TERMS: int = 10

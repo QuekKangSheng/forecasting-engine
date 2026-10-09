@@ -15,6 +15,8 @@ from forecasting_engine.models.sign_ruled import (
     overlap,
     run_sign_ruled_polynomial,
 )
+from forecasting_engine.reporting.model_metrics import NO_CONFIG_SEARCH, build_metrics_rows
+from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
 SIGNALS = ("hy", "ig", "vix", "slope")
@@ -194,3 +196,18 @@ def test_the_runner_refuses_data_too_short_for_one_fold():
     splitter = PurgedWalkForward(train=60, test=20, embargo=5, tuning_rows=300)
     with pytest.raises(PolynomialConfigError):
         run_sign_ruled_polynomial(frame, dict.fromkeys(SIGNALS, 1), "price", 5, splitter)
+
+
+def test_a_sign_ruled_run_plugs_into_the_gates_and_the_comparison_table():
+    """FYP-14's contract: a run with no configuration search (pbo=None) must pass
+    through evaluate_candidate() and build_metrics_rows() unmodified."""
+    result, _description, _panel = run_sign_ruled_polynomial(
+        _levels(),
+        dict.fromkeys(SIGNALS, 1),
+        "price",
+        5,
+        PurgedWalkForward(train=60, test=20, embargo=5, tuning_rows=300),
+    )
+    assert evaluate_candidate(result.signal_rank_ic, result.pbo).promoted in (True, False)
+    rows = build_metrics_rows({"Polynomial (derived)": result})
+    assert rows[0]["PBO"].text == NO_CONFIG_SEARCH

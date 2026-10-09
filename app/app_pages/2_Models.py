@@ -49,21 +49,17 @@ from forecasting_engine.models.famafrench import (
 )
 from forecasting_engine.models.naive import NaiveDataError, run_naive
 from forecasting_engine.models.polynomial import (
-    CANDIDATE_CONFIGS,
-    CLIP_SD,
-    MAX_DEGREE,
-    DerivedPolynomial,
     PolynomialConfigError,
     placeholders,
-    run_derived_polynomial,
     run_user_polynomial,
 )
-from forecasting_engine.models.sign_ruled import VERSION as SIGN_RULED_VERSION
 from forecasting_engine.models.sign_ruled import (
+    CLIP_SD,
     SignRuledInputsError,
     economic_signs,
     run_sign_ruled_polynomial,
 )
+from forecasting_engine.models.sign_ruled import VERSION as SIGN_RULED_VERSION
 from forecasting_engine.portfolio.directional import (
     DirectionalDataError,
     directional_pnl,
@@ -92,7 +88,6 @@ from forecasting_engine.validation.gates import evaluate_candidate, is_high_risk
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 from model_settings import (
     DEFAULT_HORIZON,
-    DEFAULT_MAX_TERMS,
     DEFAULT_TEST_WINDOW,
     DEFAULT_TRAIN_WINDOW,
     EMBARGO_DAYS,
@@ -107,13 +102,9 @@ ACTIVE_MODEL_CANDIDATES = (DERIVED, USER, ML)
 #: The polynomial's two sources; exactly one runs.
 DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
 
-#: How a derived polynomial is found. The sign-ruled fit is the default wherever its
-#: inputs are present (docs/methodology.md, section 9); the lasso search is the
-#: original grid. The derived row's own setting is the sign-ruled fit's versioned
-#: label, so a saved result refits when the fit changes, or the lasso search's term cap.
-SIGN_RULED = "Sign-ruled (economic signs, all history)"
-LASSO_SEARCH = "Lasso search (screened signals)"
-SIGN_RULED_SETTING = f"{SIGN_RULED} v{SIGN_RULED_VERSION}"
+#: The derived row's own setting: the sign-ruled fit's version, so a result saved
+#: under an older fit is refitted (docs/methodology.md, section 9).
+SIGN_RULED_SETTING = f"sign-ruled v{SIGN_RULED_VERSION}"
 
 ROLE_NAMES: dict[TargetRole, str] = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
 
@@ -324,16 +315,11 @@ def _polynomial_settings(
 
     Only the chosen source's input is shown. Each row depends only on its own
     setting, so switching source or unticking clears nothing. ``signs`` are the
-    sign-ruled fit's inputs, or ``None`` (with ``unavailable`` saying why) when
-    this target's data can't support it, which leaves the lasso search."""
-    terms_key, formula_key, method_key = f"terms_{key}", f"formula_{key}", f"method_{key}"
-    method = str(_kept(method_key, SIGN_RULED)) if signs else LASSO_SEARCH
+    sign-ruled fit's inputs, or ``None`` (with ``unavailable`` saying why) when this
+    target's data can't support it, which leaves no derived polynomial to run."""
+    formula_key = f"formula_{key}"
     settings: dict[str, object] = {
-        DERIVED: (
-            SIGN_RULED_SETTING
-            if method == SIGN_RULED
-            else int(_kept(terms_key, DEFAULT_MAX_TERMS))
-        ),
+        DERIVED: SIGN_RULED_SETTING,
         USER: _user_function(key, str(_kept(formula_key, "")), panel),
     }
     if not run_poly:
@@ -349,38 +335,10 @@ def _polynomial_settings(
         key=f"poly_source_{key}",
     )
     if source == DERIVE_OPTION:
-        if signs:
-            methods = (SIGN_RULED, LASSO_SEARCH)
-            method = st.radio(
-                "Derivation method",
-                methods,
-                index=methods.index(method),
-                horizontal=True,
-                key=method_key,
-                help=glossary.term("Derivation method"),
-            )
-            _keep(method_key, method)
-        else:
-            st.caption(f"Lasso search only: {unavailable}")
-        if method == SIGN_RULED:
-            settings[DERIVED] = SIGN_RULED_SETTING
-            st.caption(SIGN_RULED_CAPTION)
-            return DERIVED, settings
-        max_terms = st.number_input(
-            "Max terms per candidate (optional cap)",
-            min_value=1,
-            value=int(_kept(terms_key, DEFAULT_MAX_TERMS)),
-            step=1,
-            key=terms_key,
-            help=glossary.term("Max terms"),
-        )
-        _keep(terms_key, int(max_terms))
-        settings[DERIVED] = int(max_terms)
-        st.caption(
-            f"Tries a small grid of degrees (1-3, of up to {MAX_DEGREE} allowed) and "
-            "regularizers (Lasso, ElasticNet), compares them via PBO, and reports the "
-            "one with the best out-of-sample rank IC."
-        )
+        if not signs:
+            st.caption(f"No derived polynomial for this target: {unavailable}")
+            return None, settings
+        st.caption(SIGN_RULED_CAPTION)
         return DERIVED, settings
     formula = st.text_input(
         "Function — write its shape with placeholders, then pick each one's signal",
@@ -474,24 +432,6 @@ def _show_signal_table(panel: FeaturePanel) -> None:
 def _latest(series: pd.Series) -> str:
     present = series.dropna()
     return f"{present.iloc[-1]:.4g}" if len(present) else "—"
-
-
-def _run_derived(
-    max_terms: int, panel: FeaturePanel, price_col: str, splitter: PurgedWalkForward
-) -> model_runs.ModelRun:
-    candidates = tuple(
-        DerivedPolynomial(degree=c.degree, regularizer=c.regularizer, max_terms=max_terms)
-        for c in CANDIDATE_CONFIGS
-    )
-    result, description = run_derived_polynomial(panel, splitter, candidates=candidates)
-    fn = from_description(
-        description,
-        origin=Origin.DERIVED,
-        target=price_col,
-        horizon=panel.horizon,
-        columns=panel.signals,
-    )
-    return model_runs.ModelRun(result, description, function=fn)
 
 
 def _run_sign_ruled(
@@ -1138,10 +1078,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if (clicked or run_all) and not nothing_to_run and not running:
         runners = {
             NAIVE: functools.partial(_run_naive, panel, splitter),
-            DERIVED: (
-                functools.partial(_run_sign_ruled, signs, indexed, price_col, horizon, splitter)
-                if settings[DERIVED] == SIGN_RULED_SETTING
-                else functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter)
+            DERIVED: functools.partial(
+                _run_sign_ruled, signs, indexed, price_col, horizon, splitter
             ),
             USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),

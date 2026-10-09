@@ -11,6 +11,7 @@ from streamlit.testing.v1 import AppTest
 import glossary
 import model_runs
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.models import sign_ruled
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult, ScreeningSummary
 from forecasting_engine.reporting.polynomial_function import (
@@ -19,6 +20,9 @@ from forecasting_engine.reporting.polynomial_function import (
     from_description,
 )
 from forecasting_engine.validation.crash import CrashDiagnostics
+
+#: The derived row's own setting, as the Models page writes it.
+DERIVED_SETTING = f"sign-ruled v{sign_ruled.VERSION}"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODELS_PAGE = REPO_ROOT / "app" / "app_pages" / "2_Models.py"
@@ -67,7 +71,7 @@ def models_page() -> AppTest:
     fn = from_description(description, origin=Origin.DERIVED, target="SPX_Index_PX_LAST", horizon=5)
     stored = model_runs.StoredRuns((dataset_fingerprint(committed), 20, 252, 20))
     stored.tabs[TargetRole.EQUITY] = model_runs.TabRuns(
-        {"Polynomial (derived)": 10, "Polynomial (user-supplied)": ("", ())},
+        {"Polynomial (derived)": DERIVED_SETTING, "Polynomial (user-supplied)": ("", ())},
         {"Polynomial (derived)": model_runs.ModelRun(_result(), description, function=fn)},
     )
     app = AppTest.from_file(str(MODELS_PAGE), default_timeout=30)

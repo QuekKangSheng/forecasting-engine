@@ -37,7 +37,7 @@ from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel, Transform, align_and_lag
 from forecasting_engine.models.base import ModelDescription
-from forecasting_engine.models.polynomial import CLIP_SD, PolynomialConfigError
+from forecasting_engine.models.polynomial import PolynomialConfigError
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.validation.harness import evaluate, summarize
 from forecasting_engine.validation.splitters import PurgedWalkForward
@@ -48,6 +48,10 @@ ECONOMIC_INPUTS: Mapping[TargetRole, Mapping[str, int]] = {
 """Per target, each input's ticker and economic sign (+1: a higher value means a higher
 expected return). Read as levels. No bond set beat chance in the research, so the
 method is equity-only."""
+
+CLIP_SD: float = 4.0
+"""Each input is clipped to this many training standard deviations from its mean, so
+one extreme value can't drive an extreme forecast."""
 
 LEVEL_ROWS: int = 252
 """The forecast's level is the mean of this many earliest training labels."""

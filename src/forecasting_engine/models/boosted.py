@@ -7,7 +7,7 @@ first test window, which no test window ever overlaps. After that, hyperparamete
 are re-tuned every ``RETUNE_EVERY`` rows, each time on the ``tuning_rows`` rows just
 before the next test window, so tuning only ever sees the past. Each fold refits
 with the most recent tune's *fixed* hyperparameters, the same "fix the
-configuration, refit per fold" shape ``DerivedPolynomial`` uses for its grid. Each
+configuration, refit per fold" shape every model family follows. Each
 tune scores a trial by pooled Rank IC over a mini walk-forward inside its window,
 with the main run's train/test/embargo — the same metric selection, PBO and the
 gate use.
@@ -178,7 +178,7 @@ def tune_hyperparameters(
 class BoostedForecaster:
     """One library, fixed (already-tuned) hyperparameters.
 
-    ``fit``/``predict`` mirror ``DerivedPolynomial``'s incomplete-row masking
+    ``fit``/``predict`` mirror the polynomial models' incomplete-row masking
     for consistency across every model family, even though XGBoost/LightGBM
     handle NaN natively — a comparison exercise across models shouldn't let
     one silently impute differently from the others.
@@ -265,9 +265,7 @@ def run_boosted(
 ) -> tuple[ModelRunResult, ModelDescription, TuningLog]:
     """Tunes XGBoost and LightGBM on a rolling schedule (see the module docstring),
     evaluates both through the shared harness with each fold's latest tune,
-    compares via PBO, and reports the one with the best pooled OOS Rank IC — the
-    same shape ``run_derived_polynomial`` uses, XGBoost/LightGBM standing in for
-    a degree/regularizer grid.
+    compares via PBO, and reports the one with the best pooled OOS Rank IC.
 
     Feature selection is screened per fold (``evaluate(..., screen=True)``).
     Tuning searches over every signal; only which columns a fold is *fit* on is

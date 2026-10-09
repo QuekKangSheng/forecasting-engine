@@ -7,7 +7,8 @@ import numpy as np
 import pandas as pd
 
 from forecasting_engine.ingest.align import align_and_lag
-from forecasting_engine.models.polynomial import run_derived_polynomial, run_user_polynomial
+from forecasting_engine.models.polynomial import run_user_polynomial
+from forecasting_engine.models.sign_ruled import run_sign_ruled_polynomial
 from forecasting_engine.reporting.model_metrics import build_metrics_rows
 from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.splitters import PurgedWalkForward
@@ -38,15 +39,16 @@ def test_user_supplied_formula_bypasses_fitting_and_applies_directly():
 
 def test_derived_fit_flows_through_to_the_promotion_gate_and_comparison_table():
     frame = _raw_frame()
-    panel = align_and_lag(frame, ["strong_signal"], "price", horizon=1)
 
-    result, _description = run_derived_polynomial(panel, _splitter(), n_blocks=4)
+    result, _description, _panel = run_sign_ruled_polynomial(
+        frame, {"strong_signal": 1}, "price", 1, _splitter()
+    )
 
     # The gate and the comparison table are FYP-45/FYP-14's already-built
     # contract — a Polynomial result must satisfy both unmodified.
     outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
     assert outcome.promoted in (True, False)
-    assert set(outcome.failed_gates) <= {"oos_rank_ic", "pbo"}
+    assert set(outcome.failed_gates) <= {"signal_rank_ic", "pbo"}
 
     rows = build_metrics_rows({"Polynomial": result})
     assert rows[0]["Model"].text == "Polynomial"

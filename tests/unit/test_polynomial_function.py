@@ -6,7 +6,8 @@ import pytest
 
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
-from forecasting_engine.models.polynomial import DerivedPolynomial, UserPolynomial
+from forecasting_engine.models.polynomial import UserPolynomial
+from forecasting_engine.models.sign_ruled import SignRuledPolynomial
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.polynomial_function import (
     MAX_EXPANDED_TERMS,
@@ -341,7 +342,7 @@ def test_a_derived_equation_in_standardised_signals_reproduces_predict():
     target = 0.0004 * (a - 20) ** 2 - 0.01 * (b - 1.5) + rng.normal(scale=0.002, size=200)
     frame = pd.DataFrame({"a": a, "b": b, "target": target}, index=idx)
     panel = FeaturePanel(frame=frame, signals=("a", "b"), targets=("target",), lag_days=1)
-    model = DerivedPolynomial(degree=2, regularizer="lasso")
+    model = SignRuledPolynomial({"a": 1, "b": -1})
     model.fit(panel, idx)
     description = model.describe()
     fn = derived(

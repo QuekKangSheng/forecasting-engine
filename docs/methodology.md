@@ -147,7 +147,7 @@ date of the price each label reaches, which the splitter uses to purge.
 
 ## 8. Per-fold screening
 
-For the derived polynomial and machine learning, each fold screens every
+For machine learning, each fold screens every
 candidate signal on its own training window only (`features/screening.py`). A
 signal is kept when the absolute rank IC of the signal against the target is
 greater than `INCLUSION_THRESHOLD` (strictly). If a fold keeps no signal, no
@@ -156,7 +156,8 @@ every row, with no terms and that mean as its intercept
 (`validation/harness.evaluate`). Fitting on the signals that just failed the gate
 would let them back in. The Models page shows each signal's transform, its
 latest-fold in/out and IC, and how many folds kept it, and says under each
-screening model how many folds had no signal pass.
+screening model how many folds had no signal pass. The derived polynomial doesn't
+screen: its inputs are fixed by economics.
 
 ## 9. Model families
 
@@ -164,7 +165,7 @@ Every family on a target tab runs in one Run under the same shared settings —
 horizon, lag, walk-forward windows, embargo and so folds — and the results table
 states those settings above its rows. Changing any of them clears every tab's
 rows together (`app/model_runs.py`); a model's own setting (the derived
-polynomial's term cap, the user's formula and the signal each placeholder stands
+polynomial's version, the user's formula and the signal each placeholder stands
 for) clears only that model's row. Every
 family is optional; Run is disabled until one besides the naive baseline is
 ticked, and the naive baseline runs with every Run. The polynomial runs one
@@ -195,8 +196,10 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
   fold's `a + b × (formula)` and the signal table beside the box (column,
   security, field, transform, 1-day lag, latest value after both). One
   configuration, so no PBO.
-- **Derived polynomial, sign-ruled** (`models/sign_ruled.SignRuledPolynomial`;
-  the default derivation method wherever its inputs are present, equity only).
+- **Derived polynomial** (`models/sign_ruled.SignRuledPolynomial`, the sign-ruled
+  fit; equity only, and only when its inputs are in the data, otherwise the page
+  says why and runs no derived row). It replaced a lasso search over degree 1-3
+  polynomials of every screened signal, which ranked returns no better than chance.
   It comes from the October 2026 model research, chosen from about 300 trials
   under a selection rule written before the held-back data was scored. Inputs are `ECONOMIC_INPUTS`: HY OAS, IG OAS, VIX and the
   2s10s slope, each read as a level whatever the transform map says, and each
@@ -223,41 +226,6 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
   it was the only derived polynomial to hold up on held-back data (Oct 2024 –
   Sep 2026), but over half of that score came from one quarter (the spring 2025
   spread spike and rebound), and the 1990–2016 history points the other way.
-- **Derived polynomial, lasso search** (`models/polynomial.DerivedPolynomial`;
-  the method wherever the sign-ruled fit's inputs are missing, and on bond). The grid is
-  every degree in `CANDIDATE_DEGREES` with every regularizer in
-  `CANDIDATE_REGULARIZERS` (Lasso, and ElasticNet with an L1 share of 0.5, as in
-  `_REGULARIZERS`); degree may never exceed `MAX_DEGREE`. Per fold:
-  1. each raw signal is clipped to its training mean ± `CLIP_SD` standard
-     deviations, and those bounds are shown beside the equation;
-  2. each clipped signal is standardised with the same mean and SD,
-     `z = (x − mean) / sd`, and the `z` values are expanded with
-     `PolynomialFeatures`. A level and its square move almost together (VIX and
-     VIX² correlate at about 0.995), so the penalty can't tell them apart; a
-     centred signal and its square barely correlate;
-  3. the penalty is chosen by time-ordered cross-validation (`TimeSeriesSplit`,
-     up to `INNER_CV_SPLITS` folds, gap = `h`, fewer folds when the window is
-     short) over `_N_ALPHAS` penalties spanning a factor of `_ALPHA_EPS`, by mean
-     squared error. Each split standardises every expanded term using its own
-     training rows only, so the rows that judge a penalty never help shape what
-     it is judged on. No term is pre-selected: the penalty alone decides which
-     survive;
-  4. the term cap `max_terms` (default `DEFAULT_MAX_TERMS`) works through the
-     penalty. The whole training window's penalty path is walked from the
-     largest penalty down, `_PATH_CHUNK` penalties at a time, and stops at the
-     first penalty whose fit has more than `max_terms` non-zero coefficients; the
-     penalties before it are eligible, and the cross-validated best among them
-     is chosen, or the largest penalty if even that exceeds the cap. The small
-     penalties a cap rules out are also the slowest to fit, so they are never
-     computed. The model is that whole-window fit at the chosen
-     penalty; no coefficient is set to zero by hand;
-  5. the coefficients are converted back from the scaled terms for display, so
-     the equation, written in the standardised signals (e.g.
-     `0.0012 + 0.0004·z_VIX − 0.0002·z_VIX²`), reproduces the predictions. Each
-     signal's mean and SD (`ModelDescription.standardisation`) are shown under
-     it, e.g. `z(VIX) = (VIX − 18.20) / 6.100`.
-
-  A fold needs at least `_MIN_TRAINING_ROWS` complete rows.
 - **Machine learning** (`models/boosted.py`). XGBoost and LightGBM, each with
   `_FIXED_PARAMS` and gain feature importance, and minimum leaf size
   (`_LEAF_KEYS`) capped at `LEAF_CAP_SHARE` of a fit's training rows.
@@ -323,9 +291,9 @@ values end to end, then computes once:
 
 ## 11. Selection and PBO
 
-Where a family has several setups (the derived polynomial's grid; tuned XGBoost
-vs. tuned LightGBM), `validation/harness.select_best_candidate` reports the setup
-with the best Signal Rank IC.
+Where a family has several setups (tuned XGBoost vs. tuned LightGBM),
+`validation/harness.select_best_candidate` reports the setup with the best Signal
+Rank IC.
 
 PBO is computed by CSCV (`validation/pbo.compute_pbo`):
 
@@ -541,23 +509,13 @@ Values are Python literals as the code holds them.
 | `EMBARGO_DAYS` | `model_settings` | `20` |
 | `DEFAULT_TRAIN_WINDOW` | `model_settings` | `252` |
 | `DEFAULT_TEST_WINDOW` | `model_settings` | `20` |
-| `DEFAULT_MAX_TERMS` | `model_settings` | `10` |
 | `TUNING_ROWS` | `forecasting_engine.validation.splitters` | `504` |
 | `INCLUSION_THRESHOLD` | `forecasting_engine.features.screening` | `0.02` |
 | `FACTOR_COLUMNS` | `forecasting_engine.models.famafrench` | `("Mkt-RF", "SMB", "HML", "RMW", "CMA")` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.famafrench` | `15` |
 | `MAX_AGE` | `forecasting_engine.ingest.fama_french` | `timedelta(days=30)` |
 | `_TIMEOUT_SECONDS` | `forecasting_engine.ingest.fama_french` | `30` |
-| `MAX_DEGREE` | `forecasting_engine.models.polynomial` | `5` |
-| `CANDIDATE_DEGREES` | `forecasting_engine.models.polynomial` | `(1, 2, 3)` |
-| `CANDIDATE_REGULARIZERS` | `forecasting_engine.models.polynomial` | `("lasso", "elasticnet")` |
-| `CLIP_SD` | `forecasting_engine.models.polynomial` | `4.0` |
-| `INNER_CV_SPLITS` | `forecasting_engine.models.polynomial` | `5` |
-| `_REGULARIZERS` | `forecasting_engine.models.polynomial` | `{"lasso": 1.0, "elasticnet": 0.5}` |
-| `_N_ALPHAS` | `forecasting_engine.models.polynomial` | `100` |
-| `_ALPHA_EPS` | `forecasting_engine.models.polynomial` | `1e-3` |
-| `_PATH_CHUNK` | `forecasting_engine.models.polynomial` | `10` |
-| `_MIN_TRAINING_ROWS` | `forecasting_engine.models.polynomial` | `10` |
+| `CLIP_SD` | `forecasting_engine.models.sign_ruled` | `4.0` |
 | `ECONOMIC_INPUTS` | `forecasting_engine.models.sign_ruled` | `{"equity": {"LF98OAS": 1, "LUACOAS": 1, "VIX": 1, "USYC2Y10": 1}}` |
 | `LEVEL_ROWS` | `forecasting_engine.models.sign_ruled` | `252` |
 | `COMMON_SLOPE_SCALE` | `forecasting_engine.models.sign_ruled` | `0.2` |
