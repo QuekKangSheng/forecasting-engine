@@ -23,8 +23,9 @@ from forecasting_engine.ingest.align import FeaturePanel
 @dataclass(frozen=True)
 class ModelDescription:
     """What a fitted model is, in the sponsor's stated output format: terms and
-    coefficients. ``UserPolynomial`` reports the terms it was given; a fitted model
-    reports whatever survived fitting.
+    coefficients. ``UserPolynomial`` reports its formula as one term, with the
+    fitted scale as its coefficient; a fitted model reports whatever survived
+    fitting.
     """
 
     name: str
@@ -34,6 +35,10 @@ class ModelDescription:
     input_bounds: Mapping[str, tuple[float, float]] | None = None
     """Per input, the ``(low, high)`` range it is clipped to before the terms
     apply, for a model that clips; ``None`` if nothing is clipped."""
+    standardisation: Mapping[str, tuple[float, float]] | None = None
+    """Per input, the ``(mean, sd)`` its terms are written in: each term uses
+    ``z = (x − mean) / sd`` of the clipped input. ``None`` if the terms use the
+    inputs as they are."""
 
     def __post_init__(self) -> None:
         if len(self.terms) != len(self.coefficients):

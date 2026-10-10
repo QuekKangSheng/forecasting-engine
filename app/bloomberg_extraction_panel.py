@@ -15,9 +15,11 @@ construction, whatever it's named.
 
 from __future__ import annotations
 
+import pickle
 from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -71,6 +73,19 @@ COMMITTED_TARGETS_KEY = "extraction_committed_targets"
 COMMITTED_SOURCES_KEY = "extraction_committed_sources"
 #: Columns dropped at ingest for holding no data, for the data quality report.
 COMMITTED_DROPPED_KEY = "extraction_committed_dropped"
+
+#: Every committed key, saved together on each commit so a later window can
+#: pick up where the last one left off.
+_COMMITTED_KEYS = (
+    COMMITTED_KEY,
+    COMMITTED_REPORT_KEY,
+    COMMITTED_TARGETS_KEY,
+    COMMITTED_SOURCES_KEY,
+    COMMITTED_DROPPED_KEY,
+)
+#: Relative, like the active-model DuckDB, so it sits under the app's working
+#: directory.
+LAST_COMMIT_PATH = Path("data") / "last_commit.pkl"
 
 #: What the merged file is called in the upload log and under data/uploads.
 MERGED_NAME = "bloomberg_merged.csv"
@@ -178,6 +193,9 @@ def render() -> None:
         st.session_state[_UPLOADER_VERSION_KEY] = (
             st.session_state.get(_UPLOADER_VERSION_KEY, 0) + 1
         )
+        st.rerun()
+
+    if offer_last_commit():
         st.rerun()
 
     version = st.session_state.get(_UPLOADER_VERSION_KEY, 0)
@@ -319,6 +337,7 @@ def render() -> None:
                 combined.columns,
             )
             st.session_state[COMMITTED_DROPPED_KEY] = _dropped()
+            _save_last_commit()
         st.success(
             "This cleaned dataset is now committed and available throughout the application.",
             icon=":material/check_circle:",
@@ -560,6 +579,40 @@ def _render_gap_review(merged: pd.DataFrame) -> None:
             "Likely reason": st.column_config.TextColumn(width="medium"),
         },
     )
+
+
+def _save_last_commit() -> None:
+    LAST_COMMIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    bundle = {key: st.session_state[key] for key in _COMMITTED_KEYS if key in st.session_state}
+    tmp = LAST_COMMIT_PATH.with_suffix(".tmp")
+    tmp.write_bytes(pickle.dumps(bundle))
+    tmp.replace(LAST_COMMIT_PATH)
+
+
+def offer_last_commit() -> bool:
+    """Offer the data committed last time, in a window that has none committed.
+
+    Returns whether it was restored. Closing the window loses what was committed
+    in it, but not a Run left going in the background (``model_jobs``); this is
+    how its results come back without uploading every file again."""
+    if COMMITTED_KEY in st.session_state or not LAST_COMMIT_PATH.exists():
+        return False
+    try:
+        bundle = pickle.loads(LAST_COMMIT_PATH.read_bytes())
+        frame = bundle[COMMITTED_KEY]
+    except Exception:  # an unreadable file is the same as none
+        return False
+    dates = frame[bloomberg_csv.DATE_COLUMN]
+    st.info(
+        f"Data was committed in an earlier window: {len(frame.columns) - 1} columns, "
+        f"{_fmt(dates.min())} to {_fmt(dates.max())}. Use it again to pick up any results "
+        "already run on it, without uploading the files again.",
+        icon=":material/history:",
+    )
+    if st.button("Use the data committed last time", icon=":material/history:"):
+        st.session_state.update(bundle)
+        return True
+    return False
 
 
 def render_summary() -> None:

@@ -62,12 +62,20 @@ def read_export(filename: str, data: bytes) -> BloombergCsvExport:
     except UnicodeDecodeError as exc:
         raise BloombergCsvError(f"{filename}: not a UTF-8 CSV ({exc})") from exc
 
-    lines = text.splitlines()
+    return parse_lines(filename, text.splitlines())
+
+
+def parse_lines(filename: str, lines: Sequence[str]) -> BloombergCsvExport:
+    """Parse an export already split into CSV lines.
+
+    ``extraction.bloomberg_xlsx`` turns a one-sheet workbook into these lines,
+    so both formats share one parser.
+    """
     header_idx = next((i for i, line in enumerate(lines) if _HEADER_RE.match(line)), None)
     if header_idx is None:
         raise BloombergCsvError(f"{filename}: no 'Date,...' header row found")
 
-    security = _security(lines[:header_idx])
+    security = _security(list(lines[:header_idx]))
     try:
         frame = pd.read_csv(StringIO("\n".join(lines[header_idx:])))
     except pd.errors.ParserError as exc:

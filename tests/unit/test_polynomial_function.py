@@ -7,6 +7,7 @@ import pytest
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.polynomial import UserPolynomial
+from forecasting_engine.models.sign_ruled import SignRuledPolynomial
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.polynomial_function import (
     MAX_EXPANDED_TERMS,
@@ -15,7 +16,9 @@ from forecasting_engine.reporting.polynomial_function import (
     Term,
     dataset_fingerprint,
     from_description,
+    shape_latex,
     significant,
+    standardisation_lines,
     term_rows,
     to_latex,
 )
@@ -177,18 +180,22 @@ def test_a_user_formula_has_no_unexpanded_formula_when_it_expands():
         "+a - -b",
     ],
 )
-def test_the_expanded_terms_compute_exactly_what_the_formula_does(formula):
+def test_the_expanded_terms_compute_exactly_what_the_fitted_function_does(formula):
     # Tests the algebra, not the formatting: the expanded terms, evaluated on
-    # random data, must equal UserPolynomial's own prediction.
+    # random data, must equal the fitted UserPolynomial's own prediction.
     rng = np.random.default_rng(7)
     idx = pd.date_range("2024-01-01", periods=40, freq="D")
     frame = pd.DataFrame(
-        {name: rng.normal(size=40) for name in ("a", "b", "c")} | {"target": 0.0}, index=idx
+        {name: rng.normal(size=40) for name in ("a", "b", "c", "target")}, index=idx
     )
     panel = FeaturePanel(frame=frame, signals=("a", "b", "c"), targets=("target",), lag_days=1)
+    model = UserPolynomial(formula)
+    model.fit(panel, idx)
 
-    expected = UserPolynomial(formula).predict(panel, idx)
-    fn = user(formula)
+    expected = model.predict(panel, idx)
+    fn = from_description(
+        model.describe(), origin=Origin.USER_SUPPLIED, target="SPX_Index_PX_LAST", horizon=1
+    )
     assert fn.formula is None, "these formulas should all expand"
     actual = pd.Series(fn.intercept, index=idx)
     for term in fn.terms:
@@ -298,6 +305,84 @@ def test_a_zero_intercept_only_function_still_shows_zero():
 def test_a_scientific_coefficient_is_typeset():
     fn = derived([VIX], [0.0000123456], intercept=0.0)
     assert to_latex(fn, label_for(VIX)) == r"\hat{y} = 1.235 \times 10^{-5}\,\text{VIX}"
+
+
+def test_a_fitted_user_function_is_written_as_its_scale_and_intercept():
+    fn = from_description(
+        ModelDescription("UserPolynomial", (f"{VIX} / {IG}",), (0.0004,), -0.0012),
+        origin=Origin.USER_SUPPLIED,
+        target="SPX_Index_PX_LAST",
+        horizon=5,
+    )
+    expected = (
+        r"\hat{y} = -0.001200 + 0.0004000 \cdot (\text{VIX} / \text{US IG credit spread})"
+    )
+    assert shape_latex(fn, label_for(VIX, IG)) == expected
+    assert to_latex(fn, label_for(VIX, IG)) == expected
+
+
+def test_an_expanded_user_function_keeps_its_fitted_form_too():
+    fn = from_description(
+        ModelDescription("UserPolynomial", ("2 * a + 1",), (-0.5,), 0.01),
+        origin=Origin.USER_SUPPLIED,
+        target="SPX_Index_PX_LAST",
+        horizon=1,
+    )
+    assert as_dict(fn) == {(("a", 1),): -1.0}
+    assert fn.intercept == pytest.approx(0.01 - 0.5)
+    assert shape_latex(fn, lambda column: column) == (
+        r"\hat{y} = 0.01000 - 0.5000 \cdot (2 \cdot \text{a} + 1)"
+    )
+
+
+def test_a_derived_equation_in_standardised_signals_reproduces_predict():
+    rng = np.random.default_rng(5)
+    idx = pd.date_range("2024-01-01", periods=200, freq="D")
+    a, b = 20 + 5 * rng.normal(size=200), 1.5 + 0.3 * rng.normal(size=200)
+    target = 0.0004 * (a - 20) ** 2 - 0.01 * (b - 1.5) + rng.normal(scale=0.002, size=200)
+    frame = pd.DataFrame({"a": a, "b": b, "target": target}, index=idx)
+    panel = FeaturePanel(frame=frame, signals=("a", "b"), targets=("target",), lag_days=1)
+    model = SignRuledPolynomial({"a": 1, "b": -1})
+    model.fit(panel, idx)
+    description = model.describe()
+    fn = derived(
+        description.terms, description.coefficients, description.intercept, columns=("a", "b")
+    )
+    fn = PolynomialFunction(**{**fn.__dict__, "standardisation": description.standardisation})
+
+    z = {
+        column: (frame[column].clip(*description.input_bounds[column]) - mean) / sd
+        for column, (mean, sd) in fn.standardisation.items()
+    }
+    actual = pd.Series(fn.intercept, index=idx)
+    for term in fn.terms:
+        product = pd.Series(1.0, index=idx)
+        for column, power in term.factors:
+            product = product * z[column] ** power
+        actual = actual + term.coefficient * product
+
+    assert fn.terms
+    np.testing.assert_allclose(actual, model.predict(panel, idx), rtol=1e-9, atol=1e-12)
+
+
+def test_a_standardised_equation_names_its_signals_z_and_says_how_each_is_made():
+    fn = from_description(
+        ModelDescription(
+            "DerivedPolynomial",
+            (f"{VIX}^2",),
+            (-0.0002,),
+            0.0012,
+            standardisation={VIX: (18.2, 6.1), IG: (1.25, 0.3)},
+        ),
+        origin=Origin.DERIVED,
+        target="SPX_Index_PX_LAST",
+        horizon=5,
+    )
+    label = label_for(VIX, IG)
+
+    assert to_latex(fn, label) == r"\hat{y} = 0.001200 - 0.0002000\,z_{\text{VIX}}^{2}"
+    assert term_rows(fn, label)[1]["Factor"] == "z(VIX)"
+    assert standardisation_lines(fn, label) == ["z(VIX) = (VIX − 18.20) / 6.100"]
 
 
 def test_formula_only_mode_writes_the_formula_back_with_labels():

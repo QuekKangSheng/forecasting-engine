@@ -28,7 +28,7 @@ def _exact_linear_panel(n: int = 60) -> FeaturePanel:
 
 
 def test_famafrench5_recovers_exact_coefficients_on_noiseless_data():
-    # Plain OLS, no regularization — unlike DerivedPolynomial, exact
+    # Plain OLS, no regularization or shrinkage, so exact
     # coefficient recovery on noiseless data is a fair assertion here.
     panel = _exact_linear_panel()
     model = FamaFrench5()

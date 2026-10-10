@@ -201,11 +201,11 @@ def eyebrow(text: str, help: str | None = None) -> str:
     """A small uppercase section label, optionally with a hover explanation.
 
     ``help`` renders as an ⓘ carrying the browser's own title tooltip, since a
-    markdown block has no access to Streamlit's ``help=``.
+    markdown block has no access to Streamlit's ``help=``. A blank line in
+    ``help`` (a multi-paragraph glossary entry) would otherwise split the
+    ``title`` attribute across two markdown blocks and leak the tag's tail as
+    visible text, so whitespace is collapsed to single spaces first.
     """
-    hint = (
-        f'<span class="fe-eyebrow-help" title="{html.escape(help, quote=True)}">i</span>'
-        if help
-        else ""
-    )
+    title = html.escape(" ".join(help.split()), quote=True) if help else ""
+    hint = f'<span class="fe-eyebrow-help" title="{title}">i</span>' if help else ""
     return f'<div class="fe-eyebrow">{text}{hint}</div>'

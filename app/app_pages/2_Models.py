@@ -1,0 +1,1158 @@
+"""Models page: FYP-42's Fama-French benchmark, FYP-43's polynomial forecasting
+functions and FYP-44's machine-learning models, run together per target through
+one walk-forward harness under one set of settings and compared side by side
+(FYP-161), with FYP-162's check of whether a forecast's direction would have paid.
+
+Reads the dataset committed via "Use Updated Data" on the Data page. No maths
+lives here — fitting is in forecasting_engine.models.polynomial / sign_ruled /
+famafrench / boosted; the walk-forward loop is in forecasting_engine.validation.harness;
+table formatting is in forecasting_engine.reporting.model_metrics.
+"""
+
+from __future__ import annotations
+
+import functools
+import html
+import time
+from collections.abc import Mapping
+
+import pandas as pd
+import streamlit as st
+
+import bloomberg_extraction_panel
+import glossary
+import model_jobs
+import model_runs
+import ui
+from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
+from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest import fama_french
+from forecasting_engine.ingest.align import (
+    MAX_STALENESS,
+    PRODUCTION_LAG_DAYS,
+    UNCLASSIFIED_TRANSFORM,
+    FeaturePanel,
+    align_and_lag,
+    is_classified,
+    select_signals,
+    transform_for,
+)
+from forecasting_engine.ingest.fama_french import FactorFetchError
+from forecasting_engine.models.base import ModelDescription
+from forecasting_engine.models.boosted import BoostedConfigError, run_boosted
+from forecasting_engine.models.famafrench import (
+    FACTOR_COLUMNS,
+    FamaFrenchDataError,
+    factor_coverage,
+    merge_factors,
+    run_famafrench,
+)
+from forecasting_engine.models.naive import NaiveDataError, run_naive
+from forecasting_engine.models.polynomial import (
+    PolynomialConfigError,
+    placeholders,
+    run_user_polynomial,
+)
+from forecasting_engine.models.sign_ruled import (
+    CLIP_SD,
+    SignRuledInputsError,
+    economic_signs,
+    run_sign_ruled_polynomial,
+)
+from forecasting_engine.models.sign_ruled import VERSION as SIGN_RULED_VERSION
+from forecasting_engine.portfolio.directional import (
+    DirectionalDataError,
+    directional_pnl,
+)
+from forecasting_engine.reporting.factor_labels import labeller
+from forecasting_engine.reporting.model_metrics import (
+    MODEL_ORDER,
+    Cell,
+    FoldTerms,
+    ModelRunResult,
+    ScreeningSummary,
+    build_metrics_rows,
+)
+from forecasting_engine.reporting.polynomial_function import (
+    Origin,
+    PolynomialFunction,
+    dataset_fingerprint,
+    from_description,
+    shape_latex,
+    standardisation_lines,
+    term_rows,
+    to_latex,
+)
+from forecasting_engine.store import active_model
+from forecasting_engine.validation.gates import evaluate_candidate, is_high_risk
+from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
+from model_settings import (
+    DEFAULT_HORIZON,
+    DEFAULT_TEST_WINDOW,
+    DEFAULT_TRAIN_WINDOW,
+    EMBARGO_DAYS,
+    HORIZONS,
+)
+
+#: Model names as the comparison table knows them (``MODEL_ORDER``).
+NAIVE, FF5, DERIVED, USER, ML = MODEL_ORDER
+
+ACTIVE_MODEL_CANDIDATES = (DERIVED, USER, ML)
+
+#: Single-configuration models gated on Signal Rank IC alone (no PBO to gate). The
+#: derived polynomial is a forecasting model, not a benchmark like FF5.
+SIGNAL_GATED = (DERIVED,)
+
+#: The polynomial's two sources; exactly one runs.
+DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
+
+#: The derived row's own setting: the sign-ruled fit's version, so a result saved
+#: under an older fit is refitted (docs/methodology.md, section 9).
+SIGN_RULED_SETTING = f"sign-ruled v{SIGN_RULED_VERSION}"
+
+ROLE_NAMES: dict[TargetRole, str] = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
+
+TABLE_COLUMNS: tuple[str, ...] = (
+    "Model",
+    "IC",
+    "Signal Rank IC",
+    "OOS Rank IC",
+    "RMSE",
+    "PBO",
+    "Crash Recall",
+    "Crash Precision",
+    "Crash F1",
+    "Rows scored",
+    "Rank IC within folds",
+    "Beyond 2 s.e.",
+    "Constant folds",
+)
+
+BADGE_LABELS = {"success": "Gate met", "danger": "Gate failed"}
+
+#: Column heading -> the glossary term explaining it. "Model" and "Rows scored"
+#: need none, and the three crash columns share one explanation.
+COLUMN_TERMS = {
+    "IC": "IC",
+    "Signal Rank IC": "Signal Rank IC",
+    "OOS Rank IC": "OOS Rank IC",
+    "RMSE": "RMSE",
+    "PBO": "PBO",
+    "Crash Recall": "Crash diagnostics",
+    "Crash Precision": "Crash diagnostics",
+    "Crash F1": "Crash diagnostics",
+    "Rank IC within folds": "Rank IC within folds",
+    "Beyond 2 s.e.": "Beyond 2 s.e.",
+    "Constant folds": "Constant folds",
+}
+
+GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "pbo": "PBO"}
+
+#: Bumped whenever what a saved result holds changes meaning, so a result saved
+#: by older code is refitted rather than shown under today's columns. 2: the
+#: gate moved to the Signal Rank IC and results carry each fold's baseline.
+RESULT_VERSION = 2
+
+st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
+ui.inject()
+
+st.header("Models")
+st.caption(
+    "Run the ticked model families together for each target through the shared "
+    "walk-forward harness, then compare them side by side.",
+    help=glossary.term("Promotion gate"),
+)
+
+if bloomberg_extraction_panel.offer_last_commit():
+    st.rerun()
+merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)
+if merged is None:
+    st.info('No data committed yet — click "Use Updated Data" on the Data page first.')
+    st.stop()
+
+# Which columns are targets is a structural fact from ingestion (Task 4.1),
+# not a free pick here — this is what stops a target ending up modelled as
+# its own signal (e.g. SPX's own bid price screened in as a predictor for
+# SPX itself, seen on the live data before this was fixed).
+target_columns: dict[TargetRole, str] = st.session_state.get(
+    bloomberg_extraction_panel.COMMITTED_TARGETS_KEY, {}
+)
+if not target_columns:
+    st.info(
+        "No target resolved yet — confirm at least one target index on the Data "
+        'page (Target index files), then commit with "Use Updated Data".'
+    )
+    st.stop()
+
+numeric_cols = [c for c in merged.columns if c != DATE_COLUMN and merged[c].dtype.kind in "fi"]
+label = labeller(numeric_cols)
+# Every field of every resolved target's security is excluded, not just the
+# one a tab forecasts — otherwise the Equity tab would still let the Bond
+# column (or SPX's own bid) ride along as a candidate signal.
+sources = st.session_state.get(bloomberg_extraction_panel.COMMITTED_SOURCES_KEY, {})
+signal_cols = select_signals(numeric_cols, list(target_columns.values()), sources)
+transforms = {c: transform_for(sources.get(c)) for c in signal_cols}
+unclassified = [c for c in signal_cols if not is_classified(sources.get(c))]
+if unclassified:
+    st.warning(
+        f"No transform is defined for {', '.join(unclassified)}, so "
+        f"{'it is' if len(unclassified) == 1 else 'they are'} treated as a "
+        f"{UNCLASSIFIED_TRANSFORM}. Add the ticker to TICKER_TRANSFORMS in "
+        "ingest/align.py to classify it.",
+        icon=":material/warning:",
+    )
+
+with st.expander("Settings"):
+    horizon = st.segmented_control(
+        "Forecast horizon",
+        HORIZONS,
+        default=DEFAULT_HORIZON,
+        required=True,
+        format_func=lambda days: f"{days} day" if days == 1 else f"{days} days",
+        help=glossary.term("Forecast horizon"),
+    )
+    cols = st.columns(2)
+    train = cols[0].number_input(
+        "Walk-forward train window (days)",
+        min_value=10,
+        value=DEFAULT_TRAIN_WINDOW,
+        step=10,
+        help=glossary.term("Walk-forward train window (days)"),
+    )
+    test = cols[1].number_input(
+        "Walk-forward test window (days)",
+        min_value=1,
+        value=DEFAULT_TEST_WINDOW,
+        step=5,
+        help=glossary.term("Walk-forward test window (days)"),
+    )
+    st.caption(
+        f"Embargo is fixed at {EMBARGO_DAYS} trading days — the longest forecast horizon — "
+        "whichever horizon is selected, so training and grading never overlap.",
+        help=glossary.term("Embargo"),
+    )
+    st.caption(
+        f"Signals are lagged {PRODUCTION_LAG_DAYS} trading day, so each value is one that "
+        "had already been published.",
+        help=glossary.term("Signal lag"),
+    )
+    st.caption(
+        f"The first {TUNING_ROWS} target dates are a tuning period: no model is scored "
+        "on them, so machine learning's tuning never touches a reported result."
+    )
+
+horizon = int(horizon)
+splitter = PurgedWalkForward(
+    train=int(train), test=int(test), embargo=EMBARGO_DAYS, tuning_rows=TUNING_ROWS
+)
+shared_settings = (dataset_fingerprint(merged), horizon, int(train), int(test))
+cleared = model_runs.cleared_by(st.session_state, shared_settings)
+stored = model_runs.stored(st.session_state, shared_settings)
+
+#: What every row on the page was run under, stated beside the results (FYP-161).
+SETTINGS_STAMP = (
+    f"{horizon}-day horizon · walk-forward train {int(train)} / test {int(test)} days · "
+    f"embargo {EMBARGO_DAYS} days · signals lagged {PRODUCTION_LAG_DAYS} day · "
+    f"first {TUNING_ROWS} dates kept for tuning"
+)
+
+ACTIVE_SETTINGS: dict[str, int | str] = {
+    "horizon": horizon,
+    "train_window": int(train),
+    "test_window": int(test),
+    "dataset_fingerprint": str(dataset_fingerprint(merged)),
+}
+
+
+def _show_alignment(panel: FeaturePanel, target_name: str) -> None:
+    """Per signal: how it was made stationary, and how much of it is carried or missing."""
+    with st.expander(f"Signal alignment · {target_name} · {len(panel.frame):,} target dates"):
+        st.caption(
+            f"Signals are read as of each date the target has a price, carried forward "
+            f"for at most {MAX_STALENESS} rows. Excluded rows have no value once "
+            "transformed and lagged, and are left out of fitting and scoring."
+        )
+        st.dataframe(
+            [
+                {
+                    "Signal": signal,
+                    "Transform": str(a.transform),
+                    "Carried forward": a.carried_forward,
+                    "Rows excluded": a.excluded,
+                }
+                for signal, a in panel.alignment.items()
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+
+
+def _kept(widget_key: str, default: object) -> object:
+    """The last value a widget held. Streamlit forgets a widget's value while it is
+    hidden, so each input is kept under its own key and restored when shown again;
+    hiding an input is then never a change of setting."""
+    return st.session_state.get(f"{widget_key}_kept", default)
+
+
+def _keep(widget_key: str, value: object) -> None:
+    st.session_state[f"{widget_key}_kept"] = value
+
+
+SIGN_RULED_CAPTION = (
+    "A degree-1 polynomial in HY OAS, IG OAS, VIX and the 2s10s slope, read as levels "
+    "and each oriented so that a higher value means a higher expected return. Its "
+    "slopes are shrunk toward one common positive slope, and every fold trains on all "
+    "earlier rows, whatever the train window above says. In testing, no term above "
+    "degree 1 helped out of sample. Expect a modest edge, earned mostly when credit "
+    "spreads and VIX spike and then come back down."
+)
+
+
+def _polynomial_settings(
+    key: str,
+    panel: FeaturePanel,
+    run_poly: bool,
+    signs: Mapping[str, int] | None,
+    unavailable: str | None,
+) -> tuple[str | None, dict[str, object]]:
+    """Which polynomial runs, if any, and each polynomial row's own setting.
+
+    Only the chosen source's input is shown. Each row depends only on its own
+    setting, so switching source or unticking clears nothing. ``signs`` are the
+    sign-ruled fit's inputs, or ``None`` (with ``unavailable`` saying why) when this
+    target's data can't support it, which leaves no derived polynomial to run."""
+    formula_key = f"formula_{key}"
+    settings: dict[str, object] = {
+        DERIVED: SIGN_RULED_SETTING,
+        USER: _user_function(key, str(_kept(formula_key, "")), panel),
+    }
+    if not run_poly:
+        return None, settings
+    st.markdown(
+        ui.eyebrow("Polynomial", glossary.term("Function source")), unsafe_allow_html=True
+    )
+    source = st.radio(
+        "Function source",
+        (DERIVE_OPTION, OWN_OPTION),
+        horizontal=True,
+        label_visibility="collapsed",
+        key=f"poly_source_{key}",
+    )
+    if source == DERIVE_OPTION:
+        if not signs:
+            st.caption(f"No derived polynomial for this target: {unavailable}")
+            return None, settings
+        st.caption(SIGN_RULED_CAPTION)
+        return DERIVED, settings
+    formula = st.text_input(
+        "Function — write its shape with placeholders, then pick each one's signal",
+        value=str(_kept(formula_key, "")),
+        placeholder="e.g. x - 0.5 * y ** 2",
+        key=formula_key,
+        help=glossary.term("Function source"),
+    )
+    _keep(formula_key, formula)
+    st.caption(_example(panel))
+    settings[USER] = _user_function(key, formula, panel, show=True)
+    _show_signal_table(panel)
+    return USER, settings
+
+
+def _example(panel: FeaturePanel) -> str:
+    """How the example's placeholders would start out: the first two real signals."""
+    first, *rest = (label(s) for s in panel.signals)
+    if not rest:
+        return f"In the example, x would start as {first}; change it below."
+    return (
+        f"In the example, x and y would start as {first} and {rest[0]}; change either "
+        "below. Only a scale and an intercept are fitted to the shape you write."
+    )
+
+
+def _user_function(
+    key: str, formula: str, panel: FeaturePanel, *, show: bool = False
+) -> tuple[str, tuple[tuple[str, str], ...] | None]:
+    """The formula and the signal each of its placeholders stands for, or no
+    bindings if the formula can't be read (its error is shown under the box).
+
+    Each placeholder gets a dropdown of the signals. A placeholder that is already
+    a signal's column name defaults to it; the others default to the signals in
+    order, so ``x`` and ``y`` start as the first two."""
+    formula = formula.strip()
+    if not formula:
+        return "", ()
+    try:
+        names = placeholders(formula)
+    except PolynomialConfigError as exc:
+        if show:
+            st.error(f"{USER}: {exc}", icon=":material/error:")
+        return formula, None
+    signals = list(panel.signals)
+    bindings = []
+    unnamed = iter(s for s in signals if s not in names)
+    for name in names:
+        widget_key = f"bind_{key}_{name}"
+        default = name if name in signals else next(unnamed, signals[0])
+        chosen = _kept(widget_key, default)
+        if chosen not in signals:
+            chosen = default
+        if show:
+            chosen = st.selectbox(
+                f"{name} stands for",
+                signals,
+                index=signals.index(chosen),
+                format_func=lambda s: f"{label(s)} ({s})",
+                key=widget_key,
+            )
+            _keep(widget_key, chosen)
+        bindings.append((name, chosen))
+    return formula, tuple(bindings)
+
+
+def _show_signal_table(panel: FeaturePanel) -> None:
+    """The signals a function can use: what each is, and what the model sees."""
+    st.dataframe(
+        [
+            {
+                "Signal": label(signal),
+                "Column": signal,
+                "Security": sources[signal].security if signal in sources else "—",
+                "Field": sources[signal].field if signal in sources else "—",
+                "Transform": str(panel.alignment[signal].transform),
+                "Lag": f"{PRODUCTION_LAG_DAYS} day",
+                "Latest value": _latest(panel.frame[signal]),
+            }
+            for signal in panel.signals
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        "Latest value is after the transform and the lag: what the function is "
+        "given, not the raw export."
+    )
+
+
+def _latest(series: pd.Series) -> str:
+    present = series.dropna()
+    return f"{present.iloc[-1]:.4g}" if len(present) else "—"
+
+
+def _run_sign_ruled(
+    signs: Mapping[str, int],
+    frame: pd.DataFrame,
+    price_col: str,
+    horizon: int,
+    splitter: PurgedWalkForward,
+) -> model_runs.ModelRun:
+    result, description, panel = run_sign_ruled_polynomial(
+        frame, signs, price_col, horizon, splitter
+    )
+    fn = from_description(
+        description,
+        origin=Origin.DERIVED,
+        target=price_col,
+        horizon=horizon,
+        columns=panel.signals,
+    )
+    return model_runs.ModelRun(result, description, function=fn)
+
+
+def _economic_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None]:
+    """The sign-ruled fit's inputs for ``role``, or why it can't run here."""
+    try:
+        return economic_signs(signal_cols, sources, role), None
+    except SignRuledInputsError as exc:
+        return None, str(exc)
+
+
+def _run_user(
+    function: tuple[str, tuple[tuple[str, str], ...]],
+    panel: FeaturePanel,
+    price_col: str,
+    splitter: PurgedWalkForward,
+) -> model_runs.ModelRun:
+    formula, bindings = function
+    result, description = run_user_polynomial(formula, panel, splitter, dict(bindings))
+    fn = from_description(
+        description,
+        origin=Origin.USER_SUPPLIED,
+        target=price_col,
+        horizon=panel.horizon,
+        columns=panel.signals,
+    )
+    return model_runs.ModelRun(result, description, function=fn)
+
+
+def _run_famafrench(
+    frame: pd.DataFrame, price_col: str, horizon: int, splitter: PurgedWalkForward
+) -> model_runs.ModelRun:
+    try:
+        resolved = fama_french.resolve()
+    except FactorFetchError as exc:
+        raise FactorFetchError(
+            "the Fama-French factors could not be downloaded and none are saved, so FF5 "
+            f"was not run: {exc}"
+        ) from exc
+    indexed = merge_factors(frame, resolved.file.frame).set_index(DATE_COLUMN)
+    panel = align_and_lag(
+        indexed, list(FACTOR_COLUMNS), price_col, horizon=horizon, exact=FACTOR_COLUMNS
+    )
+    result, description = run_famafrench(panel, splitter)
+    return model_runs.ModelRun(
+        result,
+        description,
+        coverage=factor_coverage(resolved.file.frame, panel),
+        warning=resolved.warning,
+    )
+
+
+def _run_ml(panel: FeaturePanel, splitter: PurgedWalkForward) -> model_runs.ModelRun:
+    result, description, tuning = run_boosted(panel, splitter)
+    return model_runs.ModelRun(result, description, tuning=tuning)
+
+
+def _run_naive(panel: FeaturePanel, splitter: PurgedWalkForward) -> model_runs.ModelRun:
+    return model_runs.ModelRun(*run_naive(panel, splitter))
+
+
+#: Errors whose message is written for a portfolio manager.
+MODEL_ERRORS = (
+    PolynomialConfigError,
+    FamaFrenchDataError,
+    BoostedConfigError,
+    FactorFetchError,
+    NaiveDataError,
+)
+
+
+def _job_id(role: TargetRole) -> str:
+    return model_jobs.result_key("job", shared_settings, role.value)
+
+
+def _result_key(role: TargetRole, name: str, settings: dict[str, object]) -> str:
+    """Everything a model's result depends on: the shared settings, the target,
+    the model and, for a polynomial row, its own setting."""
+    return model_jobs.result_key(
+        RESULT_VERSION, shared_settings, role.value, name, settings.get(name)
+    )
+
+
+def _collect(role: TargetRole, runs: model_runs.TabRuns, settings: dict[str, object]) -> None:
+    """Add every saved result for this target's current settings that the page
+    doesn't hold yet: a background Run's, or one from an earlier session."""
+    for name in MODEL_ORDER:
+        if name not in runs.runs:
+            saved = model_jobs.load(_result_key(role, name, settings))
+            if saved is not None:
+                runs.runs[name] = saved
+
+
+@st.fragment(run_every=3)
+def _show_job(role: TargetRole, target_name: str) -> None:
+    """While this target's Run fits in the background, what each model is doing.
+
+    Refreshes on its own, and reruns the whole page each time a model finishes,
+    so results appear as they come in, without a click."""
+    job = model_jobs.job(_job_id(role))
+    if job is None:
+        return
+    seen_key = f"job_seen_{job.job_id}"
+    done_key = f"job_done_{job.job_id}"
+    finished = sum(1 for s in job.status.values() if s in (model_jobs.DONE, model_jobs.FAILED))
+    if job.active:
+        st.session_state[seen_key] = False
+        # Each model's results go up as soon as it finishes, not when the Run ends.
+        if st.session_state.get(done_key, finished) != finished:
+            st.session_state[done_key] = finished
+            st.rerun()
+        st.session_state[done_key] = finished
+        now = time.time()
+        parts = []
+        for name in job.models:
+            status = job.status[name]
+            if status == model_jobs.RUNNING:
+                parts.append(f"**{name}**: fitting ({_elapsed(now - job.started[name])})")
+            elif status == model_jobs.QUEUED:
+                parts.append(f"**{name}**: waiting")
+            else:
+                took = _elapsed(job.finished[name] - job.started[name])
+                parts.append(f"**{name}**: {status} ({took})")
+        st.info(
+            f"Running in the background for {target_name}. "
+            + " · ".join(parts)
+            + ". You can switch tabs, use the rest of the app or close this window: each "
+            "model is saved when it finishes and shows here, or on your return after "
+            "committing the same data.",
+            icon=":material/hourglass_top:",
+        )
+        return
+    if st.session_state.get(seen_key) is False:
+        st.session_state[seen_key] = True
+        st.rerun()
+    for name, message in job.errors.items():
+        st.error(f"{name}: {message}", icon=":material/error:")
+
+
+def _elapsed(seconds: float) -> str:
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}:{secs:02d}"
+
+
+def _header_html(column: str) -> str:
+    term = COLUMN_TERMS.get(column)
+    if term is None:
+        return f"<th>{html.escape(column)}</th>"
+    hint = html.escape(glossary.term(term), quote=True)
+    return (
+        f'<th title="{hint}">{html.escape(column)}'
+        f'<span class="fe-eyebrow-help" title="{hint}">i</span></th>'
+    )
+
+
+def _cell_html(cell: Cell) -> str:
+    text = html.escape(cell.text)
+    badge = BADGE_LABELS.get(cell.tone)
+    if badge is None:
+        return text
+    return f"{text}&nbsp;&nbsp;{ui.lozenge(badge, cell.tone)}"
+
+
+def _show_table(results: dict[str, ModelRunResult]) -> None:
+    # A hand-built table has no Streamlit help=, so each heading explains
+    # itself through the browser's own title tooltip.
+    rows = build_metrics_rows(results, gated=SIGNAL_GATED)
+    header ="".join(_header_html(col) for col in TABLE_COLUMNS)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{_cell_html(row[col])}</td>" for col in TABLE_COLUMNS) + "</tr>"
+        for row in rows
+    )
+    st.markdown(
+        f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{header}</tr>'
+        f"</thead><tbody>{body}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+
+
+def _gate_line(name: str, result: ModelRunResult) -> str:
+    if name == NAIVE:
+        return f"**{name}**: the baseline to beat — not gated."
+    if result.pbo is None and name not in SIGNAL_GATED:
+        return f"**{name}**: not gated — no configuration search, so no PBO."
+    outcome = evaluate_candidate(result.gated_rank_ic, result.pbo)
+    no_pbo = " (one configuration, so no PBO)" if result.pbo is None else ""
+    if outcome.promoted:
+        return f"**{name}**: gate met{no_pbo}."
+    failed = " and ".join(GATE_NAMES[g] for g in outcome.failed_gates)
+    return f"**{name}**: gate failed on {failed}{no_pbo}."
+
+
+def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> None:
+    """Shared by the derived polynomial and ML: both screen the same panel on the
+    same folds, so their screening is the same and shown once."""
+    screenings = [runs[n].result.screening for n in (DERIVED, ML) if n in runs]
+    screening = next((s for s in screenings if s is not None), None)
+    with st.expander(f"Signal screening · {target_name}"):
+        if screening is None:
+            st.caption(
+                "Nothing was screened: a user-supplied function and FF5 are handed their "
+                "inputs. Derive the polynomial or run machine learning to screen signals."
+            )
+            return
+        st.caption(
+            f"Every one of the {screening.folds} walk-forward folds screens signals on its "
+            "own training window, so a signal can be kept in some folds and dropped in others.",
+            help=glossary.term("Signal inclusion across folds"),
+        )
+        ics = screening.latest_ics
+        st.dataframe(
+            [
+                {
+                    "Signal": signal,
+                    "Transform": str(transforms[signal]) if signal in transforms else "—",
+                    "Latest fold": "In" if signal in screening.latest_included else "Out",
+                    "Latest-fold IC": ics.get(signal, float("nan")),
+                    "Included in": f"{used} of {screening.folds} folds",
+                }
+                for signal, used in screening.counts
+            ],
+            width="stretch",
+            hide_index=True,
+            column_config={"Latest-fold IC": st.column_config.NumberColumn(format="%.4f")},
+        )
+        _show_no_signal_folds(screening)
+
+
+def _show_no_signal_folds(screening: ScreeningSummary | None) -> None:
+    if screening is not None and screening.fell_back:
+        st.caption(
+            f"{screening.fell_back} of {screening.folds} folds had no signal pass "
+            "screening; those folds forecast the training mean."
+        )
+
+
+def _show_fold_term_count(fn: PolynomialFunction, terms: FoldTerms | None) -> None:
+    """Say how typical this fold's equation is of the run.
+
+    A derived fit is refitted per fold and regularization can zero every
+    coefficient on one fold and keep several on the next. The equation above is
+    the most recent fold's, so on its own it reads as the whole run's answer.
+    """
+    if not fn.terms:
+        st.caption("No terms survived fitting — every coefficient was regularized to zero.")
+    if terms is None or terms.folds <= 1:
+        return
+    if terms.every_fold:
+        st.caption(f"Every one of the {terms.folds} walk-forward folds kept at least one term.")
+    else:
+        st.caption(
+            f"{terms.with_terms} of {terms.folds} walk-forward folds kept any term at all. "
+            "The equation above is the most recent fold's fit, not an average of them."
+        )
+
+
+def _show_polynomial(run: model_runs.ModelRun) -> None:
+    """The fitted polynomial as a labelled equation and term table."""
+    fn = run.function
+    st.markdown(ui.eyebrow(fn.origin, glossary.term("Fitted terms")), unsafe_allow_html=True)
+    st.caption(f"Forecasts: {label(fn.target)}, {fn.horizon}-day return")
+    if fn.origin == Origin.USER_SUPPLIED:
+        st.latex(shape_latex(fn, label))
+        st.caption(
+            "Your function sets the shape; the scale and intercept are fitted by least "
+            "squares on each fold's training window. Shown: the latest fold's fit."
+        )
+    else:
+        st.latex(to_latex(fn, label))
+    lines = standardisation_lines(fn, label)
+    if lines:
+        st.caption(
+            "Each signal enters standardised on the latest training window, z = "
+            "(signal − its mean) / its standard deviation: " + "; ".join(lines) + "."
+        )
+    bounds = run.description.input_bounds
+    if bounds:
+        ranges = "; ".join(f"{label(s)} {lo:.4g} to {hi:.4g}" for s, (lo, hi) in bounds.items())
+        st.caption(
+            f"Each input is first clipped to its latest training window's mean ± {CLIP_SD:g} "
+            f"standard deviations: {ranges}. Outside those, the equation applies at the bound."
+        )
+    if fn.formula is not None:
+        st.caption(
+            "This function can't be written as separate terms and exponents (it divides "
+            "by a signal, or expands to more than 50 terms), so it has no term table."
+        )
+        return
+    if run.description.name == "SignRuledPolynomial":
+        st.caption(
+            "Sign-ruled fit: inputs read as levels, slopes shrunk toward one common "
+            "positive slope, every fold trained on all earlier rows. Shown: the latest "
+            "fold's fit."
+        )
+    if fn.origin == Origin.DERIVED:
+        _show_no_signal_folds(run.result.screening)
+        _show_fold_term_count(fn, run.result.terms)
+    st.dataframe(
+        term_rows(fn, label),
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Factor": st.column_config.TextColumn("Factor", help=glossary.term("Factor")),
+            "Exponent": st.column_config.TextColumn("Exponent", help=glossary.term("Exponent")),
+            "Coefficient": st.column_config.TextColumn(
+                "Coefficient", help=glossary.term("Coefficient")
+            ),
+        },
+    )
+
+
+def _show_fitted_terms(description: ModelDescription, *, is_ml: bool) -> None:
+    value_col = "Mean |SHAP value|" if is_ml else "Coefficient"
+    heading = "Feature attribution (SHAP)" if is_ml else "Fitted terms"
+    st.markdown(ui.eyebrow(heading, glossary.term(heading)), unsafe_allow_html=True)
+    rows = [
+        {"Term": term, value_col: coefficient}
+        for term, coefficient in zip(description.terms, description.coefficients, strict=True)
+    ]
+    if description.intercept is not None:
+        rows.append({"Term": "(intercept)", value_col: description.intercept})
+    st.dataframe(rows, width="stretch", hide_index=True)
+
+
+def _show_famafrench(run: model_runs.ModelRun) -> None:
+    if run.warning:
+        st.warning(run.warning, icon=":material/warning:")
+    coverage = run.coverage
+    st.caption(
+        f"Factor file covers {coverage.first:%d/%m/%Y} to {coverage.last:%d/%m/%Y}. "
+        f"{coverage.rows_used:,} rows used. {coverage.missing_dates:,} target dates "
+        "have no factor row — Ken French publishes one to two months late."
+    )
+    _show_fitted_terms(run.description, is_ml=False)
+
+
+def _show_ml(run: model_runs.ModelRun) -> None:
+    _show_fitted_terms(run.description, is_ml=True)
+    _show_no_signal_folds(run.result.screening)
+    st.caption(
+        "PBO here compares only two candidates, tuned XGBoost and tuned LightGBM, so it "
+        "is coarse — read it as a rough check rather than a precise probability."
+    )
+    tuning = run.tuning
+    if tuning is None:
+        return
+    st.markdown(ui.eyebrow("Tuning"), unsafe_allow_html=True)
+    st.caption(
+        "Hyperparameters are re-tuned about once a year on the period just before the "
+        "next test window, so each fold uses settings tuned only on its past."
+    )
+    rows = []
+    for number, tune in enumerate(tuning.tunes):
+        folds = [i + 1 for i, t in enumerate(tuning.fold_tunes) if t == number]
+        rows.append(
+            {
+                "Tune": number + 1,
+                "Tuned on": f"{tune.first:%d/%m/%Y} to {tune.last:%d/%m/%Y}",
+                "Rows": tune.rows,
+                "Trials": tune.trials,
+                "Folds": f"{folds[0]}–{folds[-1]}" if len(folds) > 1 else str(folds[0]),
+            }
+        )
+    st.dataframe(rows, width="stretch", hide_index=True)
+    latest = tuning.tunes[tuning.fold_tunes[-1]].params[tuning.library]
+    st.caption(f"Settings from the latest tune ({tuning.library}):")
+    st.dataframe(
+        [{"Setting": name, "Value": f"{value:.4g}"} for name, value in latest.items()],
+        width="stretch",
+        hide_index=True,
+    )
+
+
+def _show_active_status(role: TargetRole, target_name: str) -> None:
+    current = active_model.get_active_model(role)
+    if current is None:
+        st.caption(
+            f"No active model set yet for {target_name}.", help=glossary.term("Active model")
+        )
+        return
+    tone = "danger" if current.high_risk else "success"
+    note = " · set despite failing both gates" if current.high_risk else ""
+    st.markdown(
+        ui.status_row(
+            f"Active model · {target_name}",
+            ui.lozenge(current.model_name, tone),
+            f"set {current.set_at:%d %b %Y}{note}",
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+@st.dialog("Confirm high-risk model")
+def _confirm_high_risk(
+    role: TargetRole,
+    model_name: str,
+    result: ModelRunResult,
+    failed: tuple[str, ...],
+    target_name: str,
+) -> None:
+    failed_text = " and ".join(GATE_NAMES[g] for g in failed)
+    pending_key = f"pending_active_{role.value}"
+    st.warning(
+        f"{model_name} failed both promotion gates ({failed_text}) for {target_name}. "
+        "Setting it active anyway means portfolio evaluation will use a model that "
+        "hasn't cleared validation.",
+        icon=":material/warning:",
+    )
+    cols = st.columns(2)
+    if cols[0].button("Set active anyway", type="primary", key=f"confirm_{role.value}"):
+        active_model.set_active_model(
+            role, model_name, result, high_risk=True, **ACTIVE_SETTINGS
+        )
+        st.session_state.pop(pending_key, None)
+        st.rerun()
+    if cols[1].button("Cancel", key=f"cancel_{role.value}"):
+        st.session_state.pop(pending_key, None)
+        st.rerun()
+
+
+def _show_active_picker(
+    role: TargetRole, runs: dict[str, model_runs.ModelRun], target_name: str
+) -> None:
+    key = role.value
+    options = [n for n in ACTIVE_MODEL_CANDIDATES if n in runs]
+    if not options:
+        st.caption(f"No forecasting model (Polynomial or ML) has run yet for {target_name}.")
+        return
+    current = active_model.get_active_model(role)
+    default_index = (
+        options.index(current.model_name) if current and current.model_name in options else 0
+    )
+    st.markdown(
+        ui.eyebrow("Set active model", glossary.term("Active model")), unsafe_allow_html=True
+    )
+    cols = st.columns([3, 1])
+    selected = cols[0].selectbox(
+        "Model to set active",
+        options,
+        index=default_index,
+        key=f"active_select_{key}",
+        label_visibility="collapsed",
+    )
+    # A pending confirmation is kept in session state: its buttons are clicked on
+    # a later run, when "Set as active" no longer reads as pressed.
+    pending_key = f"pending_active_{key}"
+    if cols[1].button("Set as active", key=f"set_active_{key}"):
+        result = runs[selected].result
+        if is_high_risk(evaluate_candidate(result.gated_rank_ic, result.pbo)):
+            st.session_state[pending_key] = selected
+        else:
+            st.session_state.pop(pending_key, None)
+            active_model.set_active_model(
+                role, selected, result, high_risk=False, **ACTIVE_SETTINGS
+            )
+            st.rerun()
+    pending = st.session_state.get(pending_key)
+    if pending in runs:
+        result = runs[pending].result
+        outcome = evaluate_candidate(result.gated_rank_ic, result.pbo)
+        _confirm_high_risk(role, pending, result, outcome.failed_gates, target_name)
+
+
+def _directional_default(role: TargetRole, options: list[str], runs) -> int:
+    """The active model if it ran here, else the first that met its gate, else the
+    first forecasting model — the one a portfolio manager would act on."""
+    current = active_model.get_active_model(role)
+    if current is not None and current.model_name in options:
+        return options.index(current.model_name)
+    for i, name in enumerate(options):
+        result = runs[name].result
+        gated = result.pbo is not None or name in SIGNAL_GATED
+        if gated and evaluate_candidate(result.gated_rank_ic, result.pbo).promoted:
+            return i
+    forecasting = [i for i, name in enumerate(options) if name in ACTIVE_MODEL_CANDIDATES]
+    return forecasting[0] if forecasting else 0
+
+
+def _show_directional(
+    role: TargetRole, runs: dict[str, model_runs.ModelRun], target_name: str
+) -> None:
+    """FYP-162: holding the index only when the forecast says it will rise, against
+    holding it throughout, over the run's whole out-of-sample period, or over a
+    window dragged out on the chart."""
+    options = [
+        n
+        for n in MODEL_ORDER
+        if n in runs and runs[n].result.forecast is not None and runs[n].result.realised is not None
+    ]
+    if not options:
+        return
+    key = role.value
+    st.markdown(
+        ui.eyebrow("Would the forecast's direction have paid?", glossary.term("Directional P&L")),
+        unsafe_allow_html=True,
+    )
+    name = st.selectbox(
+        "Forecasts from",
+        options,
+        index=_directional_default(role, options, runs),
+        key=f"pnl_model_{key}",
+    )
+    result = runs[name].result
+    try:
+        whole = directional_pnl(result.forecast, result.realised, horizon=horizon)
+    except DirectionalDataError as exc:
+        st.info(str(exc), icon=":material/info:")
+        return
+
+    # A slider rather than a selection on the chart: dragging on a chart is what
+    # a reader does to pan it, and every chart event reruns the page, which
+    # silently cuts short any Run still in progress.
+    first, last = whole.strategy.index[0].date(), whole.strategy.index[-1].date()
+    start, end = st.slider(
+        "Window",
+        min_value=first,
+        max_value=last,
+        value=(first, last),
+        format="DD/MM/YYYY",
+        key=f"pnl_window_{key}_{name}",
+        help=glossary.term("P&L window"),
+    )
+    window = None if (start, end) == (first, last) else (pd.Timestamp(start), pd.Timestamp(end))
+    pnl = whole
+    if window is not None:
+        try:
+            pnl = directional_pnl(
+                result.forecast, result.realised, horizon=horizon, start=window[0], end=window[1]
+            )
+        except DirectionalDataError as exc:
+            st.info(str(exc), icon=":material/info:")
+            return
+
+    steps = (
+        "one call per day" if horizon == 1 else f"one call every {horizon} days, never overlapping"
+    )
+    span = (
+        f"the chosen window of {pnl.days} out-of-sample trading days"
+        if window is not None
+        else f"all {pnl.days} out-of-sample trading days"
+    )
+    st.caption(
+        f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: {span}, {pnl.calls} "
+        f"calls ({steps}). Gross of transaction costs; cash earns nothing. Narrow the "
+        "window with the slider: every figure and the chart are recomputed for it, starting "
+        "from zero on its first day. On the chart, scroll to zoom, drag to pan and "
+        "double-click to reset."
+    )
+    metric_cols = st.columns(4)
+    metric_cols[0].metric(
+        "Long/cash strategy",
+        f"{pnl.strategy_cumulative.iloc[-1]:+.2%}",
+        help=glossary.term("Long/cash strategy"),
+    )
+    metric_cols[1].metric(
+        "Buy and hold",
+        f"{pnl.buy_and_hold_cumulative.iloc[-1]:+.2%}",
+        help=glossary.term("Buy and hold"),
+    )
+    metric_cols[2].metric(
+        "Hit rate",
+        "—" if pnl.hit_rate != pnl.hit_rate else f"{pnl.hit_rate:.0%}",
+        help=glossary.term("Hit rate"),
+    )
+    metric_cols[3].metric(
+        "Days invested", f"{pnl.share_invested:.0%}", help=glossary.term("Days invested")
+    )
+    st.line_chart(
+        {
+            "Long/cash strategy": pnl.strategy_cumulative * 100,
+            "Buy and hold": pnl.buy_and_hold_cumulative * 100,
+        },
+        x_label="Forecast date",
+        y_label="Cumulative return (%)",
+    )
+    if pnl.no_forecast:
+        st.caption(
+            f"{pnl.no_forecast} of {pnl.calls} calls had no forecast (a signal was "
+            "missing that day), so the strategy stayed in cash and the hit rate leaves them out."
+        )
+    others = [h for h in HORIZONS if h != horizon]
+    if others:
+        listed = ", ".join(str(h) for h in others[:-1])
+        listed = f"{listed} or {others[-1]}" if listed else str(others[-1])
+        st.caption(
+            f"This is the {horizon}-day horizon. Each horizon is reported separately: "
+            f"switch to {listed} days in Settings and run again to see another."
+        )
+
+
+def _render_tab(role: TargetRole, price_col: str) -> None:
+    target_name = label(price_col)
+    key = role.value
+    # FF5 is an equity-factor benchmark, so only the Equity tab offers it.
+    check_cols = st.columns([3, 4, 4, 7] if role == TargetRole.EQUITY else [3, 4, 11])
+    run_poly = check_cols[0].checkbox("Polynomial", value=True, key=f"run_poly_{key}")
+    run_ff5 = role == TargetRole.EQUITY and check_cols[1].checkbox(
+        "Fama-French 5", value=True, key=f"run_ff5_{key}"
+    )
+    run_ml = check_cols[-2].checkbox("Machine learning", value=True, key=f"run_ml_{key}")
+    _show_active_status(role, target_name)
+    if not signal_cols:
+        st.info("Need at least one other signal column, alongside the target, to model.")
+        return
+    indexed = merged.set_index(DATE_COLUMN)
+    panel = align_and_lag(indexed, signal_cols, price_col, horizon=horizon, transforms=transforms)
+    _show_alignment(panel, target_name)
+
+    signs, unavailable = _economic_signs(role)
+    polynomial, settings = _polynomial_settings(key, panel, run_poly, signs, unavailable)
+    tab_runs = model_runs.tab(stored, role, settings)
+    models = [NAIVE]
+    user_formula, user_bindings = settings[USER]
+    if polynomial == DERIVED or (polynomial == USER and user_formula and user_bindings is not None):
+        models.append(polynomial)
+    if run_ff5:
+        models.append(FF5)
+    if run_ml:
+        models.append(ML)
+
+    if polynomial == USER and not user_formula:
+        st.caption("Enter a function for the user-supplied polynomial to run.")
+    nothing_to_run = models == [NAIVE]
+    job = model_jobs.job(_job_id(role))
+    running = job is not None and job.active
+    clicked = st.button("Run", type="primary", key=f"run_{key}", disabled=nothing_to_run or running)
+    if (clicked or run_all) and not nothing_to_run and not running:
+        runners = {
+            NAIVE: functools.partial(_run_naive, panel, splitter),
+            DERIVED: functools.partial(
+                _run_sign_ruled, signs, indexed, price_col, horizon, splitter
+            ),
+            USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
+            FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
+            ML: functools.partial(_run_ml, panel, splitter),
+        }
+        model_jobs.submit(
+            _job_id(role),
+            target_name,
+            {name: runners[name] for name in models},
+            {name: _result_key(role, name, settings) for name in models},
+            expected_errors=MODEL_ERRORS,
+        )
+        submitted.append(role)
+    _show_job(role, target_name)
+    _collect(role, tab_runs, settings)
+    if nothing_to_run:
+        st.caption(
+            "Tick a model besides the naive baseline to run: the baseline is only read "
+            "against another model."
+        )
+
+    runs = tab_runs.runs
+    if not runs:
+        if cleared:
+            st.caption(
+                f"Earlier results for {target_name} were cleared because the data or a shared "
+                "setting changed, so a table never mixes rows run under different settings."
+            )
+        st.caption(f"Nothing has run for {target_name} with these settings yet.")
+        return
+
+    st.subheader(f"Results · {target_name}")
+    st.caption(f"Every row was run under: {SETTINGS_STAMP}.")
+    for name in MODEL_ORDER:
+        if name in runs:
+            st.markdown(_gate_line(name, runs[name].result))
+    _show_table({name: run.result for name, run in runs.items()})
+    _show_directional(role, runs, target_name)
+    _show_active_picker(role, runs, target_name)
+
+    _show_screening(runs, target_name)
+    for name in (DERIVED, USER):
+        if name in runs:
+            with st.expander(f"{name} · {target_name}"):
+                _show_polynomial(runs[name])
+    if FF5 in runs and role == TargetRole.EQUITY:
+        with st.expander(f"Fama-French 5 · {target_name}"):
+            _show_famafrench(runs[FF5])
+    if ML in runs:
+        with st.expander(f"Machine learning · {target_name}"):
+            _show_ml(runs[ML])
+
+
+roles = [role for role in TargetRole if role in target_columns]
+run_all = len(roles) > 1 and st.button(
+    "Run all targets",
+    icon=":material/play_arrow:",
+    help="Queue the models ticked on every tab, one target after the other, in the "
+    "background. Each tab's own Run does the same for that target alone.",
+)
+#: Targets whose Run was queued in this pass. Once every tab has had its turn
+#: (so "Run all targets" reaches each), the page is redrawn to show their
+#: progress and disabled Run buttons.
+submitted: list[TargetRole] = []
+tabs = st.tabs([f"{ROLE_NAMES[r]} · {label(target_columns[r])}" for r in roles])
+for role, tab in zip(roles, tabs, strict=True):
+    with tab:
+        _render_tab(role, target_columns[role])
+if submitted and not model_jobs.INLINE:
+    st.rerun()

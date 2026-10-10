@@ -11,6 +11,7 @@ from streamlit.testing.v1 import AppTest
 import glossary
 import model_runs
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.models import sign_ruled
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult, ScreeningSummary
 from forecasting_engine.reporting.polynomial_function import (
@@ -20,8 +21,18 @@ from forecasting_engine.reporting.polynomial_function import (
 )
 from forecasting_engine.validation.crash import CrashDiagnostics
 
+#: The derived row's own setting, as the Models page writes it.
+DERIVED_SETTING = f"sign-ruled v{sign_ruled.VERSION}"
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MODELS_PAGE = REPO_ROOT / "app" / "app_pages" / "3_Models.py"
+MODELS_PAGE = REPO_ROOT / "app" / "app_pages" / "2_Models.py"
+
+
+@pytest.fixture(autouse=True)
+def isolated_active_model_db(monkeypatch, tmp_path):
+    """The active-model picker reads/writes DuckDB at a default, cwd-relative
+    path — without this, these tests hit the same file a live session has open."""
+    monkeypatch.chdir(tmp_path)
 
 
 def _committed() -> pd.DataFrame:
@@ -40,6 +51,7 @@ def _result() -> ModelRunResult:
     return ModelRunResult(
         ic=0.05,
         oos_rank_ic=0.04,
+        signal_rank_ic=0.04,
         rmse=0.01,
         pbo=0.3,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
@@ -57,16 +69,14 @@ def models_page() -> AppTest:
     )
     committed = _committed()
     fn = from_description(description, origin=Origin.DERIVED, target="SPX_Index_PX_LAST", horizon=5)
-    stored = model_runs.StoredRuns((dataset_fingerprint(committed), 5, 120, 20))
+    stored = model_runs.StoredRuns((dataset_fingerprint(committed), 20, 252, 20))
     stored.tabs[TargetRole.EQUITY] = model_runs.TabRuns(
-        ("Enter a function", ""),
-        {"Polynomial": model_runs.ModelRun(_result(), description, function=fn)},
+        {"Polynomial (derived)": DERIVED_SETTING, "Polynomial (user-supplied)": ("", ())},
+        {"Polynomial (derived)": model_runs.ModelRun(_result(), description, function=fn)},
     )
     app = AppTest.from_file(str(MODELS_PAGE), default_timeout=30)
     app.session_state["extraction_committed"] = committed
-    app.session_state["extraction_committed_targets"] = {
-        TargetRole.EQUITY: "SPX_Index_PX_LAST"
-    }
+    app.session_state["extraction_committed_targets"] = {TargetRole.EQUITY: "SPX_Index_PX_LAST"}
     app.session_state[model_runs.RUNS_KEY] = stored
     return app.run()
 
@@ -77,6 +87,7 @@ def _helps(app: AppTest) -> dict[str, str]:
         *((w.label, w.help) for w in app.selectbox),
         *((w.label, w.help) for w in app.radio),
         *((w.label, w.help) for w in app.number_input),
+        *((w.label, w.help) for w in app.text_input),
         *((w.label, w.help) for w in app.metric),
         *((w.label, w.help) for w in app.segmented_control),
         *((w.value, w.help) for w in app.subheader),
@@ -85,12 +96,20 @@ def _helps(app: AppTest) -> dict[str, str]:
     return {label: help_text for label, help_text in labelled if help_text}
 
 
-@pytest.mark.parametrize("label", ["Forecast horizon", "Function source"])
+@pytest.mark.parametrize("label", ["Forecast horizon"])
 def test_the_controls_that_name_a_concept_explain_it(models_page, label):
     assert label in _helps(models_page)
 
 
-@pytest.mark.parametrize("metric", ["IC", "OOS Rank IC", "RMSE", "PBO"])
+def test_the_user_supplied_function_box_explains_both_polynomials(models_page):
+    for radio in [r for r in models_page.radio if r.label == "Function source"]:
+        radio.set_value("Use your own function")
+    helps = _helps(models_page.run())
+    (function_help,) = [h for label, h in helps.items() if label.startswith("Function")]
+    assert function_help == glossary.term("Function source")
+
+
+@pytest.mark.parametrize("metric", ["IC", "Signal Rank IC", "OOS Rank IC", "RMSE", "PBO"])
 def test_every_headline_metric_explains_itself(models_page, metric):
     hint = html.escape(glossary.term(metric), quote=True)
     assert f'<th title="{hint}">{metric}' in _table(models_page)
@@ -140,6 +159,7 @@ def test_the_comparison_table_explains_every_column_it_can(models_page):
         assert column in table
     explained = [
         "IC",
+        "Signal Rank IC",
         "OOS Rank IC",
         "RMSE",
         "PBO",

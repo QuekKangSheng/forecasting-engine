@@ -26,16 +26,21 @@ TERMS: Mapping[str, str] = {
         "a setting changed."
     ),
     "Function source": (
-        "**Enter a function** fits the exact formula you write, and nothing "
-        "else — use it to test a view you already hold.\n\n"
-        "**Derive automatically** searches a small grid of polynomial degrees "
-        "and regularizers and reports the best one. Regularization pushes weak "
-        "terms to exactly zero, so the result stays short enough to read."
+        "Choose one. **Derive automatically** fits the sign-ruled polynomial (equity "
+        "only): one term each for HY OAS, IG OAS, VIX and the 2s10s slope, as levels, "
+        "with their slopes pulled toward one shared positive value, since all four "
+        "measure the pay for holding risk. It trains on all earlier rows.\n\n"
+        "**Use your own function** takes the shape you write, using placeholders "
+        "such as x and y that you then point at signals, and fits only a scale "
+        "and an intercept to it on each training window, so the forecast is a "
+        "return rather than a signal's level. Each gets its own row."
     ),
     "Forecast horizon": (
-        "How many trading days ahead to predict. Each horizon is run and "
-        "reported separately — the two are never averaged, because a signal "
-        "that works over a week often does nothing over a day."
+        "How many trading days ahead to predict: 1, 5, 10 or 20 (about a month). "
+        "Each horizon is run and reported separately, never averaged, because a "
+        "signal that works over a fortnight often does nothing over a day. The "
+        "portfolio rebalances once per horizon, so a forecast is held for exactly "
+        "as long as it looks ahead."
     ),
     "Walk-forward": (
         "The model is trained on a block of history, then graded on the days "
@@ -47,7 +52,7 @@ TERMS: Mapping[str, str] = {
     ),
     "Walk-forward train window (days)": (
         "How much history the model studies before each grading period "
-        "(120 days ≈ 6 months). Longer gives the fit more to learn from; "
+        "(252 days ≈ 1 year). Longer gives the fit more to learn from; "
         "shorter keeps it closer to current market conditions."
     ),
     "Walk-forward test window (days)": (
@@ -60,7 +65,7 @@ TERMS: Mapping[str, str] = {
         "graded on. A 5-day forecast made on the last training day is only "
         "settled 5 days later, so without the gap the model would be trained "
         "on an outcome it is about to be graded on — a leak that makes results "
-        "look far better than they are. Fixed at the longest horizon."
+        "look far better than they are. Fixed at the longest horizon, 20 days."
     ),
     "Signal lag": (
         "Every signal is shifted forward a day, so a value dated today is one "
@@ -75,14 +80,24 @@ TERMS: Mapping[str, str] = {
         "edge, so treat a large value as a reason to look for a leak rather "
         "than a cause for celebration."
     ),
+    "Signal Rank IC": (
+        "What the signals add, scored: each forecast less its training block's "
+        "average return, compared in order with what actually happened, on data "
+        "the model never trained on. The headline number, and the one the "
+        "promotion gate is set on. The training average is left out because it "
+        "moves with recent performance whatever the signals say, so it can drown "
+        "a real signal or pass a model that has none. The two s.e.s beside it "
+        "are standard errors, one allowing for overlapping labels, one for errors "
+        "shared within a test window: a value within about two of the larger of "
+        "zero may be luck."
+    ),
     "OOS Rank IC": (
-        "Out-of-sample Rank IC: the same idea as IC, but comparing the *order* "
-        "of predictions with the order of outcomes, on data the model never "
-        "trained on. Using ranks stops one wild day from dominating the score, "
-        "which is why this is the headline number and the one the promotion "
-        "gate is set on. The two s.e.s beside it are standard errors, one "
-        "allowing for overlapping labels, one for errors shared within a test "
-        "window: a value within about two of the larger of zero may be luck."
+        "Out-of-sample Rank IC of the whole forecast, its level included: the "
+        "order of predictions against the order of outcomes, on data the model "
+        "never trained on. Shown for comparison with the Signal Rank IC; it is "
+        "not gated, because a forecast's level shifts with each training block's "
+        "average whatever the signals say. Far apart from the Signal Rank IC "
+        "means the level, not the signals, drove this score."
     ),
     "Rank IC within folds": (
         "The OOS Rank IC again, but with each fold's forecasts ranked only against "
@@ -93,7 +108,7 @@ TERMS: Mapping[str, str] = {
         "means most of that score came from levels, not from the signals."
     ),
     "Beyond 2 s.e.": (
-        "Whether the OOS Rank IC is more than two standard errors from zero, "
+        "Whether the Signal Rank IC is more than two standard errors from zero, "
         "judged on the larger of the two standard errors. No means a score of "
         "this size could easily be luck, even if it meets the gate. A diagnostic "
         "only: it does not change whether the gate is met."
@@ -129,7 +144,8 @@ TERMS: Mapping[str, str] = {
         "Each training block screens the signals on its own history and keeps "
         "the ones that look useful, so the chosen set can differ block to "
         "block. A signal kept everywhere is robust; one kept only occasionally "
-        "is probably noise that happened to fit."
+        "is probably noise that happened to fit. A block that keeps no signal "
+        "fits nothing and forecasts its training average instead."
     ),
     "Fitted terms": (
         "The model as an equation: each term's factors, their powers, and the "
@@ -138,16 +154,19 @@ TERMS: Mapping[str, str] = {
         "on what you expect, and in the direction you expect."
     ),
     "Factor": (
-        "The signal a term is built from, by its plain-language name. Two names "
-        "joined by × is an interaction: the two multiplied together. The "
-        "(intercept) row is not a signal at all — it is the predicted return "
-        "when every signal sits at zero, the baseline the other terms adjust."
+        "The signal a term is built from, by its plain-language name. z(VIX) is "
+        "VIX standardised: how many standard deviations it sits from its "
+        "training-window mean. Two names joined by × is an interaction: the two "
+        "multiplied together. The (intercept) row is not a signal at all — it is "
+        "the predicted return when every signal sits at zero (for z, at its "
+        "mean), the baseline the other terms adjust."
     ),
     "Coefficient": (
         "How much the prediction moves per unit of that term. The sign is the "
-        "direction of the relationship; the size depends on the units of the "
-        "signal, so compare signs and relative magnitudes rather than reading "
-        "one number on its own."
+        "direction of the relationship. For a standardised signal z, the unit is "
+        "one standard deviation, so the derived polynomial's coefficients can be "
+        "compared with each other directly; otherwise the size depends on the "
+        "units of the signal."
     ),
     "Exponent": (
         "The power a factor is raised to. 1 is a straight-line effect, 2 means "
@@ -160,10 +179,115 @@ TERMS: Mapping[str, str] = {
         "says nothing about direction, only weight."
     ),
     "Promotion gate": (
-        "The bar a model has to clear before it is considered for use: OOS Rank "
-        "IC above the threshold and PBO below it. The badge shows each "
+        "The bar a model has to clear before it is considered for use: Signal "
+        "Rank IC above the threshold and PBO below it. The badge shows each "
         "separately, so a model that scores well but overfits is visibly not "
         "promotable."
+    ),
+    "Active model": (
+        "Which model's forecast feeds portfolio evaluation for this target, "
+        "set independently for equity and bond. Setting a new one replaces "
+        "the prior one immediately. A model that failed both promotion gates "
+        "can still be set active, but asks for confirmation first."
+    ),
+    "Risk aversion": (
+        "How far the portfolio may stray from 50/50 on the strength of the "
+        "signals, on a scale of 1 (risk-loving) to 5 (risk-averse). The optimiser "
+        "starts at 50/50 and tilts: equity weight = 50% + (equity signal − bond "
+        "signal) / (λ × variance of the difference between the two indices' "
+        "returns), where a signal is what a model adds to its training-average "
+        "return. Risk is measured as distance from 50/50, so 1 (λ = 1) follows "
+        "the signals as far as the limits allow and 5 (λ = 100) barely moves. "
+        "Each step triples λ."
+    ),
+    "Weight bounds": (
+        "The least either index may hold. Equity and bond always add up to "
+        "100%, so a 20% floor on each also caps each at 80%. It stops a small, "
+        "noisy difference between the two signals swinging the portfolio to "
+        "one extreme. The optimiser starts from 50/50 and tilts; the floor only "
+        "clips how far."
+    ),
+    "Directional P&L": (
+        "What you would have earned by holding this index only when the model "
+        "forecast a rise, and sitting in cash otherwise, compared with simply "
+        "holding it. Only the forecast's direction is used, never its size, so "
+        "it is a plain check of whether the up/down call is worth acting on. "
+        "Every day the model was graded on is replayed, never a day it trained "
+        "on, so the result is what following it live would have looked like."
+    ),
+    "P&L window": (
+        "The stretch of the out-of-sample period the figures describe. Narrow it "
+        "to see how the forecast's direction did in, say, one year or one sell-off: "
+        "both returns start from zero on the window's first day."
+    ),
+    "Long/cash strategy": (
+        "Compounded return of holding the index on every call where the "
+        "forecast was positive and holding cash on every other. Before "
+        "transaction costs, and cash earns nothing."
+    ),
+    "Buy and hold": (
+        "Compounded return of holding the index over the whole out-of-sample "
+        "period, whatever the forecast said. The strategy has to beat this for "
+        "the forecast's direction to have been worth following."
+    ),
+    "Hit rate": (
+        "How often the forecast's direction matched what the index actually "
+        "did: a forecast rise followed by a rise, or a forecast fall followed by "
+        "a fall. 50% is a coin toss."
+    ),
+    "Days invested": (
+        "The share of calls on which the strategy held the index. A low share "
+        "with a good return means the model avoided the market's bad patches; a "
+        "share near 100% means it behaves almost like buy and hold."
+    ),
+    "Annual return": (
+        "The yearly growth rate that, compounded, turns the starting value into "
+        "the ending value. It is the headline figure, but says nothing about the "
+        "risk taken to earn it — read it with the ratios below."
+    ),
+    "Sharpe": (
+        "Average return above the risk-free rate per unit of total volatility, "
+        "annualised. Higher means more return for the ups and downs endured; it "
+        "is the standard way to compare two portfolios with different risk."
+    ),
+    "Sortino": (
+        "Like Sharpe, but only counts downside volatility, so a portfolio is not "
+        "penalised for large gains. Higher is better; it matters most when "
+        "returns are lopsided."
+    ),
+    "Calmar": (
+        "Annual return divided by the size of the worst drawdown. Higher means "
+        "the return was earned without deep losses along the way — the measure "
+        "closest to how painful a portfolio was to hold."
+    ),
+    "Max drawdown": (
+        "The worst fall from a previous high before recovering, as a percentage. "
+        "It is the loss an investor who bought at the worst moment would have "
+        "sat through, so a smaller (less negative) figure is better."
+    ),
+    "Equal-weight benchmark": (
+        "Half in the equity index and half in the bond index, reset to 50/50 on "
+        "the last trading day of each month. The optimised portfolio has to beat "
+        "this simple allocation to justify the forecasting behind it."
+    ),
+    "Historical tail risk": (
+        "How bad the worst days were, read straight off the backtest's own "
+        "daily returns — no model of volatility and no simulation. Historical "
+        "means these are losses that actually happened in this backtest."
+    ),
+    "1-day VaR": (
+        "Value at Risk: a one-day loss exceeded on only 5% (or 1%) of days. A "
+        "VaR of 1.2% at 95% means 19 days in 20 lost less than 1.2%."
+    ),
+    "1-day CVaR": (
+        "Conditional VaR: the average loss on the days beyond VaR — how bad the "
+        "bad days were, not just where they start. Always at least the VaR."
+    ),
+    "Breach rate": (
+        "How often a day's loss beat the VaR measured over the year before it. "
+        "Near the expected rate means the past year was a fair guide to the "
+        "risk; well above it means risk arrived faster than history suggested, "
+        "as on entering a crisis."
     ),
 }
 

@@ -15,7 +15,7 @@ against those drifted weights.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -29,6 +29,7 @@ from forecasting_engine.portfolio.performance import (
     performance,
     relative,
 )
+from forecasting_engine.risk.tail import TailRisk, historical_tail_risk
 
 ASSETS: tuple[TargetRole, ...] = (TargetRole.EQUITY, TargetRole.BOND)
 
@@ -88,6 +89,9 @@ class BacktestResult:
     risk_free_rate: float = RISK_FREE_RATE
     active_models: tuple[str, ...] = ()
     """The forecasting models whose output the optimised weights came from."""
+    tail_risk: Mapping[tuple[str, str], TailRisk] = field(default_factory=dict)
+    """Historical VaR and CVaR of each path, keyed like ``metrics``; each carries
+    the same maximum drawdown as ``metrics`` so the two are read together."""
 
 
 def run_backtest(
@@ -135,6 +139,11 @@ def run_backtest(
         costs_bps=dict(costs_bps),
         risk_free_rate=risk_free_rate,
         active_models=tuple(active_models),
+        tail_risk={
+            (name, basis): historical_tail_risk(getattr(path, basis))
+            for name, path in paths.items()
+            for basis in BASES
+        },
     )
 
 

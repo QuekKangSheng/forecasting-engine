@@ -1,8 +1,9 @@
 # Forecasting Engine
 
 Forecasts short-horizon returns for liquid equity and bond indices, validates
-those forecasts against overfitting, feeds them into portfolio construction, and
-reports tail risk. Built for Alpha Norm by Finlytics (IS484).
+those forecasts against overfitting, and feeds them into an equity/bond portfolio
+that is backtested against a 50/50 benchmark. Built for Alpha Norm by Finlytics
+(IS484).
 
 ## Getting started
 
@@ -19,10 +20,21 @@ Then run the dashboard:
 uv run streamlit run app/Home.py
 ```
 
-It opens at <http://localhost:8501>. Go to the **Data** page and upload the
-terminal's original Bloomberg CSV history exports together. The page accepts
-their fields as exported, joins them on date, reports data-quality findings and
-offers the merged data for download. Each input file may be up to 25 MB.
+It opens at <http://localhost:8501>. The pages follow the order a portfolio
+manager works in:
+
+1. **Data** — upload the terminal's original Bloomberg history exports (CSV or
+   XLSX), with the equity and bond target indices in one box and every other
+   signal in another. The page accepts their fields as exported, joins them on
+   date, reports data-quality findings and offers the merged data for download. Each input file may be up to 25 MB. Click **Use
+   Updated Data** to hand the data to the other pages.
+2. **Models** — one tab per target index. **Run** fits every model family under
+   the same settings and compares them in one table, with pass/fail promotion
+   gates. Set the model to carry forward as the target's **active model**, and
+   check whether its forecast direction would have paid.
+3. **Portfolio Optimizer** — once an equity and a bond model are active, splits
+   between the two indices at each rebalance and backtests that allocation
+   against an equal-weight benchmark.
 
 ## Checks
 
@@ -45,22 +57,56 @@ hosting step is needed.
 
 ## What works today
 
-The left edge of the pipeline: getting data in, and checking it.
+**Data in, and checked**
 
-- **Bloomberg upload and merge** — any number of original Bloomberg CSV exports,
-  with arbitrary fields, joined on date without requiring manual edits.
+- **Bloomberg upload and merge** — any number of original Bloomberg CSV or XLSX
+  exports, with arbitrary fields, joined on date without requiring manual edits.
 - **Fama-French factors** — Ken French's daily five-factor file, downloaded on
   request and kept under its content hash for the FF5 benchmark.
-- **Generic validation** — checks dates and numeric Bloomberg fields without
-  imposing the temporary signal-CSV contract.
+- **Generic validation** — checks dates and numeric Bloomberg fields.
 - **Robust outlier detection** — uses median absolute deviation on day-over-day
   changes across every numeric Bloomberg column; values are reported, not altered.
 - **Gap review** — identifies rows with missing values and lets the user include
   or exclude them from downloads.
 - **Data quality report** — on the dashboard's front page: date range,
   per-column completeness, and every flagged observation, expandable by column.
+- **Lag-safe alignment** — signals are read as of each target date and lagged
+  one row, so a model never sees a value before it was published.
 
-Forecasting, portfolio construction and risk analysis are not built yet.
+**Forecasting and validation**
+
+- **Model families**, each forecasting a 1-, 5-, 10- or 20-day forward return:
+  - a naive training-mean baseline, the bar every model has to beat;
+  - the Fama-French five-factor benchmark (equity only);
+  - a polynomial, one at a time: derived automatically (the sign-ruled fit on HY
+    OAS, IG OAS, VIX and the 2s10s slope, equity only), or the user's own shape (placeholders pointed at signals) with only a scale and
+    intercept fitted;
+  - machine learning: XGBoost and LightGBM, tuned with Optuna on a rolling
+    schedule, with SHAP feature attribution.
+- **Walk-forward validation** — every model is trained on a past window and
+  scored on the days after it, with an embargo between the two, under one shared
+  set of settings that the results table states.
+- **Overfitting checks** — Signal Rank IC (what a model adds to its training-mean
+  forecast, out of sample), PBO (probability of backtest overfitting), crash-day
+  diagnostics, and promotion gates on Signal Rank IC and PBO.
+- **Active model** — the model chosen to carry forward for each index, saved in
+  DuckDB, with a confirmation step for a model that failed both gates.
+- **Directional P&L** — for one model and one index, what holding the index only
+  when the forecast says it will rise would have earned against holding it
+  throughout, over the whole out-of-sample period, with hit rate and share of
+  days invested.
+
+**Portfolio**
+
+- **Optimiser** — starts from 50/50 and tilts towards whichever index the active
+  models' signals favour, sized by recent risk and a 1–5 risk-aversion scale,
+  rebalanced every forecast horizon.
+- **Backtest against 50/50** — runs the optimised weights and a monthly-reset
+  50/50 benchmark through the same days, before and after trading costs, and
+  compares Sharpe, Sortino, Calmar and maximum drawdown side by side.
+
+Tail-risk reporting (VaR and CVaR) and significance checks on the backtest are
+not built yet.
 
 ## Interface
 
@@ -80,15 +126,26 @@ No emoji anywhere: an internal analytical tool should read as a tool.
 src/forecasting_engine/     core library, never imports Streamlit
   extraction/               active generic Bloomberg merge and validation
   ingest/                   upload checks, Fama-French factors, lag-safe alignment
-  store/                    DuckDB history
+  features/                 signal screening
+  models/                   naive, Fama-French, polynomial and boosted forecasters
+  validation/               walk-forward splitter, metrics, PBO, crash checks, gates
+  portfolio/                optimiser, backtest, performance, directional P&L
+  reporting/                tables and labels the dashboard shows
+  store/                    DuckDB upload and active-model history
 app/                        Streamlit dashboard, no maths
+  app_pages/                Home, Data, Models, Portfolio Optimizer
   ui.py                     lozenges, status rows, shared presentation
+  glossary.py               the plain-language explanations shown on hover
 docs/                       data specification, design, decisions
 tests/                      unit, integration, functional
 ```
 
 ## Documentation
 
+- [Methodology](docs/methodology.md) — every step from export to score, and every
+  parameter, checked against the code by the test suite
+- [Validation review](docs/validation-review.md) — decisions behind the
+  validation metrics and gates
 - [Bloomberg exports](docs/bloomberg-exports.md) — accepted export shape and merge
 - [Data specification](docs/data-specification.md) — archived temporary signal-CSV contract
 - [Quality report contract](docs/quality-report-contract.md) — cross-ticket

@@ -1,16 +1,17 @@
 """The Models page's stored runs, and when they stop being valid.
 
 Every run on a tab uses the page's shared settings (dataset, horizon,
-walk-forward windows) and that tab's polynomial settings, so results are kept
-together with the settings that produced them and dropped as a group once
-those settings change: a shared change clears every tab, a tab's polynomial
-change clears only that tab. Which models are ticked is not a setting — it
-only decides what the next Run fits.
+walk-forward windows), and some runs also depend on a setting of their own on
+that tab (the derived polynomial's term cap, the user-supplied function). So
+results are kept together with the settings that produced them and dropped
+once those settings change: a shared change clears every tab, a model's own
+setting clears only that model's row. Which models are ticked is not a setting —
+it only decides what the next Run fits.
 """
 
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 
 from forecasting_engine.extraction.targets import TargetRole
@@ -29,7 +30,7 @@ class ModelRun:
     result: ModelRunResult
     description: ModelDescription
     function: PolynomialFunction | None = None
-    """The fitted polynomial, for the Polynomial run only."""
+    """The fitted polynomial, for the Polynomial runs only."""
     coverage: FactorCoverage | None = None
     """What the factor file covered, for the FF5 run only."""
     warning: str | None = None
@@ -40,7 +41,9 @@ class ModelRun:
 
 @dataclass
 class TabRuns:
-    polynomial_settings: tuple
+    model_settings: Mapping[str, object]
+    """Model name -> the tab-level setting its run depends on, for the models
+    that have one."""
     runs: dict[str, ModelRun] = field(default_factory=dict)
     """Model name (as in ``reporting.model_metrics.MODEL_ORDER``) -> its run."""
 
@@ -60,10 +63,26 @@ def stored(session: MutableMapping, shared_settings: tuple) -> StoredRuns:
     return current
 
 
-def tab(runs: StoredRuns, role: TargetRole, polynomial_settings: tuple) -> TabRuns:
-    """One target's runs, emptied first if its polynomial settings have changed."""
+def cleared_by(session: MutableMapping, shared_settings: tuple) -> bool:
+    """Whether ``stored`` is about to drop results because the shared settings
+    changed — so the page can say why they vanished."""
+    current = session.get(RUNS_KEY)
+    return (
+        current is not None
+        and current.shared_settings != shared_settings
+        and any(tab.runs for tab in current.tabs.values())
+    )
+
+
+def tab(runs: StoredRuns, role: TargetRole, model_settings: Mapping[str, object]) -> TabRuns:
+    """One target's runs, without any model whose own setting has changed."""
     current = runs.tabs.get(role)
-    if current is None or current.polynomial_settings != polynomial_settings:
-        current = TabRuns(polynomial_settings)
+    if current is None:
+        current = TabRuns(dict(model_settings))
         runs.tabs[role] = current
+        return current
+    for name, value in model_settings.items():
+        if current.model_settings.get(name) != value:
+            current.runs.pop(name, None)
+    current.model_settings = dict(model_settings)
     return current

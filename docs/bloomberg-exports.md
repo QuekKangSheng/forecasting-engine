@@ -30,10 +30,22 @@ Date,PX_LAST,PX_BID
 Trailing empty metadata cells, such as `Security,SPX Index,`, are accepted.
 Placeholder-only fields are removed after merging because they carry no data.
 
-**An `.xlsx` export** is a workbook with a `Data` sheet (`Date` plus one
-column per field, same shape as the CSV table above) and a `Metadata` sheet
-naming what was pulled — the security is read from the `Metadata` sheet, not
-guessed from the filename, since a filename has been observed to disagree
+**An `.xlsx` export** from Spreadsheet Builder is one sheet laid out exactly
+like the CSV export: the `Security` / `Start Date` / `End Date` / `Period`
+(optionally `Currency`) rows, a blank row, then a table headed `Date`. The
+reader takes the workbook's **first sheet** and parses it with the CSV reader,
+so the same export gives the same columns and values in either format. Cell A1
+must read `Security`; anything else is refused with the expected layout named.
+
+Only the values Excel **saved** are read. A sheet built from `BDH` formulas
+works once Excel has loaded the data and the file was saved; dates may be
+stored as dates or as Excel serial numbers. If a formula has no saved value, or
+a cell still reads `#N/A Requesting Data`, the file is refused: open it in
+Excel on the Bloomberg PC, let the data load, save, and upload again.
+
+Older workbooks with a `Data` sheet (`Date` plus one column per field) and a
+`Metadata` sheet still load. For those the security is read from `Metadata`,
+not guessed from the filename, since a filename has been observed to disagree
 with what a file actually contains.
 
 ### Target indices
@@ -68,11 +80,14 @@ signal CSV is produced.
 
 **Dates in a CSV export** are `m/d/yyyy` or `d/m/yyyy` depending on the
 terminal's locale, and for any day up to the 12th the two look the same. The
-reader settles the order once per file from every date in it, the metadata's
-start and end dates included: a day above 12 anywhere decides it, and a file
-with none is read month first, Bloomberg's default. A file that mixes the two
-is refused rather than guessed. If a merged file's dates look a month out,
-check the terminal's date format setting.
+reader takes the format from the file's first date, so a file whose first date
+is ambiguous (`1/4/2016`) is read month first, Bloomberg's default. A later date
+that doesn't fit that format (`13/01/2016` in a month-first file) is not
+guessed: it reads as blank, and the file fails validation (a date may not be
+blank) and is left out of the merge with that reason. If a merged file's dates
+look a month out, or a file is refused for a blank date, check the terminal's
+date format setting. Dates in an `.xlsx`
+export are stored as dates, so the order question doesn't arise.
 
 The merged Bloomberg CSV is downloadable directly. Fama-French factors are not
 part of it: they are fetched when the Fama-French model is run on the Models
