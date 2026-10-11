@@ -7,6 +7,7 @@ stub the machine-learning fit and the factor download.
 """
 
 import pickle
+import re
 import threading
 import time
 from dataclasses import replace
@@ -370,6 +371,28 @@ def test_every_results_header_names_the_target():
     assert "Results · S&P 500" in [s.value for s in app.subheader]
     for heading in ("Signal screening", POLY, "Machine learning"):
         assert f"{heading} · S&P 500" in _expander_labels(app)
+
+
+def test_the_comparison_table_has_one_row_per_completed_model_with_every_metric_rounded_alike():
+    app = _page({EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run()}})
+
+    assert not app.exception
+    table = _table(app)
+    rows = re.findall(r"<tr>(.*?)</tr>", table)
+    assert len(rows) == 3  # header + Polynomial + Machine Learning
+
+    headers = re.findall(r"<th[^>]*>([^<]+)", rows[0])
+    for column in ("Model", "IC", "Signal Rank IC", "OOS Rank IC", "RMSE", "PBO", "Crash Recall"):
+        assert column in headers
+
+    # Both stored runs share the same fixture values (_result()'s defaults), so every
+    # model's row should format each metric the same way, to the same precision.
+    for data_row in rows[1:]:
+        cells = re.findall(r"<td>([^<]*)", data_row)
+        assert cells[headers.index("IC")] == "0.0500"
+        assert cells[headers.index("RMSE")] == "0.0100"
+        assert cells[headers.index("PBO")].startswith("0.3000")
+        assert cells[headers.index("Crash Recall")] == "0.5000"
 
 
 def test_the_table_shows_rows_scored():
