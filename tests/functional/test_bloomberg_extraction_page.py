@@ -490,3 +490,18 @@ def test_missing_one_target_role_does_not_block_committing(page):
     result = commit_button.click().run()
 
     assert "now committed" in texts(result.success)
+
+
+def test_uploads_stay_visible_after_leaving_the_page_and_coming_back(page):
+    upload_targets(page, [("spx.csv", SPX, "text/csv")])
+    upload(page, [("vix.csv", VIX, "text/csv")])
+
+    # Leaving the page empties both uploaders; the parsed files stay in session state.
+    page.file_uploader[0].set_value([])
+    page.file_uploader[1].set_value([])
+    back = page.run()
+
+    shown = texts(back.caption)
+    assert "In use from your last upload: **spx.csv**" in shown
+    assert "In use from your last upload: **vix.csv**" in shown
+    assert "Merged 1 file(s) into 2 rows, 1 data columns" in texts(back.success)
