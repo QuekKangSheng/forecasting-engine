@@ -78,10 +78,9 @@ def test_the_derived_grid_includes_the_shrinkage_fit_and_can_choose_it():
     splitter = PurgedWalkForward(train=100, test=20, embargo=2, tuning_rows=100)
 
     alone, description = run_derived_polynomial(panel, splitter, candidates=())
-    assert alone.pbo is None
     assert description.name == "ShrinkagePolynomial"
 
     with_lasso, _ = run_derived_polynomial(
-        panel, splitter, candidates=(DerivedPolynomial(degree=1),), n_blocks=4
+        panel, splitter, candidates=(DerivedPolynomial(degree=1),)
     )
-    assert with_lasso.pbo is not None
+    assert with_lasso.signal_rank_ic == with_lasso.signal_rank_ic  # a real number

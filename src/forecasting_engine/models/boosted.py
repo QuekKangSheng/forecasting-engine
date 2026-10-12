@@ -10,11 +10,8 @@ with the most recent tune's *fixed* hyperparameters, the same "fix the
 configuration, refit per fold" shape every model family follows. Each
 tune scores a trial by pooled Rank IC over a mini walk-forward inside its window,
 with the main run's test/embargo and a train window of at most
-``TUNING_TRAIN_WINDOW`` rows — the same metric selection, PBO and the gate use.
-
-PBO compares the two tuned candidates (XGBoost vs. LightGBM) and does not count
-Optuna's trials: tuning has its own period, so its search never touches the rows
-PBO and the reported metrics are computed on.
+``TUNING_TRAIN_WINDOW`` rows. Tuning has its own period, so its search never touches
+the rows the reported metrics are computed on.
 
 **FYP-149's SHAP feature attribution** reuses ``ModelDescription``'s existing
 terms/coefficients shape (feature name -> mean |SHAP value|) rather than extending the
@@ -45,7 +42,6 @@ from forecasting_engine.validation.harness import (
     summarize,
 )
 from forecasting_engine.validation.metrics import rank_ic
-from forecasting_engine.validation.pbo import N_BLOCKS
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -68,7 +64,7 @@ _FIXED_PARAMS: dict[str, dict] = {
 _LEAF_KEYS: dict[str, str] = {"xgboost": "min_child_weight", "lightgbm": "min_child_samples"}
 
 #: Optuna's search space: parameter -> (low, high, log scale). Shared by both
-#: libraries so PBO's comparison reflects the algorithm, not an unevenly-sized
+#: libraries so their comparison reflects the algorithm, not an unevenly-sized
 #: search; ``min_leaf`` is each library's minimum leaf size (``_LEAF_KEYS``).
 #: The sampling fractions, penalties and leaf size let the search trade fit for
 #: simplicity instead of only ever growing a bigger model.
@@ -269,11 +265,10 @@ def run_boosted(
     n_trials: int = N_TRIALS,
     retune_trials: int = RETUNE_TRIALS,
     retune_every: int = RETUNE_EVERY,
-    n_blocks: int = N_BLOCKS,
 ) -> tuple[ModelRunResult, ModelDescription, TuningLog]:
     """Tunes XGBoost and LightGBM on a rolling schedule (see the module docstring),
     evaluates both through the shared harness with each fold's latest tune,
-    compares via PBO, and reports the one with the best pooled OOS Rank IC.
+    and reports the one with the best Signal Rank IC.
 
     Feature selection is screened per fold (``evaluate(..., screen=True)``).
     Tuning searches over every signal; only which columns a fold is *fit* on is
@@ -317,8 +312,8 @@ def run_boosted(
         for number, window in enumerate(windows)
     ]
     per_candidate = {library: fits for library, (_, fits) in zip(libraries, outcomes, strict=True)}
-    best_name, pbo_value = select_best_candidate(per_candidate, n_blocks=n_blocks)
-    result, _description = summarize(per_candidate[best_name], pbo=pbo_value)
+    best_name = select_best_candidate(per_candidate)
+    result, _description = summarize(per_candidate[best_name])
     latest = _fitted_params(best_name, tunes[fold_tunes[-1]])
     description = _explain_last_fold(panel, per_candidate[best_name][-1], best_name, latest)
     return result, description, TuningLog(tuple(tunes), tuple(fold_tunes), best_name)

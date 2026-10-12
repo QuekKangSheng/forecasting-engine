@@ -4,7 +4,7 @@ import pytest
 
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.famafrench import FACTOR_COLUMNS, FamaFrenchDataError, run_famafrench
-from forecasting_engine.reporting.model_metrics import NO_CONFIG_SEARCH, build_metrics_rows
+from forecasting_engine.reporting.model_metrics import build_metrics_rows
 from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
@@ -22,9 +22,8 @@ def _splitter() -> PurgedWalkForward:
     return PurgedWalkForward(train=30, test=8, embargo=2)
 
 
-def test_run_famafrench_has_no_configuration_search():
+def test_run_famafrench_fits_the_five_factors():
     result, description = run_famafrench(_panel(), _splitter())
-    assert result.pbo is None
     assert result.oos_rank_ic == result.oos_rank_ic  # a real number, not NaN
     assert description.terms == FACTOR_COLUMNS
 
@@ -40,9 +39,9 @@ def test_run_famafrench_result_matches_the_shared_comparison_contract():
     evaluate_candidate() and build_metrics_rows() completely unmodified."""
     result, _description = run_famafrench(_panel(), _splitter())
 
-    outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
+    outcome = evaluate_candidate(result.gated_rank_ic, result.signal_t)
     assert outcome.promoted in (True, False)
 
     rows = build_metrics_rows({"FF5 Benchmark": result})
     assert rows[0]["Model"].text == "FF5 Benchmark"
-    assert rows[0]["PBO"].text == NO_CONFIG_SEARCH
+    assert "t" in rows[0]

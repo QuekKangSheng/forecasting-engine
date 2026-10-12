@@ -2,8 +2,8 @@
 
 Only work whose pieces don't depend on each other is split this way — the
 derived polynomial's configurations, the two machine-learning libraries' tuning
-sequences, PBO's combinations — so the result is the same as running them one
-after the other, only sooner.
+sequences — so the result is the same as running them one after the other,
+only sooner.
 
 Processes are started fresh (``spawn``), never forked: a fork taken from the
 Models page's background thread, after XGBoost or LightGBM has started its own

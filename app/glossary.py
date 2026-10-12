@@ -108,38 +108,24 @@ TERMS: Mapping[str, str] = {
         "average whatever the signals say. Far apart from the Signal Rank IC "
         "means the level, not the signals, drove this score."
     ),
-    "Rank IC within folds": (
-        "The OOS Rank IC again, but with each fold's forecasts ranked only against "
-        "each other before pooling. Pooling ranks forecasts across folds, so a model "
-        "can score there just because its forecast level shifts from fold to fold — "
-        "a model that uses no signal at all can pass the gate that way. Here it "
-        "can't: only ranking days within a fold counts. Far below the OOS Rank IC "
-        "means most of that score came from levels, not from the signals."
-    ),
-    "Beyond 2 s.e.": (
-        "Whether the Signal Rank IC is more than two standard errors from zero, "
-        "judged on the larger of the two standard errors. No means a score of "
-        "this size could easily be luck, even if it meets the gate. A diagnostic "
-        "only: it does not change whether the gate is met."
+    "t": (
+        "The Signal Rank IC divided by the larger of its two standard errors: how "
+        "many standard errors the score sits from zero. The second promotion gate "
+        "asks for more than 2. A model with no skill at all clears a small Signal "
+        "Rank IC bar surprisingly often, so the score has to be both large enough "
+        "and clearly more than luck."
     ),
     "Constant folds": (
         "How many walk-forward folds forecast a single value for their whole test "
-        "window. Such a fold ranks no day above another, so it adds nothing to "
-        "the Rank IC within folds, but it still counts towards the pooled score "
-        "through its level. The naive baseline is constant in every fold by design."
+        "window. Such a fold ranks no day above another and adds nothing to the "
+        "Signal Rank IC, though it still counts towards the OOS Rank IC through its "
+        "level. The naive baseline is constant in every fold by design."
     ),
     "RMSE": (
         "Root mean squared error: the typical size of a miss, in the same "
         "units as the return being predicted. Lower is better. It says how far "
         "off the model is, whereas IC says whether it got the direction right "
         "— a model can do well on one and badly on the other."
-    ),
-    "PBO": (
-        "Probability of Backtest Overfitting: when several configurations are "
-        "tried, how often the best-looking one turns out to be below average "
-        "on data held back from the search. High PBO means the winner was "
-        "probably luck. Reported as N/A when only one configuration was fitted, "
-        "since there was no search to overfit."
     ),
     "Crash diagnostics": (
         "How well the model's most negative predictions line up with the days "
@@ -188,9 +174,9 @@ TERMS: Mapping[str, str] = {
         "says nothing about direction, only weight."
     ),
     "Promotion gate": (
-        "The bar a model has to clear before it is considered for use: Signal "
-        "Rank IC above the threshold and PBO below it. The badge shows each "
-        "separately, so a model that scores well but overfits is visibly not "
+        "The bar every model but the naive baseline has to clear before it is "
+        "considered for use: Signal Rank IC above 0.02 and t above 2. The badges "
+        "show each separately, so a model whose score could be luck is visibly not "
         "promotable."
     ),
     "Active model": (

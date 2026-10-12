@@ -48,8 +48,8 @@ class NaiveMean:
 def run_naive(
     panel: FeaturePanel, splitter: PurgedWalkForward
 ) -> tuple[ModelRunResult, ModelDescription]:
-    """One evaluate() pass, scored like any model; nothing is searched, so no PBO."""
+    """One evaluate() pass, scored like any model; nothing is searched."""
     folds = evaluate(NaiveMean, panel, splitter)
     if not folds:
         raise NaiveDataError(splitter.too_short(panel))
-    return summarize(folds, pbo=None)
+    return summarize(folds)

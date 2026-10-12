@@ -80,7 +80,6 @@ def _result(forecast=None, *, with_baseline=True) -> ModelRunResult:
         ic=0.05,
         oos_rank_ic=0.04,
         rmse=0.01,
-        pbo=0.3,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
         forecast=forecast,
         baseline=baseline,

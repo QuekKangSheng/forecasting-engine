@@ -23,7 +23,6 @@ CREATE TABLE IF NOT EXISTS active_models (
     ic          DOUBLE    NOT NULL,
     oos_rank_ic DOUBLE    NOT NULL,
     rmse        DOUBLE    NOT NULL,
-    pbo         DOUBLE,
     high_risk   BOOLEAN   NOT NULL,
     set_at      TIMESTAMP NOT NULL
 );
@@ -52,7 +51,6 @@ class ActiveModelRecord:
     ic: float
     oos_rank_ic: float
     rmse: float
-    pbo: float | None
     high_risk: bool
     set_at: datetime
     horizon: int
@@ -91,7 +89,6 @@ def set_active_model(
         ic=result.ic,
         oos_rank_ic=result.oos_rank_ic,
         rmse=result.rmse,
-        pbo=result.pbo,
         high_risk=high_risk,
         set_at=set_at or datetime.now(),
         horizon=horizon,
@@ -103,16 +100,15 @@ def set_active_model(
     with connect(db_path, _CREATE_TABLES) as conn:
         conn.execute(
             "INSERT INTO active_models "
-            "(role, model_name, ic, oos_rank_ic, rmse, pbo, high_risk, set_at, "
+            "(role, model_name, ic, oos_rank_ic, rmse, high_risk, set_at, "
             "horizon, train_window, test_window, dataset_fingerprint, signal_rank_ic) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 record.role.value,
                 record.model_name,
                 record.ic,
                 record.oos_rank_ic,
                 record.rmse,
-                record.pbo,
                 record.high_risk,
                 record.set_at,
                 record.horizon,
@@ -154,7 +150,7 @@ def get_active_model(
     """The most recently set active model for ``role``, or ``None`` if never set."""
     with connect(db_path, _CREATE_TABLES) as conn:
         row = conn.execute(
-            "SELECT role, model_name, ic, oos_rank_ic, rmse, pbo, high_risk, set_at, "
+            "SELECT role, model_name, ic, oos_rank_ic, rmse, high_risk, set_at, "
             "horizon, train_window, test_window, dataset_fingerprint, signal_rank_ic "
             "FROM active_models WHERE role = ? ORDER BY set_at DESC LIMIT 1",
             [role.value],
@@ -167,14 +163,13 @@ def get_active_model(
         ic=row[2],
         oos_rank_ic=row[3],
         rmse=row[4],
-        pbo=row[5],
-        high_risk=row[6],
-        set_at=row[7],
-        horizon=row[8],
-        train_window=row[9],
-        test_window=row[10],
-        dataset_fingerprint=row[11],
-        signal_rank_ic=row[12],
+        high_risk=row[5],
+        set_at=row[6],
+        horizon=row[7],
+        train_window=row[8],
+        test_window=row[9],
+        dataset_fingerprint=row[10],
+        signal_rank_ic=row[11],
     )
 
 

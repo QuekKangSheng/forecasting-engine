@@ -82,7 +82,11 @@ from forecasting_engine.reporting.polynomial_function import (
     to_latex,
 )
 from forecasting_engine.store import active_model
-from forecasting_engine.validation.gates import evaluate_candidate, is_high_risk
+from forecasting_engine.validation.gates import (
+    ValidationOutcome,
+    evaluate_candidate,
+    is_high_risk,
+)
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 from model_settings import (
     DEFAULT_HORIZON,
@@ -98,9 +102,8 @@ NAIVE, FF5, DERIVED, USER, ML = MODEL_ORDER
 
 ACTIVE_MODEL_CANDIDATES = (DERIVED, USER, ML)
 
-#: Forecasting models gated on Signal Rank IC alone when they ran one configuration
-#: (no PBO to gate), unlike a benchmark such as FF5.
-SIGNAL_GATED = (DERIVED,)
+#: Every model but the naive baseline, which is the bar the others are read against.
+GATED = (FF5, DERIVED, USER, ML)
 
 #: The polynomial's two sources; exactly one runs.
 DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
@@ -111,15 +114,13 @@ TABLE_COLUMNS: tuple[str, ...] = (
     "Model",
     "IC",
     "Signal Rank IC",
+    "t",
     "OOS Rank IC",
     "RMSE",
-    "PBO",
     "Crash Recall",
     "Crash Precision",
     "Crash F1",
     "Rows scored",
-    "Rank IC within folds",
-    "Beyond 2 s.e.",
     "Constant folds",
 )
 
@@ -130,26 +131,25 @@ BADGE_LABELS = {"success": "Gate met", "danger": "Gate failed"}
 COLUMN_TERMS = {
     "IC": "IC",
     "Signal Rank IC": "Signal Rank IC",
+    "t": "t",
     "OOS Rank IC": "OOS Rank IC",
     "RMSE": "RMSE",
-    "PBO": "PBO",
     "Crash Recall": "Crash diagnostics",
     "Crash Precision": "Crash diagnostics",
     "Crash F1": "Crash diagnostics",
-    "Rank IC within folds": "Rank IC within folds",
-    "Beyond 2 s.e.": "Beyond 2 s.e.",
     "Constant folds": "Constant folds",
 }
 
-GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "pbo": "PBO"}
+GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 
 #: Bumped whenever what a saved result holds changes meaning, so a result saved
 #: by older code is refitted rather than shown under today's columns. 2: the
 #: gate moved to the Signal Rank IC and results carry each fold's baseline. 3: the
 #: derived grid reaches degree 5, adds the shrinkage fit, and trains equity on
 #: every earlier date. 4: every model trains on the latest 504 dates, and machine
-#: learning tunes on 252-row folds inside its tuning period.
-RESULT_VERSION = 4
+#: learning tunes on 252-row folds inside its tuning period. 5: every model
+#: but the naive baseline is gated on Signal Rank IC and t.
+RESULT_VERSION = 5
 
 st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
 ui.inject()
@@ -330,8 +330,7 @@ def _polynomial_settings(
         settings[DERIVED] = int(max_terms)
         st.caption(
             f"Tries a Lasso fit at each degree from 1 to 3 (of up to {MAX_DEGREE} allowed) "
-            "and a shrinkage fit, compares them via PBO, and reports the one with the "
-            "best Signal Rank IC."
+            "and a shrinkage fit, and reports the one with the best Signal Rank IC."
         )
         return DERIVED, settings
     formula = st.text_input(
@@ -602,7 +601,7 @@ def _cell_html(cell: Cell) -> str:
 def _show_table(results: dict[str, ModelRunResult]) -> None:
     # A hand-built table has no Streamlit help=, so each heading explains
     # itself through the browser's own title tooltip.
-    rows = build_metrics_rows(results, gated=SIGNAL_GATED)
+    rows = build_metrics_rows(results, gated=GATED)
     header = "".join(_header_html(col) for col in TABLE_COLUMNS)
     body = "".join(
         "<tr>" + "".join(f"<td>{_cell_html(row[col])}</td>" for col in TABLE_COLUMNS) + "</tr>"
@@ -618,14 +617,15 @@ def _show_table(results: dict[str, ModelRunResult]) -> None:
 def _gate_line(name: str, result: ModelRunResult) -> str:
     if name == NAIVE:
         return f"**{name}**: the baseline to beat — not gated."
-    if result.pbo is None and name not in SIGNAL_GATED:
-        return f"**{name}**: not gated — no configuration search, so no PBO."
-    outcome = evaluate_candidate(result.gated_rank_ic, result.pbo)
-    no_pbo = " (one configuration, so no PBO)" if result.pbo is None else ""
+    outcome = _outcome(result)
     if outcome.promoted:
-        return f"**{name}**: gate met{no_pbo}."
+        return f"**{name}**: gate met — Signal Rank IC above 0.02 and t above 2."
     failed = " and ".join(GATE_NAMES[g] for g in outcome.failed_gates)
-    return f"**{name}**: gate failed on {failed}{no_pbo}."
+    return f"**{name}**: gate failed on {failed}."
+
+
+def _outcome(result: ModelRunResult) -> ValidationOutcome:
+    return evaluate_candidate(result.gated_rank_ic, result.signal_t)
 
 
 def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> None:
@@ -769,10 +769,6 @@ def _show_famafrench(run: model_runs.ModelRun) -> None:
 def _show_ml(run: model_runs.ModelRun) -> None:
     _show_fitted_terms(run.description, is_ml=True)
     _show_no_signal_folds(run.result.screening)
-    st.caption(
-        "PBO here compares only two candidates, tuned XGBoost and tuned LightGBM, so it "
-        "is coarse — read it as a rough check rather than a precise probability."
-    )
     tuning = run.tuning
     if tuning is None:
         return
@@ -878,7 +874,7 @@ def _show_active_picker(
     pending_key = f"pending_active_{key}"
     if cols[1].button("Set as active", key=f"set_active_{key}"):
         result = runs[selected].result
-        if is_high_risk(evaluate_candidate(result.gated_rank_ic, result.pbo)):
+        if is_high_risk(_outcome(result)):
             st.session_state[pending_key] = selected
         else:
             st.session_state.pop(pending_key, None)
@@ -889,7 +885,7 @@ def _show_active_picker(
     pending = st.session_state.get(pending_key)
     if pending in runs:
         result = runs[pending].result
-        outcome = evaluate_candidate(result.gated_rank_ic, result.pbo)
+        outcome = _outcome(result)
         _confirm_high_risk(role, pending, result, outcome.failed_gates, target_name)
 
 
@@ -900,9 +896,7 @@ def _directional_default(role: TargetRole, options: list[str], runs) -> int:
     if current is not None and current.model_name in options:
         return options.index(current.model_name)
     for i, name in enumerate(options):
-        result = runs[name].result
-        gated = result.pbo is not None or name in SIGNAL_GATED
-        if gated and evaluate_candidate(result.gated_rank_ic, result.pbo).promoted:
+        if name in GATED and _outcome(runs[name].result).promoted:
             return i
     forecasting = [i for i, name in enumerate(options) if name in ACTIVE_MODEL_CANDIDATES]
     return forecasting[0] if forecasting else 0

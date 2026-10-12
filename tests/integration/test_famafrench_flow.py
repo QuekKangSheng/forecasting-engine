@@ -43,12 +43,11 @@ def test_famafrench_flows_from_raw_frames_through_the_shared_harness_to_the_comp
 
     result, description = run_famafrench(panel, _splitter())
 
-    assert result.pbo is None
     assert description.terms == FACTOR_COLUMNS
 
     # The gate and the comparison table are FYP-45/FYP-14's already-built
     # contract — an FF5 result must satisfy both unmodified.
-    outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
+    outcome = evaluate_candidate(result.gated_rank_ic, result.signal_t)
     assert outcome.promoted in (True, False)
 
     rows = build_metrics_rows({"FF5 Benchmark": result})

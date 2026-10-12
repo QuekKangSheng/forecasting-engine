@@ -91,8 +91,8 @@ hosting step is needed.
   scored on the days after it, with an embargo between the two, under one shared
   set of settings that the results table states.
 - **Overfitting checks** — Signal Rank IC (what a model adds to its training-mean
-  forecast, out of sample), PBO (probability of backtest overfitting), crash-day
-  diagnostics, and promotion gates on Signal Rank IC and PBO.
+  forecast, out of sample) with its Newey-West t, crash-day diagnostics, and a
+  promotion gate on both: Signal Rank IC above 0.02 and t above 2.
 - **Active model** — the model chosen to carry forward for each index, saved in
   DuckDB, with a confirmation step for a model that failed both gates.
 - **Directional P&L** — for one model and one index, what holding the index only
@@ -132,7 +132,7 @@ src/forecasting_engine/     core library, never imports Streamlit
   ingest/                   upload checks, Fama-French factors, lag-safe alignment
   features/                 signal screening
   models/                   naive, Fama-French, polynomial and boosted forecasters
-  validation/               walk-forward splitter, metrics, PBO, crash checks, gates
+  validation/               walk-forward splitter, metrics, crash checks, gates
   portfolio/                optimiser, backtest, performance, directional P&L
   reporting/                tables and labels the dashboard shows
   store/                    DuckDB upload and active-model history

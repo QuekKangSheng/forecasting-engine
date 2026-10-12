@@ -339,10 +339,7 @@ def test_a_squared_effect_keeps_its_squared_term_with_a_stable_sign_across_folds
     assert all(abs(terms.get("x", 0.0)) < 0.5 * terms["x^2"] for terms in squared)
 
 
-def test_deriving_from_one_candidate_reports_no_pbo_rather_than_crashing():
-    # PBO measures how often the best of several configurations was luck, so a
-    # single configuration has nothing to compare against — the same "no
-    # configuration search" case FF5 and a user formula report.
+def test_deriving_from_one_candidate_reports_it_without_a_choice_to_make():
     panel = _linear_panel(n=120)
     splitter = PurgedWalkForward(train=40, test=10, embargo=2)
 
@@ -350,7 +347,6 @@ def test_deriving_from_one_candidate_reports_no_pbo_rather_than_crashing():
         panel, splitter, candidates=(DerivedPolynomial(degree=1),), shrinkage=False
     )
 
-    assert result.pbo is None
     assert description.name == "DerivedPolynomial"
 
 

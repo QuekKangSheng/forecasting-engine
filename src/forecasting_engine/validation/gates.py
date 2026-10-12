@@ -1,5 +1,5 @@
 """Promotion-gate policy for a candidate model, kept separate from the
-statistics that produce the numbers (compute_pbo, rank_ic) per Validation
+statistics that produce the numbers (rank_ic, rank_ic_se) per Validation
 Metrics v2 Section 3. Crash recall/precision/F1 never appear here — they are
 a diagnostic with no threshold, so they cannot fail a gate.
 """
@@ -9,12 +9,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 SIGNAL_RANK_IC_GATE: float = 0.02
-"""Tier 1 gate: the Signal Rank IC — pooled OOS Rank IC of each forecast less its
+"""First gate: the Signal Rank IC — pooled OOS Rank IC of each forecast less its
 fold's training-mean target (``validation.harness.signal_forecasts``) — must
-exceed this (strictly) to validate a candidate."""
+exceed this (strictly)."""
 
-PBO_GATE: float = 0.5
-"""Tier 2 gate: PBO must be at or below this."""
+SIGNIFICANCE_T_GATE: float = 2.0
+"""Second gate: t, the Signal Rank IC divided by the larger of its two Newey-West
+standard errors, must exceed this (strictly). At a standard error near 0.07, a
+model with no skill clears the first gate alone about 39% of the time; the sponsor
+asked for a t-statistic above 2."""
 
 
 @dataclass(frozen=True)
@@ -23,19 +26,15 @@ class ValidationOutcome:
     failed_gates: tuple[str, ...]
 
 
-def evaluate_candidate(signal_rank_ic: float, pbo: float | None) -> ValidationOutcome:
-    """Apply the Signal Rank IC and PBO promotion gates. A NaN input (e.g. a
-    candidate whose IC couldn't be computed) fails its gate rather than
-    passing or raising. ``pbo=None`` means no configuration search happened
-    (a benchmark with no hyperparameters, or a user-supplied function) — the
-    same "no configuration search" case ``reporting.model_metrics`` already
-    renders as N/A rather than a pass/fail badge, so that gate is skipped
-    here too rather than raising on the comparison ``None <= PBO_GATE``."""
+def evaluate_candidate(signal_rank_ic: float, t: float) -> ValidationOutcome:
+    """Apply the Signal Rank IC and t gates. A NaN input (e.g. a candidate whose
+    IC or standard error couldn't be computed) fails its gate rather than passing
+    or raising."""
     failed = []
     if not (signal_rank_ic > SIGNAL_RANK_IC_GATE):
         failed.append("signal_rank_ic")
-    if pbo is not None and not (pbo <= PBO_GATE):
-        failed.append("pbo")
+    if not (t > SIGNIFICANCE_T_GATE):
+        failed.append("t")
     return ValidationOutcome(promoted=not failed, failed_gates=tuple(failed))
 
 

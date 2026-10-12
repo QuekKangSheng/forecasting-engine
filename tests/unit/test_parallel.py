@@ -12,7 +12,6 @@ from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.boosted import fits_tuning_period, run_boosted
 from forecasting_engine.models.polynomial import run_derived_polynomial
 from forecasting_engine.parallel import DEFAULT_MAX_WORKERS, WORKERS_ENV, map_processes, workers
-from forecasting_engine.validation.pbo import compute_pbo
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
 
@@ -38,25 +37,6 @@ def test_processes_return_results_in_order(monkeypatch):
     assert map_processes(_square, [3, 1, 2]) == [9, 1, 4]
 
 
-def _pbo_configs(n: int = 600) -> dict:
-    rng = np.random.default_rng(0)
-    index = pd.date_range("2024-01-01", periods=n, freq="D")
-    realised = pd.Series(rng.normal(size=n), index=index)
-    return {
-        f"setup_{i}": (realised * 0.1 * i + pd.Series(rng.normal(size=n), index=index), realised)
-        for i in range(4)
-    }
-
-
-def test_pbo_shared_across_processes_matches_the_serial_count(monkeypatch):
-    configs = _pbo_configs()
-    serial = compute_pbo(configs, n_blocks=8)
-    monkeypatch.setenv(WORKERS_ENV, "2")
-    shared = compute_pbo(configs, n_blocks=8)
-
-    assert shared == serial
-
-
 def _panel(n: int = 120) -> FeaturePanel:
     rng = np.random.default_rng(2)
     idx = pd.date_range("2024-01-01", periods=n, freq="D")
@@ -68,17 +48,17 @@ def _panel(n: int = 120) -> FeaturePanel:
 
 def test_the_polynomials_configurations_in_parallel_match_running_them_in_turn(monkeypatch):
     splitter = PurgedWalkForward(train=30, test=8, embargo=2)
-    serial, _ = run_derived_polynomial(_panel(), splitter, n_blocks=4)
+    serial, _ = run_derived_polynomial(_panel(), splitter)
     monkeypatch.setenv(WORKERS_ENV, "3")
-    parallel, _ = run_derived_polynomial(_panel(), splitter, n_blocks=4)
+    parallel, _ = run_derived_polynomial(_panel(), splitter)
 
     pd.testing.assert_series_equal(parallel.forecast, serial.forecast)
-    assert (parallel.pbo, parallel.signal_rank_ic) == (serial.pbo, serial.signal_rank_ic)
+    assert parallel.signal_rank_ic == serial.signal_rank_ic
 
 
 def test_the_two_libraries_tuned_in_parallel_match_tuning_them_in_turn(monkeypatch):
     splitter = PurgedWalkForward(train=20, test=5, embargo=2, tuning_rows=45)
-    kwargs = {"n_trials": 3, "retune_trials": 3, "n_blocks": 4}
+    kwargs = {"n_trials": 3, "retune_trials": 3}
     serial, _, serial_log = run_boosted(_panel(), splitter, **kwargs)
     monkeypatch.setenv(WORKERS_ENV, "2")
     parallel, _, parallel_log = run_boosted(_panel(), splitter, **kwargs)

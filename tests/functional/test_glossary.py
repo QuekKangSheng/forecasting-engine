@@ -49,7 +49,6 @@ def _result() -> ModelRunResult:
         oos_rank_ic=0.04,
         signal_rank_ic=0.04,
         rmse=0.01,
-        pbo=0.3,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
         screening=ScreeningSummary(folds=4, fell_back=0, counts=(("VIX_Index_PX_LAST", 4),)),
     )
@@ -105,7 +104,7 @@ def test_the_user_supplied_function_box_explains_both_polynomials(models_page):
     assert function_help == glossary.term("Function source")
 
 
-@pytest.mark.parametrize("metric", ["IC", "Signal Rank IC", "OOS Rank IC", "RMSE", "PBO"])
+@pytest.mark.parametrize("metric", ["IC", "Signal Rank IC", "t", "OOS Rank IC", "RMSE"])
 def test_every_headline_metric_explains_itself(models_page, metric):
     hint = html.escape(glossary.term(metric), quote=True)
     assert f'<th title="{hint}">{metric}' in _table(models_page)
@@ -150,20 +149,18 @@ def _table(app: AppTest) -> str:
 def test_the_comparison_table_explains_every_column_it_can(models_page):
     table = _table(models_page)
     assert not models_page.exception
-    for column in ("IC", "OOS Rank IC", "RMSE", "PBO", "Crash Recall"):
+    for column in ("IC", "OOS Rank IC", "RMSE", "Crash Recall"):
         assert "<th title=" in table
         assert column in table
     explained = [
         "IC",
         "Signal Rank IC",
+        "t",
         "OOS Rank IC",
         "RMSE",
-        "PBO",
         "Crash Recall",
         "Crash Precision",
         "Crash F1",
-        "Rank IC within folds",
-        "Beyond 2 s.e.",
         "Constant folds",
     ]
     for column in explained:

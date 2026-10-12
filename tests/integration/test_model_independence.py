@@ -1,7 +1,7 @@
 """Which models run together never changes any one model's result (FYP-161).
 
-PBO is computed only within a family's own configurations, so ticking other
-families on or off must leave every family's PBO and Rank IC exactly as it was.
+Each family chooses only among its own configurations, so ticking other
+families on or off must leave every family's Rank IC exactly as it was.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def _derived_splitter() -> PurgedWalkForward:
 
 def _ml(panel):
     result, _description, _tuning = run_boosted(
-        panel, _splitter(), n_trials=_N_TRIALS, retune_trials=_N_TRIALS, n_blocks=4
+        panel, _splitter(), n_trials=_N_TRIALS, retune_trials=_N_TRIALS
     )
     return result
 
@@ -49,12 +49,12 @@ def test_ml_alone_and_ml_with_every_other_model_score_identically():
     alone = _ml(panel)
 
     run_naive(panel, _splitter())
-    derived, _ = run_derived_polynomial(panel, _derived_splitter(), n_blocks=4)
+    derived, _ = run_derived_polynomial(panel, _derived_splitter())
     run_user_polynomial("sig_a", panel, _splitter())
     together = _ml(panel)
-    derived_after_ml, _ = run_derived_polynomial(panel, _derived_splitter(), n_blocks=4)
+    derived_after_ml, _ = run_derived_polynomial(panel, _derived_splitter())
 
-    assert together.pbo == alone.pbo
     assert together.oos_rank_ic == alone.oos_rank_ic
-    assert derived_after_ml.pbo == derived.pbo
+    assert together.signal_rank_ic == alone.signal_rank_ic
     assert derived_after_ml.oos_rank_ic == derived.oos_rank_ic
+    assert derived_after_ml.signal_rank_ic == derived.signal_rank_ic

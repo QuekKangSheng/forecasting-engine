@@ -22,8 +22,7 @@ variants on data that overlaps the scored period; here nothing is fixed:
    adds to that level is its slopes alone.
 
 It is one candidate in the derived polynomial's grid (``polynomial.run_derived_polynomial``),
-chosen only when it beats the lasso fits on Signal Rank IC, and
-counted by PBO like them.
+chosen only when it beats the lasso fits on Signal Rank IC.
 """
 
 from __future__ import annotations

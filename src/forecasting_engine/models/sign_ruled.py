@@ -3,7 +3,7 @@ whose slopes are shrunk toward one common positive slope.
 
 A research benchmark, not run on the Models page. Its inputs, their signs and its
 level were chosen by looking at results over Aug 2016 - Sep 2024, which overlaps the
-scored period, so no PBO can count those choices; the page's derived polynomial
+scored period, so its scores there overstate it; the page's derived polynomial
 uses the same shrinkage (``models/shrinkage.py``) with every choice made per fold
 instead. Kept so the research result can be reproduced; see docs/methodology.md.
 
@@ -204,7 +204,7 @@ def run_sign_ruled_polynomial(
 
     Its inputs are read as levels whatever the page's transform map says (the 2s10s
     slope is otherwise differenced), and every fold trains on all earlier rows. One
-    configuration, so no PBO. Returns the panel too, for the equation's columns."""
+    configuration. Returns the panel too, for the equation's columns."""
     panel = align_and_lag(
         frame,
         list(signs),
@@ -215,5 +215,5 @@ def run_sign_ruled_polynomial(
     folds = evaluate(lambda: SignRuledPolynomial(dict(signs)), panel, expanding(splitter))
     if not folds:
         raise PolynomialConfigError(expanding(splitter).too_short(panel))
-    result, description = summarize(folds, pbo=None)
+    result, description = summarize(folds)
     return result, description, panel

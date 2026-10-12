@@ -15,7 +15,7 @@ from forecasting_engine.models.sign_ruled import (
     overlap,
     run_sign_ruled_polynomial,
 )
-from forecasting_engine.reporting.model_metrics import NO_CONFIG_SEARCH, build_metrics_rows
+from forecasting_engine.reporting.model_metrics import build_metrics_rows
 from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
@@ -163,7 +163,6 @@ def test_the_runner_reads_every_input_as_a_level_and_trains_on_all_history():
         frame, dict.fromkeys(SIGNALS, 1), "price", horizon=5, splitter=splitter
     )
     assert all(a.transform == Transform.LEVEL for a in panel.alignment.values())
-    assert result.pbo is None
     assert description.terms == SIGNALS
     assert result.terms.folds > 1
 
@@ -199,8 +198,8 @@ def test_the_runner_refuses_data_too_short_for_one_fold():
 
 
 def test_a_sign_ruled_run_plugs_into_the_gates_and_the_comparison_table():
-    """FYP-14's contract: a run with no configuration search (pbo=None) must pass
-    through evaluate_candidate() and build_metrics_rows() unmodified."""
+    """FYP-14's contract: a single-configuration run must pass through
+    evaluate_candidate() and build_metrics_rows() unmodified."""
     result, _description, _panel = run_sign_ruled_polynomial(
         _levels(),
         dict.fromkeys(SIGNALS, 1),
@@ -208,6 +207,6 @@ def test_a_sign_ruled_run_plugs_into_the_gates_and_the_comparison_table():
         5,
         PurgedWalkForward(train=60, test=20, embargo=5, tuning_rows=300),
     )
-    assert evaluate_candidate(result.signal_rank_ic, result.pbo).promoted in (True, False)
+    assert evaluate_candidate(result.gated_rank_ic, result.signal_t).promoted in (True, False)
     rows = build_metrics_rows({"Polynomial (derived)": result})
-    assert rows[0]["PBO"].text == NO_CONFIG_SEARCH
+    assert "t" in rows[0]

@@ -30,7 +30,6 @@ from forecasting_engine.validation.harness import (
     select_best_candidate,
     summarize,
 )
-from forecasting_engine.validation.pbo import N_BLOCKS
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
 MAX_DEGREE: int = 5
@@ -523,30 +522,22 @@ def run_user_polynomial(
     bindings: Mapping[str, str] | None = None,
 ) -> tuple[ModelRunResult, ModelDescription]:
     """A user-supplied shape, scaled and shifted to the target in each fold.
-    There is one configuration and nothing to choose between, so ``pbo`` is
-    ``None`` — the same "no configuration search" case FF5 reports."""
+    There is one configuration and nothing to choose between."""
     folds = evaluate(lambda: UserPolynomial(formula, dict(bindings or {})), panel, splitter)
     _require_folds(folds, panel, splitter)
-    return summarize(folds, pbo=None)
+    return summarize(folds)
 
 
 def run_derived_polynomial(
     panel: FeaturePanel,
     splitter: PurgedWalkForward,
     candidates: tuple[DerivedPolynomial, ...] = CANDIDATE_CONFIGS,
-    n_blocks: int = N_BLOCKS,
     *,
     shrinkage: bool = True,
 ) -> tuple[ModelRunResult, ModelDescription]:
     """Evaluates every candidate in ``candidates``, and the shrinkage polynomial
-    unless ``shrinkage`` is false, compares them via PBO
-    (``compute_pbo`` needs several configurations' return series — a single
-    fitted model has nothing to compute PBO against), then reports the
-    candidate with the best pooled OOS Rank IC alongside that shared PBO score.
-
-    ``n_blocks`` is forwarded to ``compute_pbo`` — CSCV's cost is combinatorial
-    in it (``C(n_blocks, n_blocks/2)`` splits), so a caller under a tight
-    compute budget (an interactive UI, a test) can lower it from the default.
+    unless ``shrinkage`` is false, then reports the one with the best Signal Rank
+    IC.
 
     Feature selection is screened per fold (``evaluate(..., screen=True)``) —
     a signal below FYP-102's inclusion threshold, judged on that fold's own
@@ -567,14 +558,7 @@ def run_derived_polynomial(
         for (degree, regularizer, _), folds in zip(configs, fits, strict=True)
     }
     _require_folds(next(iter(per_candidate.values()), ()), panel, splitter)
-    if len(per_candidate) == 1:
-        # PBO asks how often the best of several configurations was luck. One
-        # configuration was never chosen from anything, so it reports no PBO
-        # rather than failing inside CSCV.
-        (only_folds,) = per_candidate.values()
-        return summarize(only_folds, pbo=None)
-    best_name, pbo_value = select_best_candidate(per_candidate, n_blocks=n_blocks)
-    return summarize(per_candidate[best_name], pbo=pbo_value)
+    return summarize(per_candidate[select_best_candidate(per_candidate)])
 
 
 def _evaluate_candidate(

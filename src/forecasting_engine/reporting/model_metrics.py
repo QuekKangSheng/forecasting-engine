@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from forecasting_engine.validation.crash import CrashDiagnostics
-from forecasting_engine.validation.gates import PBO_GATE, SIGNAL_RANK_IC_GATE
+from forecasting_engine.validation.gates import SIGNAL_RANK_IC_GATE, SIGNIFICANCE_T_GATE
 
 MODEL_ORDER: tuple[str, ...] = (
     "Naive (training mean)",
@@ -23,24 +23,16 @@ MODEL_ORDER: tuple[str, ...] = (
 )
 """The order rows appear in; only models that ran get one."""
 
-NO_CONFIG_SEARCH = "N/A — no configuration search"
-
-SIGNIFICANCE_SE_MULTIPLE: float = 2.0
-"""A Signal Rank IC further than this many standard errors from zero is shown as
-distinguishable from luck. Diagnostic only: it never enters the gate."""
-
 _COLUMNS: tuple[str, ...] = (
     "IC",
     "Signal Rank IC",
+    "t",
     "OOS Rank IC",
     "RMSE",
-    "PBO",
     "Crash Recall",
     "Crash Precision",
     "Crash F1",
     "Rows scored",
-    "Rank IC within folds",
-    "Beyond 2 s.e.",
     "Constant folds",
 )
 
@@ -110,13 +102,11 @@ class ConstantForecasts:
 
 @dataclass(frozen=True)
 class ModelRunResult:
-    """One model family's completed run. ``pbo`` is ``None`` for FF5 (no
-    configuration search) — also the signal that row skips the gate badge."""
+    """One model family's completed run."""
 
     ic: float
     oos_rank_ic: float
     rmse: float
-    pbo: float | None
     crash: CrashDiagnostics
     screening: ScreeningSummary | None = None
     """Per-fold signal inclusion, or ``None`` for a run that didn't screen (FF5, a
@@ -134,12 +124,6 @@ class ModelRunResult:
     rows_scored: int | None = None
     """Test rows with both a prediction and a realised value. Each model drops
     rows missing a signal it uses, so this can differ between models."""
-    oos_rank_ic_within: float | None = None
-    """Rank IC of each fold's forecasts ranked within that fold, pooled. A
-    forecast that only shifts level from fold to fold scores nothing here, while
-    it can score on ``oos_rank_ic``. Diagnostic; not gated."""
-    oos_rank_ic_within_se: float | None = None
-    """Newey-West standard error of ``oos_rank_ic_within`` over test-window lags."""
     constant_forecasts: ConstantForecasts | None = None
     forecast: pd.Series | None = None
     """Every fold's out-of-sample prediction, pooled end to end and indexed by
@@ -166,6 +150,20 @@ class ModelRunResult:
         return float("nan") if self.signal_rank_ic is None else self.signal_rank_ic
 
     @property
+    def signal_t(self) -> float:
+        """The Signal Rank IC over the larger of its two standard errors: the
+        test-window one also allows for errors a fold's single fit shares, so it
+        is the harder bar. NaN (which fails the gate) without a standard error."""
+        errors = [
+            se
+            for se in (self.signal_rank_ic_se, self.signal_rank_ic_se_test)
+            if se is not None and se == se
+        ]
+        if not errors or max(errors) <= 0:
+            return float("nan")
+        return self.gated_rank_ic / max(errors)
+
+    @property
     def signal(self) -> pd.Series | None:
         """``forecast`` less ``baseline``, or ``None`` if either is missing."""
         if self.forecast is None or self.baseline is None:
@@ -180,46 +178,38 @@ def build_metrics_rows(
 ) -> list[dict[str, Cell]]:
     """One row per model in ``results``, in MODEL_ORDER (then any others).
 
-    A model with a configuration search is gated on Signal Rank IC and PBO. One
-    without (``pbo is None``) is a benchmark, ungated, unless it is named in
-    ``gated``: then its Signal Rank IC is gated and its PBO reads N/A."""
+    A model named in ``gated`` has its Signal Rank IC and t badged against their
+    gates; any other (the naive baseline) is shown without badges."""
     names = [n for n in MODEL_ORDER if n in results] + [n for n in results if n not in MODEL_ORDER]
     return [_row(name, results[name], decimals, name in gated) for name in names]
 
 
 def _row(name: str, result: ModelRunResult, decimals: int, gated: bool) -> dict[str, Cell]:
-    can_be_gated = result.pbo is not None or gated
     signal_text = _with_errors(
         result.gated_rank_ic, result.signal_rank_ic_se, result.signal_rank_ic_se_test, decimals
     )
-    signal_cell = (
-        _gated_cell(signal_text, result.gated_rank_ic > SIGNAL_RANK_IC_GATE)
-        if can_be_gated
-        else Cell(signal_text)
-    )
-    pbo_cell = (
-        Cell(NO_CONFIG_SEARCH)
-        if result.pbo is None
-        else _gated_cell(_fmt(result.pbo, decimals), result.pbo <= PBO_GATE)
-    )
+    t_text = _fmt(result.signal_t, 2)
+    if gated:
+        signal_cell = _gated_cell(signal_text, result.gated_rank_ic > SIGNAL_RANK_IC_GATE)
+        t_cell = _gated_cell(t_text, result.signal_t > SIGNIFICANCE_T_GATE)
+    else:
+        signal_cell, t_cell = Cell(signal_text), Cell(t_text)
 
     return {
         "Model": Cell(name),
         "IC": Cell(_fmt(result.ic, decimals)),
         "Signal Rank IC": signal_cell,
+        "t": t_cell,
         "OOS Rank IC": Cell(
             _with_errors(
                 result.oos_rank_ic, result.oos_rank_ic_se, result.oos_rank_ic_se_test, decimals
             )
         ),
         "RMSE": Cell(_fmt(result.rmse, decimals)),
-        "PBO": pbo_cell,
         "Crash Recall": Cell(_fmt(result.crash.recall, decimals)),
         "Crash Precision": Cell(_fmt(result.crash.precision, decimals)),
         "Crash F1": Cell(_fmt(result.crash.f1, decimals)),
         "Rows scored": Cell("—" if result.rows_scored is None else f"{result.rows_scored:,}"),
-        "Rank IC within folds": _within_cell(result, decimals),
-        "Beyond 2 s.e.": _significance_cell(result),
         "Constant folds": Cell(
             "—"
             if result.constant_forecasts is None
@@ -236,32 +226,6 @@ def _with_errors(value: float, se_h: float | None, se_test: float | None, decima
         if se is not None
     ]
     return f"{text} ({'; '.join(errors)})" if errors else text
-
-
-def _within_cell(result: ModelRunResult, decimals: int) -> Cell:
-    within = result.oos_rank_ic_within
-    if within is None or within != within:  # NaN: no fold's forecasts ranked any day
-        return Cell("—")
-    text = _fmt(within, decimals)
-    se = result.oos_rank_ic_within_se
-    if se is not None and se == se:
-        text += f" (s.e. {_fmt(se, decimals)})"
-    return Cell(text)
-
-
-def _significance_cell(result: ModelRunResult) -> Cell:
-    """Judged on the larger of the two standard errors: the test-window one also
-    allows for errors a fold's single fit shares, so it is the harder bar."""
-    errors = [
-        se
-        for se in (result.signal_rank_ic_se, result.signal_rank_ic_se_test)
-        if se is not None and se == se
-    ]
-    value = result.gated_rank_ic
-    if not errors or value != value:
-        return Cell("—")
-    beyond = abs(value) > SIGNIFICANCE_SE_MULTIPLE * max(errors)
-    return Cell("Yes" if beyond else "No")
 
 
 def _gated_cell(text: str, passed: bool) -> Cell:

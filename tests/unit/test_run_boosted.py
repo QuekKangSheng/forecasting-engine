@@ -33,18 +33,13 @@ def _run(panel=None, splitter=None, **kwargs):
         splitter or _splitter(),
         n_trials=_N_TRIALS,
         retune_trials=_N_TRIALS,
-        n_blocks=4,
         **kwargs,
     )
 
 
-def test_run_boosted_computes_a_real_pbo():
-    # Unlike FF5/UserPolynomial, there are always two candidates here (tuned
-    # XGBoost vs. tuned LightGBM), so pbo is never None.
+def test_run_boosted_reports_the_winning_library():
     result, description, _tuning = _run()
 
-    assert result.pbo is not None
-    assert 0.0 <= result.pbo <= 1.0
     assert result.oos_rank_ic == result.oos_rank_ic  # a real number, not NaN
     assert description.terms == ("sig_a", "sig_b")
 
@@ -59,7 +54,7 @@ def test_run_boosted_result_matches_the_shared_comparison_contract():
     evaluate_candidate() and build_metrics_rows() completely unmodified."""
     result, _description, _tuning = _run()
 
-    outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
+    outcome = evaluate_candidate(result.gated_rank_ic, result.signal_t)
     assert outcome.promoted in (True, False)
 
     rows = build_metrics_rows({"Machine Learning": result})

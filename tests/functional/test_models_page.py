@@ -104,7 +104,7 @@ def _committed(*, bond: bool = False) -> pd.DataFrame:
 def _result(
     screening: ScreeningSummary | None = None,
     *,
-    pbo: float | None = 0.3,
+    se: float = 0.01,
     oos_rank_ic: float = 0.04,
     terms: FoldTerms | None = None,
 ) -> ModelRunResult:
@@ -113,7 +113,8 @@ def _result(
         oos_rank_ic=oos_rank_ic,
         signal_rank_ic=oos_rank_ic,
         rmse=0.01,
-        pbo=pbo,
+        signal_rank_ic_se=se,
+        signal_rank_ic_se_test=se,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
         screening=screening,
         terms=terms,
@@ -402,17 +403,17 @@ def test_the_table_shows_rows_scored():
 
 
 def test_each_model_gets_a_one_line_gate_summary():
-    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    failing = _result(oos_rank_ic=0.01)
     benchmark = model_runs.ModelRun(
-        _result(pbo=None),
+        _result(),
         ModelDescription("FamaFrench5", FACTOR_COLUMNS, (0.1,) * 5),
         coverage=FactorCoverage(pd.Timestamp("2024-01-01"), pd.Timestamp("2024-08-30"), 150, 5),
     )
     app = _page({EQUITY: {POLY: _polynomial_run(failing), "FF5 Benchmark": benchmark}})
 
     text = _markdown(app)
-    assert "**Polynomial (derived)**: gate failed on Signal Rank IC and PBO." in text
-    assert "**FF5 Benchmark**: not gated" in text
+    assert "**Polynomial (derived)**: gate failed on Signal Rank IC and t." in text
+    assert "**FF5 Benchmark**: gate met — Signal Rank IC above 0.02 and t above 2." in text
 
 
 def test_each_targets_results_stay_in_its_own_tab():
@@ -463,7 +464,7 @@ def test_setting_a_new_active_model_replaces_the_prior_one():
 
 def test_the_active_model_picker_excludes_benchmarks():
     benchmark = model_runs.ModelRun(
-        _result(pbo=None),
+        _result(),
         ModelDescription("FamaFrench5", FACTOR_COLUMNS, (0.1,) * 5),
         coverage=FactorCoverage(pd.Timestamp("2024-01-01"), pd.Timestamp("2024-08-30"), 150, 5),
     )
@@ -491,7 +492,7 @@ def test_with_no_forecasting_model_run_the_picker_shows_a_caption_instead():
 
 
 def test_a_high_risk_model_asks_for_confirmation_before_being_set_active():
-    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    failing = _result(oos_rank_ic=0.01)
     app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
     next(b for b in app.button if b.label == "Set as active").click().run()
 
@@ -502,7 +503,7 @@ def test_a_high_risk_model_asks_for_confirmation_before_being_set_active():
 
 
 def test_confirming_a_high_risk_model_sets_it_active():
-    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    failing = _result(oos_rank_ic=0.01)
     app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
     next(b for b in app.button if b.label == "Set as active").click().run()
     next(b for b in app.button if b.label == "Set active anyway").click().run()
@@ -513,7 +514,7 @@ def test_confirming_a_high_risk_model_sets_it_active():
 
 
 def test_cancelling_a_high_risk_model_leaves_nothing_active():
-    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    failing = _result(oos_rank_ic=0.01)
     app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
     next(b for b in app.button if b.label == "Set as active").click().run()
     next(b for b in app.button if b.label == "Cancel").click().run()
@@ -523,7 +524,7 @@ def test_cancelling_a_high_risk_model_leaves_nothing_active():
 
 
 def test_a_model_that_only_fails_one_gate_is_not_treated_as_high_risk():
-    one_gate_failing = _result(oos_rank_ic=0.01, pbo=0.3)
+    one_gate_failing = _result(oos_rank_ic=0.01, se=0.001)  # t is 10; the IC fails
     app = _page({EQUITY: {POLY: _polynomial_run(one_gate_failing)}})
     next(b for b in app.button if b.label == "Set as active").click().run()
 
@@ -906,11 +907,10 @@ def test_a_broken_function_fails_its_own_row_but_the_rest_still_run(stub_ml):
     assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
 
 
-def test_ml_results_show_shap_and_the_coarse_pbo_note(stub_ml):
+def test_ml_results_show_shap(stub_ml):
     app = _run_equity(_untick(_page(), "Fama-French 5"))
 
     assert "Feature attribution (SHAP)" in _markdown(app)
-    assert "only two candidates" in _captions(app)
 
 
 def test_ml_results_show_which_tune_each_fold_used_and_the_latest_settings(stub_ml):
@@ -995,7 +995,7 @@ def test_changing_a_placeholders_signal_clears_only_the_user_supplied_row():
 def test_a_user_function_is_shown_as_its_fitted_scale_and_intercept():
     description = ModelDescription("UserPolynomial", (f"{VIX} / {IG}",), (0.0004,), -0.0012)
     fn = from_description(description, origin=Origin.USER_SUPPLIED, target=SPX, horizon=5)
-    run = model_runs.ModelRun(_result(pbo=None), description, function=fn)
+    run = model_runs.ModelRun(_result(), description, function=fn)
     app = _page({EQUITY: {USER_POLY: run}})
 
     (equation,) = [e.value for e in app.latex]

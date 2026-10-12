@@ -618,10 +618,8 @@ Values are Python literals as the code holds them.
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.boosted` | `15` |
 | `FLAG_PERCENTILE` | `forecasting_engine.validation.crash` | `0.05` |
 | `TAIL_STD_MULTIPLE` | `forecasting_engine.validation.crash` | `2.0` |
-| `N_BLOCKS` | `forecasting_engine.validation.pbo` | `16` |
 | `SIGNAL_RANK_IC_GATE` | `forecasting_engine.validation.gates` | `0.02` |
-| `PBO_GATE` | `forecasting_engine.validation.gates` | `0.5` |
-| `SIGNIFICANCE_SE_MULTIPLE` | `forecasting_engine.reporting.model_metrics` | `2.0` |
+| `SIGNIFICANCE_T_GATE` | `forecasting_engine.validation.gates` | `2.0` |
 | `TRADING_DAYS_PER_YEAR` | `forecasting_engine.portfolio.performance` | `252` |
 | `RISK_FREE_RATE` | `forecasting_engine.portfolio.performance` | `0.0` |
 | `BASELINE_WEIGHTS` | `forecasting_engine.portfolio.backtest` | `{"equity": 0.5, "bond": 0.5}` |
