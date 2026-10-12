@@ -630,23 +630,10 @@ def offer_last_commit() -> bool:
     return False
 
 
-def render_summary() -> None:
-    """The Home page's data quality report, read back from session state.
-
-    Reflects whichever dataset was last committed on the Data page via
-    "Use Updated Data" — the same commit the Models page reads — not
-    every upload or gap-review edit.
-    """
-    ui.inject()
-    st.subheader("Data quality report", divider="grey")
-
-    report: ValidationReport | None = st.session_state.get(COMMITTED_REPORT_KEY)
-    merged = st.session_state.get(COMMITTED_KEY)
-    if report is None or merged is None:
-        _render_awaiting_upload()
-        return
-
-    _render_report(report, merged, st.session_state.get(COMMITTED_DROPPED_KEY, []))
+def quality_issue_count(report: ValidationReport) -> int:
+    """How many things the data quality report flags: schema issues plus flagged
+    observations. Home shows the count; the report itself is on the Data page."""
+    return len(report.schema_errors) + _flagged_count(report)
 
 
 def _dropped() -> list[str]:
@@ -657,22 +644,7 @@ def _dropped() -> list[str]:
     ]
 
 
-# --- shared between the Data page and the Home summary ---------------------
-
-
-def _render_awaiting_upload() -> None:
-    st.info(
-        "No data committed yet. Upload Bloomberg CSV or Excel exports on the **Data** page and "
-        "click **Use Updated Data**.",
-        icon=":material/hourglass_empty:",
-    )
-    st.caption("This report fills in once a cleaned dataset is committed.")
-    badge = ui.lozenge("Pending", "neutral")
-    rows = "".join(
-        ui.status_row(title, badge)
-        for title in ("Schema validation", "Duplicate dates", "Weekend rows", "Day-over-day moves")
-    )
-    st.markdown(rows, unsafe_allow_html=True)
+# --- the data quality report ------------------------------------------------
 
 
 def _render_report(report: ValidationReport, merged: pd.DataFrame, dropped: list[str]) -> None:

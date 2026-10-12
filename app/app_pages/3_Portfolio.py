@@ -18,6 +18,7 @@ import streamlit as st
 
 import bloomberg_extraction_panel
 import glossary
+import portfolio_summary
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
@@ -270,6 +271,15 @@ try:
 except BacktestDataError as exc:
     st.warning(f"The allocation could not be backtested: {exc}", icon=":material/warning:")
     st.stop()
+
+st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
+    dataset_fingerprint=str(dataset_fingerprint(merged)),
+    as_of=latest_date,
+    equity_weight=float(latest[EQUITY]),
+    bond_weight=float(latest[BOND]),
+    net_sharpe=backtest.metrics[("optimised", "net")].sharpe,
+    baseline_net_sharpe=backtest.metrics[("baseline", "net")].sharpe,
+)
 
 costs = backtest.costs_bps
 st.caption(
