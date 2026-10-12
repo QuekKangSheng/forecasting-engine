@@ -9,8 +9,8 @@ before the next test window, so tuning only ever sees the past. Each fold refits
 with the most recent tune's *fixed* hyperparameters, the same "fix the
 configuration, refit per fold" shape every model family follows. Each
 tune scores a trial by pooled Rank IC over a mini walk-forward inside its window,
-with the main run's train/test/embargo — the same metric selection, PBO and the
-gate use.
+with the main run's test/embargo and a train window of at most
+``TUNING_TRAIN_WINDOW`` rows — the same metric selection, PBO and the gate use.
 
 PBO compares the two tuned candidates (XGBoost vs. LightGBM) and does not count
 Optuna's trials: tuning has its own period, so its search never touches the rows
@@ -98,6 +98,10 @@ RETUNE_EVERY: int = 252
 MIN_TUNING_FOLDS: int = 3
 """Fewest mini walk-forward folds a tuning window must hold to score a trial."""
 
+TUNING_TRAIN_WINDOW: int = 252
+"""Optuna's mini walk-forward trains on at most this many rows, so a 504-row main
+train window can still be tuned inside the 504-row tuning period."""
+
 _MIN_TRAINING_ROWS: int = 15
 """Same threshold FamaFrench5 uses — below this a fit is more noise than signal."""
 
@@ -159,7 +163,7 @@ def tune_hyperparameters(
     if library not in _LIBRARIES:
         raise BoostedConfigError(f"library must be one of {sorted(_LIBRARIES)}, got {library!r}.")
     inside = _restrict(panel, window)
-    mini = PurgedWalkForward(splitter.train, splitter.test, splitter.embargo)
+    mini = _mini_splitter(splitter)
     _require_tuning_folds(inside, mini)
 
     def objective(trial: optuna.Trial) -> float:
@@ -284,7 +288,7 @@ def run_boosted(
     starts = [index.get_loc(test[0]) for _train, test in folds]
     triggers, fold_tunes = _schedule(starts, retune_every)
     windows = [splitter.window_before(panel, starts[i], splitter.tuning_rows) for i in triggers]
-    mini = PurgedWalkForward(splitter.train, splitter.test, splitter.embargo)
+    mini = _mini_splitter(splitter)
     for window in windows:
         _require_tuning_folds(_restrict(panel, window), mini)
 
@@ -371,12 +375,19 @@ def _restrict(panel: FeaturePanel, window: pd.DatetimeIndex) -> FeaturePanel:
 
 def fits_tuning_period(train: int, test: int, embargo: int, tuning_rows: int) -> bool:
     """Whether a ``tuning_rows``-row tuning window holds the ``MIN_TUNING_FOLDS``
-    mini walk-forward folds tuning needs at these train/test/embargo windows. A
-    train window as long as the tuning period leaves no room for any."""
+    mini walk-forward folds tuning needs at these train/test/embargo windows, with
+    the mini walk-forward's train window capped at ``TUNING_TRAIN_WINDOW``."""
     window = pd.bdate_range("2000-01-03", periods=tuning_rows)
     inside = FeaturePanel(frame=pd.DataFrame(index=window), signals=(), targets=())
-    folds = sum(1 for _ in PurgedWalkForward(train, test, embargo).split(inside))
-    return folds >= MIN_TUNING_FOLDS
+    mini = _mini_splitter(PurgedWalkForward(train, test, embargo))
+    return sum(1 for _ in mini.split(inside)) >= MIN_TUNING_FOLDS
+
+
+def _mini_splitter(splitter: PurgedWalkForward) -> PurgedWalkForward:
+    """The mini walk-forward a tune scores trials with: ``splitter``'s test and
+    embargo, training on at most ``TUNING_TRAIN_WINDOW`` rows."""
+    train = TUNING_TRAIN_WINDOW if splitter.train is None else splitter.train
+    return PurgedWalkForward(min(train, TUNING_TRAIN_WINDOW), splitter.test, splitter.embargo)
 
 
 def _require_tuning_folds(inside: FeaturePanel, mini: PurgedWalkForward) -> None:

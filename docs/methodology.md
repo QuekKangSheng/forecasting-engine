@@ -576,8 +576,7 @@ Values are Python literals as the code holds them.
 | `HORIZONS` | `model_settings` | `(1, 5, 10, 20)` |
 | `DEFAULT_HORIZON` | `model_settings` | `20` |
 | `EMBARGO_DAYS` | `model_settings` | `20` |
-| `TRAIN_WINDOW` | `model_settings` | `252` |
-| `EXPANDING_DERIVED` | `model_settings` | `frozenset({"equity"})` |
+| `TRAIN_WINDOW` | `model_settings` | `504` |
 | `DEFAULT_TEST_WINDOW` | `model_settings` | `20` |
 | `DEFAULT_MAX_TERMS` | `model_settings` | `10` |
 | `TUNING_ROWS` | `forecasting_engine.validation.splitters` | `504` |
@@ -615,6 +614,7 @@ Values are Python literals as the code holds them.
 | `RETUNE_TRIALS` | `forecasting_engine.models.boosted` | `20` |
 | `RETUNE_EVERY` | `forecasting_engine.models.boosted` | `252` |
 | `MIN_TUNING_FOLDS` | `forecasting_engine.models.boosted` | `3` |
+| `TUNING_TRAIN_WINDOW` | `forecasting_engine.models.boosted` | `252` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.boosted` | `15` |
 | `FLAG_PERCENTILE` | `forecasting_engine.validation.crash` | `0.05` |
 | `TAIL_STD_MULTIPLE` | `forecasting_engine.validation.crash` | `2.0` |

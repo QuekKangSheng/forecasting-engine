@@ -83,13 +83,12 @@ from forecasting_engine.reporting.polynomial_function import (
 )
 from forecasting_engine.store import active_model
 from forecasting_engine.validation.gates import evaluate_candidate, is_high_risk
-from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward, expanding
+from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 from model_settings import (
     DEFAULT_HORIZON,
     DEFAULT_MAX_TERMS,
     DEFAULT_TEST_WINDOW,
     EMBARGO_DAYS,
-    EXPANDING_DERIVED,
     HORIZONS,
     TRAIN_WINDOW,
 )
@@ -148,8 +147,9 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "pbo": "PBO"}
 #: by older code is refitted rather than shown under today's columns. 2: the
 #: gate moved to the Signal Rank IC and results carry each fold's baseline. 3: the
 #: derived grid reaches degree 5, adds the shrinkage fit, and trains equity on
-#: every earlier date.
-RESULT_VERSION = 3
+#: every earlier date. 4: every model trains on the latest 504 dates, and machine
+#: learning tunes on 252-row folds inside its tuning period.
+RESULT_VERSION = 4
 
 st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
 ui.inject()
@@ -210,17 +210,15 @@ with st.expander("Settings"):
         help=glossary.term("Forecast horizon"),
     )
     train = TRAIN_WINDOW
+    test = DEFAULT_TEST_WINDOW
     st.caption(
-        f"Train windows are fixed: the equity derived polynomial trains on every earlier "
-        f"date; every other model on the latest {TRAIN_WINDOW} dates.",
+        f"The train window is fixed: every model on both targets trains on the latest "
+        f"{TRAIN_WINDOW} dates.",
         help=glossary.term("Walk-forward train window (days)"),
     )
-    cols = st.columns(2)
-    test = cols[0].number_input(
-        "Walk-forward test window (days)",
-        min_value=1,
-        value=DEFAULT_TEST_WINDOW,
-        step=5,
+    st.caption(
+        f"The test window is fixed: each walk-forward fold is scored on the next "
+        f"{DEFAULT_TEST_WINDOW} dates.",
         help=glossary.term("Walk-forward test window (days)"),
     )
     st.caption(
@@ -248,8 +246,7 @@ stored = model_runs.stored(st.session_state, shared_settings)
 
 #: What every row on the page was run under, stated beside the results (FYP-161).
 SETTINGS_STAMP = (
-    f"{horizon}-day horizon · walk-forward train {int(train)} days (equity derived "
-    f"polynomial: every earlier date) / test {int(test)} days · "
+    f"{horizon}-day horizon · walk-forward train {int(train)} days / test {int(test)} days · "
     f"embargo {EMBARGO_DAYS} days · signals lagged {PRODUCTION_LAG_DAYS} day · "
     f"first {TUNING_ROWS} dates kept for tuning"
 )
@@ -260,20 +257,6 @@ ACTIVE_SETTINGS: dict[str, int | str] = {
     "test_window": int(test),
     "dataset_fingerprint": str(dataset_fingerprint(merged)),
 }
-
-
-def _active_settings(role: TargetRole, model_name: str) -> dict[str, int | str | None]:
-    """The settings an active model is recorded under. A model trained on every
-    earlier date has no train window, so none is recorded."""
-    if model_name == DERIVED and role in EXPANDING_DERIVED:
-        return {**ACTIVE_SETTINGS, "train_window": None}
-    return ACTIVE_SETTINGS
-
-
-def _derived_splitter(role: TargetRole) -> PurgedWalkForward:
-    """The derived polynomial's splitter: the same test windows on every target, but
-    trained on every earlier date on the targets in ``EXPANDING_DERIVED``."""
-    return expanding(splitter) if role in EXPANDING_DERIVED else splitter
 
 
 def _show_alignment(panel: FeaturePanel, target_name: str) -> None:
@@ -858,7 +841,7 @@ def _confirm_high_risk(
     cols = st.columns(2)
     if cols[0].button("Set active anyway", type="primary", key=f"confirm_{role.value}"):
         active_model.set_active_model(
-            role, model_name, result, high_risk=True, **_active_settings(role, model_name)
+            role, model_name, result, high_risk=True, **ACTIVE_SETTINGS
         )
         st.session_state.pop(pending_key, None)
         st.rerun()
@@ -900,7 +883,7 @@ def _show_active_picker(
         else:
             st.session_state.pop(pending_key, None)
             active_model.set_active_model(
-                role, selected, result, high_risk=False, **_active_settings(role, selected)
+                role, selected, result, high_risk=False, **ACTIVE_SETTINGS
             )
             st.rerun()
     pending = st.session_state.get(pending_key)
@@ -1055,7 +1038,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         st.caption(
             f"Machine learning can't run with a {int(train)}-day train window: it tunes on "
             f"the first {TUNING_ROWS} dates, which leaves no room for its own walk-forward "
-            "folds. Choose a shorter train window to run it."
+            "folds."
         )
     _show_active_status(role, target_name)
     if not signal_cols:
@@ -1086,7 +1069,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         runners = {
             NAIVE: functools.partial(_run_naive, panel, splitter),
             DERIVED: functools.partial(
-                _run_derived, settings[DERIVED], panel, price_col, _derived_splitter(role)
+                _run_derived, settings[DERIVED], panel, price_col, splitter
             ),
             USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),

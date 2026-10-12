@@ -65,7 +65,7 @@ def models_page() -> AppTest:
     )
     committed = _committed()
     fn = from_description(description, origin=Origin.DERIVED, target="SPX_Index_PX_LAST", horizon=5)
-    stored = model_runs.StoredRuns((dataset_fingerprint(committed), 20, 252, 20))
+    stored = model_runs.StoredRuns((dataset_fingerprint(committed), 20, 504, 20))
     stored.tabs[TargetRole.EQUITY] = model_runs.TabRuns(
         {"Polynomial (derived)": 10, "Polynomial (user-supplied)": ("", ())},
         {"Polynomial (derived)": model_runs.ModelRun(_result(), description, function=fn)},
@@ -115,7 +115,7 @@ def test_every_headline_metric_explains_itself(models_page, metric):
 def test_the_walk_forward_windows_explain_what_walk_forward_means(models_page):
     helps = _helps(models_page)
     assert glossary.term("Walk-forward train window (days)") in helps.values()
-    assert "Walk-forward test window (days)" in helps
+    assert glossary.term("Walk-forward test window (days)") in helps.values()
 
 
 def test_the_embargo_caption_explains_the_leak_it_prevents(models_page):

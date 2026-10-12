@@ -253,31 +253,32 @@ def test_settings_hold_the_horizon_windows_and_embargo():
     (horizon,) = settings.segmented_control
     assert list(horizon.options) == ["1 day", "5 days", "10 days", "20 days"]
     assert horizon.value == 20
-    windows = {n.label: n.value for n in settings.number_input}
-    assert windows == {"Walk-forward test window (days)": 20}
+    assert not settings.number_input
     assert any(c.value.startswith("Embargo is fixed") for c in settings.caption)
 
 
 @pytest.mark.real_defaults
-def test_the_train_windows_are_fixed_and_stated_not_chosen():
+def test_the_train_and_test_windows_are_fixed_and_stated_not_chosen():
     app = _page()
 
     (settings,) = [e for e in app.expander if e.label == "Settings"]
     assert not [c for c in settings.segmented_control if "train" in c.label.lower()]
-    assert not [n for n in settings.number_input if "train" in n.label.lower()]
+    assert not settings.number_input
+    captions = _captions(app)
     assert (
-        "Train windows are fixed: the equity derived polynomial trains on every earlier "
-        "date; every other model on the latest 252 dates."
-    ) in _captions(app)
+        "The train window is fixed: every model on both targets trains on the latest "
+        "504 dates."
+    ) in captions
+    assert "The test window is fixed: each walk-forward fold is scored on the next 20 dates." in (
+        captions
+    )
 
 
-def test_the_equity_derived_polynomial_trains_on_every_earlier_date(splitter_calls, stub_ml):
+def test_every_model_trains_on_the_same_rolling_window(splitter_calls, stub_ml):
     app = _press_run(_untick(_page(), "Fama-French 5", "Machine learning"))
 
     assert not app.exception
-    trains = {call["train"] for call in splitter_calls}
-    assert None in trains  # the derived polynomial's expanding window
-    assert 120 in trains  # every other model's window
+    assert {call["train"] for call in splitter_calls} == {120}
 
 
 def test_the_embargo_and_signal_lag_are_not_inputs():
@@ -667,24 +668,15 @@ def _two_tabs() -> dict:
     return {EQUITY: {POLY: _polynomial_run()}, BOND: {POLY: _polynomial_run()}}
 
 
-def test_changing_a_shared_setting_clears_every_tabs_results():
-    app = _page(_two_tabs(), bond=True)
-    (test,) = [n for n in app.number_input if n.label.startswith("Walk-forward test")]
-    test.set_value(25).run()
-
-    assert not app.exception
-    assert _stored_runs(app, EQUITY) == {}
-    assert _stored_runs(app, BOND) == {}
-    assert not _has_table(app)
-
-
 def test_changing_the_horizon_clears_every_tabs_results():
     app = _page(_two_tabs(), bond=True)
     (horizon,) = [c for c in app.segmented_control if c.label == "Forecast horizon"]
     horizon.set_value(1).run()
 
+    assert not app.exception
     assert _stored_runs(app, EQUITY) == {}
     assert _stored_runs(app, BOND) == {}
+    assert not _has_table(app)
 
 
 def test_changing_a_function_clears_only_that_tabs_user_supplied_row():
@@ -1129,9 +1121,8 @@ def test_the_results_state_the_settings_every_row_was_run_under():
     captions = _captions(_page({EQUITY: {POLY: _polynomial_run()}}))
 
     assert (
-        "Every row was run under: 5-day horizon · walk-forward train 120 days (equity "
-        "derived polynomial: every earlier date) / test 20 days · embargo 20 days · "
-        "signals lagged 1 day"
+        "Every row was run under: 5-day horizon · walk-forward train 120 days / test 20 "
+        "days · embargo 20 days · signals lagged 1 day"
     ) in captions
 
 
@@ -1155,8 +1146,8 @@ def test_a_user_supplied_function_can_be_set_active():
 
 def test_a_shared_change_says_why_the_results_went():
     app = _page(_two_tabs(), bond=True)
-    (test,) = [n for n in app.number_input if n.label.startswith("Walk-forward test")]
-    test.set_value(25).run()
+    (horizon,) = [c for c in app.segmented_control if c.label == "Forecast horizon"]
+    horizon.set_value(1).run()
 
     assert "were cleared because the data or a shared setting changed" in _captions(app)
 

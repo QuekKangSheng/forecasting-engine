@@ -87,9 +87,15 @@ def test_the_two_libraries_tuned_in_parallel_match_tuning_them_in_turn(monkeypat
     assert parallel_log == serial_log
 
 
-@pytest.mark.parametrize(("train", "fits"), [(126, True), (252, True), (504, False)])
-def test_machine_learning_needs_room_for_its_folds_inside_the_tuning_period(train, fits):
-    assert fits_tuning_period(train, test=20, embargo=20, tuning_rows=504) is fits
+@pytest.mark.parametrize(
+    ("train", "tuning_rows", "fits"), [(126, 504, True), (504, 504, True), (504, 300, False)]
+)
+def test_machine_learning_needs_room_for_its_folds_inside_the_tuning_period(
+    train, tuning_rows, fits
+):
+    # The mini walk-forward trains on at most TUNING_TRAIN_WINDOW (252) rows, so a
+    # 504-row main window tunes inside a 504-row period but not a 300-row one.
+    assert fits_tuning_period(train, test=20, embargo=20, tuning_rows=tuning_rows) is fits
 
 
 def test_workers_never_run_the_page_installed_as_main(monkeypatch, tmp_path):

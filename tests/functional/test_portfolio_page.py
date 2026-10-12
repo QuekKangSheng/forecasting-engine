@@ -140,9 +140,9 @@ def test_mismatched_settings_blocks_with_an_explanation():
     assert any("different settings" in w.value for w in app.warning)
 
 
-def test_an_equity_model_trained_on_every_earlier_date_combines_with_a_bond_model():
-    # The equity derived polynomial records no train window (an expanding one);
-    # both still forecast the same days over the same horizon.
+def test_an_equity_model_saved_with_no_train_window_combines_with_a_bond_model():
+    # An active model set before every model moved to one rolling window can carry
+    # no train window (an expanding one); both still forecast the same days.
     committed = _committed()
     _set_active(EQUITY, forecast=_forecast(committed, seed=1), train_window=None)
     _set_active(BOND, forecast=_forecast(committed, seed=2))

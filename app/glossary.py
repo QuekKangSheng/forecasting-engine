@@ -59,15 +59,15 @@ TERMS: Mapping[str, str] = {
     ),
     "Walk-forward train window (days)": (
         "How much history a model studies before each grading period. Fixed, not "
-        "a setting: the equity derived polynomial studies every earlier date, "
-        "because the relationships it reads change slowly and need many market "
-        "episodes; every other model studies the latest 252 days (about a year). "
-        "Trying windows until one scores well would itself be a way to overfit."
+        "a setting: every model on both targets studies the latest 504 days (about "
+        "two years), long enough to span more than one market episode but short "
+        "enough to follow a change in how the markets behave. Trying windows until "
+        "one scores well would itself be a way to overfit."
     ),
     "Walk-forward test window (days)": (
-        "The days right after each training block, used only for grading. "
-        "The model never sees them while fitting, so its score here is its "
-        "out-of-sample score."
+        "The days right after each training block, used only for grading: 20 "
+        "days, fixed. The model never sees them while fitting, so its score here "
+        "is its out-of-sample score."
     ),
     "Embargo": (
         "A gap of unused days between a training block and the days it is "
