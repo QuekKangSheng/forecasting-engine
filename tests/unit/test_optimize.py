@@ -376,11 +376,7 @@ def test_weight_schedule_has_one_row_per_rebalance_summing_to_one_within_bounds(
     assert list(schedule.index) == list(dates[17:57:3])
     assert list(schedule.columns) == [EQUITY, BOND]
     assert schedule.sum(axis=1).sub(1.0).abs().max() < 1e-9
-    # A held rebalance keeps the drifted weight, which drift can carry just past a
-    # bound; every rebalance that trades lands within them.
-    breakdowns = schedule_breakdowns(forecasts, prices, **_SCHEDULE_KWARGS)
-    traded = [date for date, b in breakdowns.items() if not b.held]
-    assert schedule.loc[traded, EQUITY].between(*DEFAULT_WEIGHT_BOUNDS).all()
+    assert schedule[EQUITY].between(*DEFAULT_WEIGHT_BOUNDS).all()
 
 
 def test_weight_schedule_skips_a_rebalance_with_a_missing_forecast():
@@ -466,3 +462,29 @@ def test_a_held_rebalance_trades_nothing_in_the_backtest():
 
     assert backtest.optimised.turnover[dates[20]] == pytest.approx(0.0, abs=1e-12)
     assert backtest.optimised.turnover[dates[23]] > 0
+
+
+def test_drift_past_a_bound_is_traded_back_to_exactly_that_bound():
+    # Equity doubles while bond is flat, so 80/20 drifts to about 89% equity. The
+    # signals still ask for 80%, well within the band, but the bound wins.
+    dates = pd.bdate_range("2024-01-02", periods=60)
+    rng = np.random.default_rng(3)
+    equity = 100 * np.cumprod(1 + rng.normal(0, 0.01, 60))
+    equity[18:21] = equity[17] * np.array([1.4, 1.7, 2.0])
+    prices = {
+        EQUITY: pd.Series(equity, index=dates),
+        BOND: pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.01, 60)), index=dates),
+    }
+    forecasts = {EQUITY: pd.Series(0.05, index=dates), BOND: pd.Series(0.0, index=dates)}
+
+    breakdowns = schedule_breakdowns(forecasts, prices, **_SCHEDULE_KWARGS)
+    first, second = breakdowns[dates[17]], breakdowns[dates[20]]
+
+    assert first.equity == DEFAULT_WEIGHT_BOUNDS[1]
+    assert second.drifted > DEFAULT_WEIGHT_BOUNDS[1]
+    assert abs(second.bounded - second.drifted) <= second.band  # the band alone would hold
+    assert not second.held
+    assert second.equity == DEFAULT_WEIGHT_BOUNDS[1]
+    backtest = run_backtest(prices, weight_schedule(forecasts, prices, **_SCHEDULE_KWARGS))
+    assert backtest.optimised.turnover[dates[20]] > 0
+    assert backtest.optimised.costs[dates[20]] > 0

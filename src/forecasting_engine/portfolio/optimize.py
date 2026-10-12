@@ -22,8 +22,9 @@ rebalance trades only when the new target is worth its cost (FYP-49): within a
 no-trade band of ``c / (λ·D)`` around the drifted weight, where ``c`` is the cost
 of moving the equity weight by 1 (equity's plus bond's cost) and ``D`` the variance
 of the difference between the two indices' returns, the portfolio holds; outside
-it, it trades only as far as the band's near edge. The first rebalance buys the
-target from cash.
+it, it trades only as far as the band's near edge. A portfolio that has drifted
+outside the weight bounds is traded back to the nearest bound, whatever the band.
+The first rebalance buys the target from cash.
 """
 
 from __future__ import annotations
@@ -378,15 +379,21 @@ def _var_diff(covariance: pd.DataFrame) -> float:
 def _banded(
     target: WeightBreakdown, drifted: float, band: float, bounds: tuple[float, float]
 ) -> WeightBreakdown:
-    """Hold at ``drifted`` if the target is within ``band`` of it (an infinite band,
-    where D ≤ 0, always holds); otherwise move to the band's near edge."""
-    gap = target.equity - drifted
-    held = abs(gap) <= band
-    edge = target.equity - math.copysign(band, gap)
+    """Trade to the nearest bound if the portfolio has drifted outside ``bounds``.
+    Otherwise hold at ``drifted`` if the target is within ``band`` of it (an
+    infinite band, where D ≤ 0, always holds), or move to the band's near edge."""
+    lower, upper = bounds
+    if not lower <= drifted <= upper:
+        held, equity = False, min(max(drifted, lower), upper)
+    else:
+        gap = target.equity - drifted
+        held = abs(gap) <= band
+        edge = target.equity - math.copysign(band, gap)
+        equity = drifted if held else min(max(edge, lower), upper)
     return WeightBreakdown(
         anchor=target.anchor,
         forecast_tilt=target.forecast_tilt,
-        equity=drifted if held else min(max(edge, bounds[0]), bounds[1]),
+        equity=equity,
         target=target.equity,
         band=band,
         drifted=drifted,

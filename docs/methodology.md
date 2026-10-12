@@ -556,10 +556,12 @@ signals into the weight schedule step 14 backtests.
    the band is `c / (λ · D)`. If the bounded target is within the band of the
    drifted equity weight, the portfolio holds and trades nothing; otherwise it
    moves to the band's near edge, `target − sign(target − drifted) × band`,
-   clipped to the bounds. If `D ≤ 0` it holds. The first rebalance buys the
+   clipped to the bounds. If `D ≤ 0` it holds. Before any of that, if drift has
+   carried the equity weight outside the bounds, the rebalance trades back to the
+   nearest bound, whatever the band, and pays for it like any trade, so no
+   rebalance ever leaves the portfolio outside them. The first rebalance buys the
    target from cash. With zero costs there is no band and the schedule is the
-   one step 4 gives. A held rebalance keeps the drifted weight, which drift can
-   carry slightly past a bound. On the Sep 2026 data the band raised net Sharpe at
+   one step 4 gives. On the Sep 2026 data the band raised net Sharpe at
    every horizon (h = 1 from 0.85 to 1.02, h = 20 from 0.80 to 0.85) and cut the
    cost drag at h = 1 from 404 to 9 bp a year
    ([evidence](evidence/2026-10-12-design-verification.md)). Directional P&L (§15) is unaffected and
