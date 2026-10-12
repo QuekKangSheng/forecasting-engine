@@ -97,8 +97,7 @@ TERMS: Mapping[str, str] = {
         "moves with recent performance whatever the signals say, so it can drown "
         "a real signal or pass a model that has none. The two s.e.s beside it "
         "are standard errors, one allowing for overlapping labels, one for errors "
-        "shared within a test window: a value within about two of the larger of "
-        "zero may be luck."
+        "shared within a test window; t divides the score by the larger."
     ),
     "OOS Rank IC": (
         "Out-of-sample Rank IC of the whole forecast, its level included: the "

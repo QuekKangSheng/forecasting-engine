@@ -23,7 +23,7 @@ flowchart TD
     H["8. Per-fold screening<br/>features/screening"] --> I
     I["9. Fit each model family per fold<br/>models/"] --> J
     J["10. Pooled metrics<br/>validation/harness.summarize"] --> K
-    K["11. Selection and PBO<br/>validation/harness, validation/pbo"] --> L
+    K["11. Selection<br/>validation/harness.select_best_candidate"] --> L
     L["12. Gates<br/>validation/gates"]
     J --> M["13. Naive baseline row<br/>models/naive"]
     J --> Q["17. Optimiser: 50/50 tilted by the signals<br/>portfolio/optimize"]
@@ -132,20 +132,21 @@ date of the price each label reaches, which the splitter uses to purge.
 - **Tuning period.** The first `TUNING_ROWS` rows are reserved. No test window
   starts before `max(train, TUNING_ROWS) + embargo`, for every model family, so
   machine-learning tuning never touches a reported result.
-- **Windows.** Test windows of `test` rows roll forward by `test` rows (default
-  `DEFAULT_TEST_WINDOW`). Each training window is the `TRAIN_WINDOW` rows ending
-  `embargo` rows before its test window, and may reach back into the tuning
-  period. The train window is fixed rather than a setting: trying windows until
-  one scores well is overfitting that no single run's PBO sees.
-- **Expanding window.** The derived polynomial on the targets in
-  `EXPANDING_DERIVED` (equity) trains each fold on every row before its embargo
-  instead (`splitters.expanding`, a splitter with `train=None`). Its test windows
-  are the same as every other model's, opening after the tuning period, so every
-  row of the results table is scored on the same dates and both targets forecast
-  the same rebalance days. On the Sep 2026 data an expanding window lifted every
-  equity model's Signal Rank IC (lasso +0.08 to +0.11, shrinkage +0.11 to +0.14
-  over four fold placements) and lowered every bond model's (lasso +0.07 to
-  −0.04), so bond keeps `TRAIN_WINDOW`.
+- **Windows.** Test windows of `DEFAULT_TEST_WINDOW` rows roll forward by that
+  many rows. Each training window is the `TRAIN_WINDOW` rows ending `embargo` rows
+  before its test window, and may reach back into the tuning period. Both windows
+  are the same for every model on both targets, and fixed rather than settings:
+  trying windows until one scores well is overfitting that no single run can see.
+  Every row of the results table is therefore scored on the same dates, and both
+  targets forecast the same rebalance days.
+- **No expanding window.** On the Sep 2026 data (12 Oct 2026 verification,
+  [evidence](evidence/2026-10-12-design-verification.md)), the rolling 504-row window scored the
+  highest equity derived Signal Rank IC (+0.145, t 2.20), and neither an expanding
+  window (+0.139) nor one capped at the latest 1,260 rows (+0.117) beat it by more
+  than a standard error; on bond both scored below it. Folds of the expanding
+  window trained on under five years scored +0.225, those on five years or more
+  +0.075, so a longer history did not help. `splitters.expanding` remains only
+  for the research benchmark (§9).
 - **Embargo.** `EMBARGO_DAYS`, the longest horizon (20 days), whichever horizon is
   chosen.
 - **Purge.** A training row is dropped if its label's price (`label_end`) is dated
@@ -176,9 +177,9 @@ for) clears only that model's row. Every
 family is optional; Run is disabled until one besides the naive baseline is
 ticked, and the naive baseline runs with every Run. The polynomial runs one
 source at a time, derived or the user's own function, each under its own row
-name, and switching source clears nothing. PBO is computed only within a
-family's own configurations, so which families run together never changes any
-family's result.
+name, and switching source clears nothing. Each family chooses only among its own
+configurations, so which families run together never changes any family's
+result.
 
 Each family is fit per fold on the training window and predicts the test window.
 A row missing any signal a model uses is left out of that model's fitting and
@@ -186,8 +187,8 @@ scoring (`ModelRunResult.rows_scored` reports how many rows were scored).
 
 Work that does not depend on other work runs in separate processes
 (`parallel.map_processes`, started fresh rather than forked): the derived
-polynomial's configurations, each machine-learning library's tunes and fits, and
-PBO's splits. The answer is the same as running them in turn; on the Sep 2026
+polynomial's configurations and each machine-learning library's tunes and fits.
+The answer is the same as running them in turn; on the Sep 2026
 data a polynomial run took 97 s instead of about 250 s, and machine learning 196 s
 instead of 371 s, with 4 processes. `FORECASTING_WORKERS` sets how many processes
 a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn).
@@ -199,7 +200,7 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   saved copy younger than `MAX_AGE`, otherwise a fresh download (timeout
   `_TIMEOUT_SECONDS`), falling back to the saved copy with a warning, and an
   error if there is neither. A fold needs at least `_MIN_TRAINING_ROWS` complete
-  rows. No configuration search, so no PBO.
+  rows. No configuration search.
 - **User polynomial** (`models/polynomial.UserPolynomial`). The user writes the
   shape `f` with placeholders (`x`, `y`, ...) and picks the signal each one
   stands for; a placeholder named after a signal column defaults to it. In each
@@ -209,14 +210,17 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   fold forecasts its training mean. No screening. The page shows the latest
   fold's `a + b × (formula)` and the signal table beside the box (column,
   security, field, transform, 1-day lag, latest value after both). One
-  configuration, so no PBO.
+  configuration.
 - **Derived polynomial** (`models/polynomial.run_derived_polynomial`). The grid is
-  every degree in `CANDIDATE_DEGREES` with every regularizer in
-  `CANDIDATE_REGULARIZERS` (Lasso, and ElasticNet with an L1 share of 0.5, as in
-  `_REGULARIZERS`), `models/polynomial.DerivedPolynomial`, plus one shrinkage
-  candidate (`SHRINKAGE`, below); degree may never exceed `MAX_DEGREE`. Every
-  candidate fits the signals that fold's screening kept (§8). For the lasso and
-  elastic-net candidates, per fold:
+  a Lasso fit (`CANDIDATE_REGULARIZERS`, an L1 share of 1 in `_REGULARIZERS`) at
+  every degree in `CANDIDATE_DEGREES`, `models/polynomial.DerivedPolynomial`, plus
+  one shrinkage candidate (`SHRINKAGE`, below): four setups. `MAX_DEGREE` still
+  caps a user's function. Elastic net and degrees 4 and 5 left the grid on 12 Oct
+  2026: elastic net's forecasts correlated 0.98–1.00 with lasso's at the same
+  degree on both targets, so it gave selection nothing to choose between, and
+  degrees 4 and 5 were never chosen while a single degree-5 fold took 6–9 minutes
+  ([evidence](evidence/2026-10-12-design-verification.md)). Every candidate fits the signals that
+  fold's screening kept (§8). For the lasso candidates, per fold:
   1. each raw signal is clipped to its training mean ± `CLIP_SD` standard
      deviations, and those bounds are shown beside the equation;
   2. each clipped signal is standardised with the same mean and SD,
@@ -283,8 +287,8 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   anything tried, +0.24 (+0.32 on Oct 2024 – Sep 2026), against +0.12 for the
   screened shrinkage candidate. It is not the derived polynomial because its
   inputs, their signs and its level were chosen by looking at results over Aug
-  2016 – Sep 2024, which overlaps the scored period, and no PBO can count those
-  choices; only Oct 2024 – Sep 2026 is out of sample for it (+0.32, t about 2.2
+  2016 – Sep 2024, which overlaps the scored period, and no out-of-sample score
+  can count those choices; only Oct 2024 – Sep 2026 is out of sample for it (+0.32, t about 2.2
   on about 24 independent 20-day periods). Its research notes say over half of
   that came from one quarter (the spring 2025 spread spike and rebound) and that
   the 1990–2016 history points the other way. Its fixed inputs also ignore any
@@ -295,7 +299,9 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   (`_LEAF_KEYS`) capped at `LEAF_CAP_SHARE` of a fit's training rows.
   Hyperparameters come from Optuna (TPE, seed 0) over `SEARCH_SPACE`, scored by
   pooled Rank IC over a mini walk-forward inside the tuning window, with the main
-  run's train/test/embargo. A trial with undefined Rank IC scores worst. Both
+  run's test window and embargo and a train window of at most
+  `TUNING_TRAIN_WINDOW` rows, so a 504-row main window can still be tuned inside
+  the 504-row tuning period. A trial with undefined Rank IC scores worst. Both
   libraries fit on one thread: otherwise their fits depend on how many cores
   the machine has, and the same run could pick a different library on a laptop
   than on the hosted app.
@@ -308,7 +314,9 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   - Each fold uses the most recent tune. A tuning window holding fewer than
     `MIN_TUNING_FOLDS` mini folds is refused before any tuning starts, and the
     Models page offers machine learning only when it can hold them
-    (`fits_tuning_period`): never at a train window as long as `TUNING_ROWS`.
+    (`fits_tuning_period`), which it always can at the default windows. On the
+    Sep 2026 data machine learning scored higher at 504 rows than at 252 on both
+    targets (equity +0.044 to +0.069, bond +0.044 to +0.114).
   - Tuning searches over every signal; each fold's fit uses its screened
     signals.
   - A fold needs at least `_MIN_TRAINING_ROWS` complete rows.
@@ -340,16 +348,9 @@ values end to end, then computes once:
   and "s.e. (test-window lags)" uses as many lags as a test window has rows,
   allowing for errors shared within a fold's single fit.
 - **Rows scored**: test rows with both a prediction and an outcome.
-- **Rank IC within folds** (`validation/harness.within_fold_ranks`): the Rank IC
-  again, but with each fold's predictions first ranked within that fold, centred
-  on zero, then pooled, with its Newey-West standard error over test-window lags.
-  Pooling alone ranks predictions across folds, so a forecast whose level merely
-  shifts between folds can score there without ranking a single day — on the
-  live S&P data a forecast using no signal scored +0.10 that way. Within folds it
-  scores nothing. A fold that forecasts one value throughout contributes exactly
-  zero.
-- **Beyond 2 s.e.**: whether the Signal Rank IC is more than
-  `SIGNIFICANCE_SE_MULTIPLE` of the larger of its two standard errors from zero.
+- **t** (`ModelRunResult.signal_t`): the Signal Rank IC over the larger of its
+  two standard errors, the harder bar, since the test-window one also allows for
+  errors a fold's single fit shares. Undefined ("—") without a standard error.
 - **Constant folds**: how many folds forecast a single value for their whole
   test window.
 - **Crash diagnostics** (`validation/crash.py`, a diagnostic, never a gate). A
@@ -358,36 +359,35 @@ values end to end, then computes once:
   below the training mean minus `TAIL_STD_MULTIPLE` standard deviations. Recall,
   precision and F1 are computed over all folds' labelled days.
 
-## 11. Selection and PBO
+## 11. Selection
 
 Where a family has several setups (the derived polynomial's grid; tuned XGBoost
 vs. tuned LightGBM), `validation/harness.select_best_candidate` reports the setup
 with the best Signal Rank IC.
 
-PBO is computed by CSCV (`validation/pbo.compute_pbo`):
-
-1. Keep the rows where every setup has a prediction.
-2. Split those rows into `N_BLOCKS` contiguous blocks.
-3. For every way of calling half the blocks in-sample, rank the setups by Signal
-   Rank IC on that half.
-4. PBO is the share of splits where the in-sample winner's out-of-sample
-   percentile rank (ties averaged) is at or below one half.
-
-A setup whose Rank IC is undefined on a half ranks last. PBO does not count
-Optuna's trials, since tuning has its own period.
+There is no probability of backtest overfitting (PBO) any more. On the Sep 2026
+data it was not stable enough to gate on: machine learning's, comparing two
+setups, crossed 0.5 with the number of blocks alone (equity 0.34, 0.33, 0.64 and
+0.63 at 8, 10, 12 and 16 blocks), and merging the derived grid's near-duplicate
+setups moved bond's from 0.47 to 0.52 ([evidence](evidence/2026-10-12-design-verification.md)). The
+grid is now small (§9), and the gate below asks directly whether the winner's
+score could be luck.
 
 ## 12. Gates
 
 `validation/gates.evaluate_candidate` promotes a model only if both hold:
 
 - the Signal Rank IC is greater than `SIGNAL_RANK_IC_GATE` (strictly);
-- PBO is at most `PBO_GATE`.
+- t, the Signal Rank IC over the larger of its two standard errors (§10), is
+  greater than `SIGNIFICANCE_T_GATE` (strictly).
 
-A model with no configuration search (FF5, a user polynomial, the naive
-baseline) has no PBO; it is shown ungated rather than failing. The standard
-errors do not enter the gate, and nor do the plain OOS Rank IC, the Rank IC
-within folds, Beyond 2 s.e. and Constant folds: those are shown beside it so a reader can see when a
-score that meets the gate could be luck or comes from forecast levels alone.
+A NaN fails its gate. Every model but the naive baseline is gated the same way:
+FF5 (still labelled a benchmark), a user polynomial, the derived polynomial and
+machine learning. The second gate is there because at a standard error near 0.07
+a model with no skill clears the first alone about 39% of the time, and the
+sponsor asked for a t-statistic above 2. A model that fails both is high risk
+(`is_high_risk`): it can still be set active, after a confirmation. The plain OOS
+Rank IC and Constant folds are shown beside the gate but never enter it.
 
 ## 13. Naive baseline
 
@@ -531,8 +531,8 @@ signals into the weight schedule step 14 backtests.
    last 15. With perfect foresight on the Sep 2026 data, rebalancing every 20
    days, a 5-day forecast reached a Sharpe of 1.15 and a 20-day one 1.91, against
    0.83 for 50/50.
-3. **Covariance.** Daily equity/bond return covariance over the model's own
-   train window, ending `EMBARGO_DAYS` before the rebalance and purged like a
+3. **Covariance.** Daily equity/bond return covariance over the
+   `TRAIN_WINDOW` (504) dates ending `EMBARGO_DAYS` before the rebalance and purged like a
    training window, scaled to `h` days (`covariance_at_rebalance`).
 4. **Weights.** The benchmark-relative mean-variance problem: maximise
    `a·s − λ/2 · a'Σa`, where `a` is the tilt from `BASELINE_WEIGHTS`, `s` the
@@ -549,9 +549,27 @@ signals into the weight schedule step 14 backtests.
    a bound on most rebalances where a signal is present, and level 5 keeps nine
    rebalances in ten within about 12 points of 50/50.
 
+6. **No-trade band** (FYP-49). Between rebalances the portfolio drifts with the
+   two indices' returns, exactly as the backtest drifts it (§14). At each
+   rebalance after the first, with `c` the cost of moving the equity weight by 1
+   (equity's plus bond's `DEFAULT_COSTS_BPS`, over 10,000) and `D` as in step 4,
+   the band is `c / (λ · D)`. If the bounded target is within the band of the
+   drifted equity weight, the portfolio holds and trades nothing; otherwise it
+   moves to the band's near edge, `target − sign(target − drifted) × band`,
+   clipped to the bounds. If `D ≤ 0` it holds. The first rebalance buys the
+   target from cash. With zero costs there is no band and the schedule is the
+   one step 4 gives. A held rebalance keeps the drifted weight, which drift can
+   carry slightly past a bound. On the Sep 2026 data the band raised net Sharpe at
+   every horizon (h = 1 from 0.85 to 1.02, h = 20 from 0.80 to 0.85) and cut the
+   cost drag at h = 1 from 404 to 9 bp a year
+   ([evidence](evidence/2026-10-12-design-verification.md)). Directional P&L (§15) is unaffected and
+   stays gross.
+
 A rebalance whose signal is missing, or whose window can't support a covariance,
-is left out. The Portfolio page shows, for the latest rebalance, the benchmark
-weight, the signals and the tilt they gave.
+is left out, and the portfolio drifts on through it. The Portfolio page shows,
+for the latest rebalance, the benchmark weight, the signals and the tilt they
+gave, the drifted weight and band, whether it held, and the share of rebalances
+the band held.
 
 ## Parameters
 
@@ -630,3 +648,20 @@ Values are Python literals as the code holds them.
 | `RISK_AVERSION_SCALE` | `forecasting_engine.portfolio.optimize` | `{1: 1.0, 2: 3.0, 3: 10.0, 4: 30.0, 5: 100.0}` |
 | `DEFAULT_RISK_LEVEL` | `forecasting_engine.portfolio.optimize` | `3` |
 | `DEFAULT_WEIGHT_BOUNDS` | `forecasting_engine.portfolio.optimize` | `(0.2, 0.8)` |
+
+## Decisions and evidence
+
+Taken on 12 Oct 2026 from a one-off verification run on the Sep 2026 Bloomberg
+export at commit `cbd859b`; every table behind them is in
+[docs/evidence/2026-10-12-design-verification.md](evidence/2026-10-12-design-verification.md), and the script that produced
+them is [docs/evidence/2026-10-12-verify.py](evidence/2026-10-12-verify.py).
+
+| Decision | Ticket | Evidence |
+|---|---|---|
+| A rolling 504-day train window for every model on both targets, and a fixed 20-day test window (§7) | FYP-217, FYP-161 | 1A, 1D, 1E |
+| Machine learning tunes on 252-row mini folds inside its 504-row tuning period (§9) | FYP-217 | 1E |
+| Derived grid: Lasso at degrees 1–3 plus shrinkage; no elastic net, no degrees 4–5 (§9) | FYP-161 | 2B, run times |
+| No PBO; Rank IC within folds and Beyond 2 s.e. dropped from the table (§10, §11) | FYP-216 | 2A, 2C |
+| Gate: Signal Rank IC above 0.02 and t above 2, for every model but the naive baseline (§12) | FYP-216 | 1A |
+| A cost-aware no-trade band on the optimiser (§17) | FYP-49 | 3A, 3B |
+| Home shows the pipeline's status; the data quality report stays on the Data page | FYP-218 | — |

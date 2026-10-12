@@ -50,6 +50,8 @@ markers = ["real_defaults: run the Models page under its own default settings"]
 [tool.ruff]
 line-length = 100
 src = ["src", "tests", "app"]
+# A one-off script kept as the record of a past run, not maintained code.
+extend-exclude = ["docs/evidence"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

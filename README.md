@@ -24,7 +24,7 @@ It opens at <http://localhost:8501>. A Run spreads independent work over up to
 4 processes; on a machine with more cores, set `FORECASTING_WORKERS` (for
 example `FORECASTING_WORKERS=8`) before starting it. The results are the same
 either way. The pages follow the order a portfolio
-manager works in:
+manager works in, and **Home** says where the pipeline stands and what to do next:
 
 1. **Data** — upload the terminal's original Bloomberg history exports (CSV or
    XLSX), with the equity and bond target indices in one box and every other
@@ -71,8 +71,9 @@ hosting step is needed.
   changes across every numeric Bloomberg column; values are reported, not altered.
 - **Gap review** — identifies rows with missing values and lets the user include
   or exclude them from downloads.
-- **Data quality report** — on the dashboard's front page: date range,
-  per-column completeness, and every flagged observation, expandable by column.
+- **Data quality report** — on the Data page: date range, per-column
+  completeness, and every flagged observation, expandable by column. Home shows
+  how many observations it flagged.
 - **Lag-safe alignment** — signals are read as of each target date and lagged
   one row, so a model never sees a value before it was published.
 
@@ -87,9 +88,9 @@ hosting step is needed.
     intercept fitted;
   - machine learning: XGBoost and LightGBM, tuned with Optuna on a rolling
     schedule, with SHAP feature attribution.
-- **Walk-forward validation** — every model is trained on a past window and
-  scored on the days after it, with an embargo between the two, under one shared
-  set of settings that the results table states.
+- **Walk-forward validation** — every model on both targets is trained on the
+  latest 504 trading days and scored on the next 20, with a 20-day embargo
+  between the two, under one shared set of settings that the results table states.
 - **Overfitting checks** — Signal Rank IC (what a model adds to its training-mean
   forecast, out of sample) with its Newey-West t, crash-day diagnostics, and a
   promotion gate on both: Signal Rank IC above 0.02 and t above 2.
@@ -104,7 +105,8 @@ hosting step is needed.
 
 - **Optimiser** — starts from 50/50 and tilts towards whichever index the active
   models' signals favour, sized by recent risk and a 1–5 risk-aversion scale,
-  rebalanced every forecast horizon.
+  rebalanced every forecast horizon, and trading only when a move is worth its
+  cost (a no-trade band around the weight the portfolio has drifted to).
 - **Backtest against 50/50** — runs the optimised weights and a monthly-reset
   50/50 benchmark through the same days, before and after trading costs, and
   compares Sharpe, Sortino, Calmar and maximum drawdown side by side.
