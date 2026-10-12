@@ -5,9 +5,15 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from forecasting_engine.ingest.align import align_and_lag
-from forecasting_engine.models.famafrench import FACTOR_COLUMNS, merge_factors, run_famafrench
+from forecasting_engine.models.famafrench import (
+    FACTOR_COLUMNS,
+    FamaFrenchDataError,
+    merge_factors,
+    run_famafrench,
+)
 from forecasting_engine.reporting.model_metrics import build_metrics_rows
 from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.splitters import PurgedWalkForward
@@ -52,3 +58,14 @@ def test_famafrench_flows_from_raw_frames_through_the_shared_harness_to_the_comp
 
     rows = build_metrics_rows({"FF5 Benchmark": result})
     assert rows[0]["Model"].text == "FF5 Benchmark"
+
+
+def test_a_too_short_raw_frame_raises_a_clear_error_not_a_crash():
+    bloomberg = _bloomberg_frame(n=10)
+    factors = _factors_frame(n=10)
+
+    merged = merge_factors(bloomberg, factors)
+    panel = align_and_lag(merged.set_index("Date"), list(FACTOR_COLUMNS), "price", horizon=1)
+
+    with pytest.raises(FamaFrenchDataError, match="too few for one"):
+        run_famafrench(panel, _splitter())

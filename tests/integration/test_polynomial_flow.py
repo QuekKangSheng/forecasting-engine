@@ -5,9 +5,13 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
+from forecasting_engine.extraction.bloomberg_csv import column_sources, read_export
+from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import align_and_lag
 from forecasting_engine.models.polynomial import run_derived_polynomial, run_user_polynomial
+from forecasting_engine.models.sign_ruled import SignRuledInputsError, economic_signs
 from forecasting_engine.reporting.model_metrics import build_metrics_rows
 from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.splitters import PurgedWalkForward
@@ -48,3 +52,20 @@ def test_derived_fit_flows_through_to_the_promotion_gate_and_comparison_table():
 
     rows = build_metrics_rows({"Polynomial": result})
     assert rows[0]["Model"].text == "Polynomial"
+
+
+def test_a_real_export_missing_one_required_ticker_is_refused_before_the_model_runs():
+    # Three of the four required inputs, read from real exports exactly as the
+    # Data page would - USYC2Y10 left out on purpose.
+    exports = [
+        read_export(
+            f"{ticker}.csv",
+            f"Security,{ticker} Index\n\nDate,PX_LAST\n2024-01-02,1.0\n".encode(),
+        )
+        for ticker in ("LF98OAS", "LUACOAS", "VIX")
+    ]
+    columns = [c for export in exports for c in export.frame.columns if c != "Date"]
+    sources = column_sources(exports, columns)
+
+    with pytest.raises(SignRuledInputsError, match="USYC2Y10"):
+        economic_signs(columns, sources, TargetRole.EQUITY)

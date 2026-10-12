@@ -16,6 +16,7 @@ from forecasting_engine.store.uploads import recent_uploads
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PAGE = REPO_ROOT / "app" / "app_pages" / "1_Data.py"
+HOME_PAGE = REPO_ROOT / "app" / "app_pages" / "0_Home.py"
 APP_DIR = REPO_ROOT / "app"
 
 def export(security, rows, fields="PX_LAST"):
@@ -177,6 +178,31 @@ def test_duplicate_dates_are_reported_and_named(page):
     assert "02/01/2020" in texts(result.markdown)
 
 
+def test_a_statistically_unusual_move_is_flagged_as_info_and_never_blocks_the_commit(page):
+    # Fixture proven to clear the MAD threshold (test_extraction_validation.py).
+    dates = pd.bdate_range("2024-01-01", periods=60)
+    values = [100.0 + i for i in range(60)]
+    values[30] = 200.0
+    rows = [f"{d.month}/{d.day}/{d.year},{v}" for d, v in zip(dates, values, strict=True)]
+    result = upload(page, [("a.csv", export("A Index", rows), "text/csv")])
+
+    labels = {m.label: m.value for m in result.metric}
+    assert labels["Flagged"] == "1"
+    assert "1 observation flagged below for information" in texts(result.success)
+    assert "none of them stop a run" in texts(result.success)
+
+    expander = next(e for e in result.expander if "statistically unusual move" in e.label)
+    assert expander.label == "A_Index_PX_LAST — 1 statistically unusual move"
+    assert dates[30].strftime("%d/%m/%Y") in texts(result.markdown)
+    assert "day-over-day change" in texts(result.markdown)
+    assert "x the typical move" in texts(result.markdown)
+
+    commit_button = next(b for b in result.button if b.label == "Use Updated Data")
+    result = commit_button.click().run()
+    assert not result.exception
+    assert "now committed and available" in texts(result.success)
+
+
 def test_the_data_page_has_no_fama_french_section_and_only_the_merged_download(page):
     result = upload(page, [("spx.csv", SPX, "text/csv")])
 
@@ -223,6 +249,71 @@ def test_a_dropped_column_is_listed_in_the_committed_data_quality_report(page):
     assert dropped["Column"].tolist() == ["JPMVXYGL_Index_PX_BID"]
 
 
+def _home(committed: AppTest | None = None) -> AppTest:
+    """The Home page, given what the Data page committed (if anything)."""
+    home = AppTest.from_file(str(HOME_PAGE), default_timeout=30)
+    if committed is not None:
+        for key in (
+            "extraction_committed",
+            "extraction_committed_report",
+            "extraction_committed_dropped",
+        ):
+            home.session_state[key] = committed.session_state[key]
+    return home.run()
+
+
+def test_the_home_page_shows_pending_before_any_data_is_committed():
+    # The quality report lives on the Data page; Home shows the pipeline's status,
+    # and before a commit every stage after upload is still pending.
+    home = _home()
+
+    assert not home.exception
+    captions = texts(home.caption)
+    assert "Nothing committed yet." in captions
+    assert "Commit data first." in captions
+    assert "quality issue" not in captions
+
+
+def test_the_full_report_renders_once_committed_and_home_points_to_it(page):
+    # Same anomaly fixture as the uncommitted Data-page check: the committed report
+    # is read back on the Data page, and Home counts its flags and points there.
+    dates = pd.bdate_range("2024-01-01", periods=60)
+    values = [100.0 + i for i in range(60)]
+    values[30] = 200.0
+    rows = [f"{d.month}/{d.day}/{d.year},{v}" for d, v in zip(dates, values, strict=True)]
+    result = upload(page, [("a.csv", export("A Index", rows), "text/csv")])
+    result = next(b for b in result.button if b.label == "Use Updated Data").click().run()
+
+    assert not result.exception
+    labels = {m.label: m.value for m in result.metric}
+    assert labels["Flagged"] == "1"
+    assert "1 observation flagged below for information" in texts(result.success)
+    assert "none of them stop a run" in texts(result.success)
+    expander = next(e for e in result.expander if "statistically unusual move" in e.label)
+    assert expander.label == "A_Index_PX_LAST — 1 statistically unusual move"
+    assert dates[30].strftime("%d/%m/%Y") in texts(result.markdown)
+
+    home = _home(result)
+    assert not home.exception
+    assert "1 quality issue flagged → Data" in texts(home.caption)
+
+
+def test_completeness_by_column_renders_once_committed_for_a_partially_filled_signal(page):
+    lf98truu, legatruu = gappy_csv()
+    result = upload(
+        page, [("lf98truu.csv", lf98truu, "text/csv"), ("legatruu.csv", legatruu, "text/csv")]
+    )
+    result = next(b for b in result.button if b.label == "Use Updated Data").click().run()
+
+    assert not result.exception
+    assert "Completeness by column" in texts(result.markdown)
+    (completeness,) = [
+        d.value for d in result.dataframe if list(d.value.columns) == ["Column", "Missing %"]
+    ]
+    row = completeness.loc[completeness["Column"] == "LF98TRUU_Index_PX_LAST"].iloc[0]
+    assert row["Missing %"] == pytest.approx(100 / 3)
+
+
 # --- explaining and excluding gap rows -------------------------------------
 
 
@@ -255,6 +346,23 @@ def test_a_gap_is_listed_and_committed_blank_never_filled(page):
     committed = result.session_state["extraction_committed"].set_index("Date")
     assert len(committed) == 3
     assert pd.isna(committed.loc[pd.Timestamp("2016-09-05"), "LF98TRUU_Index_PX_LAST"])
+
+
+def test_a_gap_on_a_known_market_holiday_is_classified_not_left_unexplained(page):
+    # 2016-09-05 is Labor Day, a real NYSE closure.
+    lf98truu, legatruu = gappy_csv()
+    result = upload(
+        page, [("lf98truu.csv", lf98truu, "text/csv"), ("legatruu.csv", legatruu, "text/csv")]
+    )
+
+    (gaps,) = [
+        d.value
+        for d in result.dataframe
+        if list(d.value.columns) == ["Date", "Missing columns", "Likely reason"]
+    ]
+    row = gaps.loc[gaps["Date"] == "05/09/2016"].iloc[0]
+    assert row["Likely reason"] == "Likely NYSE market holiday"
+    assert "LF98TRUU_Index_PX_LAST" in row["Missing columns"]
 
 
 def test_committing_records_each_columns_security_and_field(page):
