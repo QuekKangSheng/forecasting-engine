@@ -152,16 +152,21 @@ with st.expander("Settings"):
     upper = 1 - lower
     st.caption(f"Each index stays between {lower:.0%} and {upper:.0%}.")
 
-schedule = optimize.weight_schedule(
-    signals,
-    prices,
-    horizon=equity_active.horizon,
-    train_window=TRAIN_WINDOW,
-    test_window=equity_active.test_window,
-    embargo=EMBARGO_DAYS,
-    risk_aversion=risk_aversion,
-    bounds=(lower, upper),
-)
+try:
+    breakdowns = optimize.schedule_breakdowns(
+        signals,
+        prices,
+        horizon=equity_active.horizon,
+        train_window=TRAIN_WINDOW,
+        test_window=equity_active.test_window,
+        embargo=EMBARGO_DAYS,
+        risk_aversion=risk_aversion,
+        bounds=(lower, upper),
+    )
+except BacktestDataError as exc:
+    st.warning(f"The allocation could not be set: {exc}", icon=":material/warning:")
+    st.stop()
+schedule = optimize.schedule_weights(breakdowns)
 
 if schedule.empty:
     st.info("No rebalance date has both a forecast and enough price history yet.")
@@ -180,21 +185,10 @@ cols[0].metric(equity_name, f"{latest[EQUITY]:.0%}")
 cols[1].metric(bond_name, f"{latest[BOND]:.0%}")
 
 latest_signal = optimize.expected_returns(pd.DatetimeIndex([latest_date]), signals).iloc[0]
-breakdown = optimize.weight_breakdown(
-    latest_signal,
-    optimize.covariance_at_rebalance(
-        latest_date,
-        prices,
-        horizon=equity_active.horizon,
-        train_window=TRAIN_WINDOW,
-        embargo=EMBARGO_DAYS,
-    ),
-    risk_aversion=risk_aversion,
-    bounds=(lower, upper),
-)
+breakdown = breakdowns[latest_date]
 direction = "adds" if breakdown.forecast_tilt >= 0 else "takes"
 cap = (
-    f", which the {lower:.0%}–{upper:.0%} limits cap at {breakdown.equity:.0%}"
+    f", which the {lower:.0%}–{upper:.0%} limits cap at {breakdown.bounded:.0%}"
     if breakdown.capped
     else ""
 )
@@ -205,6 +199,28 @@ st.caption(
     f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%} at risk "
     f"aversion {risk_level}, giving {breakdown.unconstrained:.0%}{cap}."
 )
+if breakdown.held:
+    st.caption(
+        f"Held: within the no-trade band. Since the last rebalance the portfolio had "
+        f"drifted to {breakdown.drifted:.1%} {equity_name}, within the ±{breakdown.band:.1%} "
+        f"band around it, so it was left as it was rather than pay to trade.",
+        help=glossary.term("No-trade band"),
+    )
+elif breakdown.drifted is not None:
+    st.caption(
+        f"Since the last rebalance the portfolio had drifted to {breakdown.drifted:.1%} "
+        f"{equity_name}. Trading costs set a no-trade band of ±{breakdown.band:.1%} around "
+        f"it, so it traded only to the band's edge, {breakdown.equity:.1%}.",
+        help=glossary.term("No-trade band"),
+    )
+after_first = list(breakdowns.values())[1:]
+if after_first:
+    held = sum(b.held for b in after_first)
+    st.caption(
+        f"{held} of {len(after_first)} rebalances after the first ({held / len(after_first):.0%}) "
+        "were held by the no-trade band.",
+        help=glossary.term("No-trade band"),
+    )
 
 st.markdown(
     ui.eyebrow(

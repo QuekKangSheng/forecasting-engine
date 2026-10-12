@@ -1,5 +1,6 @@
 """The Portfolio Optimizer page, driven through the real Streamlit page script."""
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -273,13 +274,22 @@ def test_risk_aversion_is_a_1_to_5_scale_defaulting_to_the_middle():
     (scale,) = [s for s in app.select_slider if s.label == "Risk aversion"]
     assert list(scale.options) == ["1 · risk-loving", "2", "3", "4", "5 · risk-averse"]
     assert scale.value == 3
-    tilt = float(app.metric[0].value.strip("%")) / 100 - 0.5
+    tilt = _solved_weight(app) - 0.5
 
     scale.set_value(5).run()
 
     assert not app.exception
-    assert abs(float(app.metric[0].value.strip("%")) / 100 - 0.5) <= abs(tilt)
+    # The solved weight, before the no-trade band: a held rebalance's weight is
+    # wherever the portfolio drifted to, whatever the risk aversion.
+    assert abs(_solved_weight(app) - 0.5) <= abs(tilt)
     assert "Level 5 is λ = 100." in _captions(app)
+
+
+def _solved_weight(app) -> float:
+    """The latest rebalance's equity weight before any bound or band, from the
+    "How this was set" caption."""
+    caption = next(c.value for c in app.caption if c.value.startswith("How this was set"))
+    return float(re.search(r"giving (-?\d+)%", caption).group(1)) / 100
 
 
 def test_a_minimum_in_each_index_bounds_both_weights():
@@ -319,3 +329,12 @@ def test_without_active_models_the_page_explains_what_will_appear():
 
     assert any("against the equal-weight benchmark appear here" in t for t in _infos(app))
     assert not [m for m in app.markdown if '<table class="fe-table"' in m.value]
+
+
+def test_the_no_trade_band_is_explained_with_the_share_of_rebalances_it_held():
+    app = _happy_page()
+
+    assert not app.exception
+    captions = _captions(app)
+    assert "were held by the no-trade band." in captions
+    assert "Held: within the no-trade band." in captions or "no-trade band of ±" in captions

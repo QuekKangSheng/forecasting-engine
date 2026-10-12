@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.portfolio.backtest import run_backtest
 from forecasting_engine.portfolio.optimize import (
     DEFAULT_RISK_LEVEL,
     DEFAULT_WEIGHT_BOUNDS,
@@ -15,6 +16,7 @@ from forecasting_engine.portfolio.optimize import (
     covariance_at_rebalance,
     expected_returns,
     risk_aversion_for,
+    schedule_breakdowns,
     solve_weights,
     weight_breakdown,
     weight_schedule,
@@ -374,7 +376,11 @@ def test_weight_schedule_has_one_row_per_rebalance_summing_to_one_within_bounds(
     assert list(schedule.index) == list(dates[17:57:3])
     assert list(schedule.columns) == [EQUITY, BOND]
     assert schedule.sum(axis=1).sub(1.0).abs().max() < 1e-9
-    assert schedule[EQUITY].between(*DEFAULT_WEIGHT_BOUNDS).all()
+    # A held rebalance keeps the drifted weight, which drift can carry just past a
+    # bound; every rebalance that trades lands within them.
+    breakdowns = schedule_breakdowns(forecasts, prices, **_SCHEDULE_KWARGS)
+    traded = [date for date, b in breakdowns.items() if not b.held]
+    assert schedule.loc[traded, EQUITY].between(*DEFAULT_WEIGHT_BOUNDS).all()
 
 
 def test_weight_schedule_skips_a_rebalance_with_a_missing_forecast():
@@ -388,3 +394,75 @@ def test_weight_schedule_skips_a_rebalance_with_a_missing_forecast():
 
     assert first_rebalance not in schedule.index
     assert len(schedule) == len(dates[17:57:3]) - 1
+
+
+# --- FYP-49: the no-trade band ---------------------------------------------------------
+
+
+def _unbanded(forecasts, prices) -> pd.Series:
+    """Each rebalance's bounded target on its own, as the optimiser set it before the band."""
+    dates = common_rebalance_dates(prices, horizon=3, train_window=15, test_window=10, embargo=2)
+    expected = expected_returns(dates, forecasts)
+    return pd.Series(
+        {
+            date: weight_breakdown(
+                expected.loc[date],
+                covariance_at_rebalance(date, prices, horizon=3, train_window=15, embargo=2),
+                risk_aversion=RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
+            ).equity
+            for date in dates
+        }
+    )
+
+
+def test_zero_costs_reproduce_the_unbanded_schedule_exactly():
+    _dates, prices, forecasts = _schedule_inputs()
+    free = {EQUITY: 0.0, BOND: 0.0}
+
+    schedule = weight_schedule(forecasts, prices, costs_bps=free, **_SCHEDULE_KWARGS)
+
+    pd.testing.assert_series_equal(
+        schedule[EQUITY], _unbanded(forecasts, prices), check_names=False, check_freq=False
+    )
+    breakdowns = schedule_breakdowns(forecasts, prices, costs_bps=free, **_SCHEDULE_KWARGS)
+    assert not any(b.held for b in breakdowns.values())
+
+
+def _band_inputs():
+    """No signal at the first rebalance, a tiny one at the second, a large one at the
+    third: 50/50, then a change too small to pay for, then one that is."""
+    dates, prices, _ = _schedule_inputs()
+    equity = pd.Series(0.0, index=dates)
+    equity.loc[dates[20] :] = 1e-6
+    equity.loc[dates[23] :] = 0.05
+    return dates, prices, {EQUITY: equity, BOND: pd.Series(0.0, index=dates)}
+
+
+def test_a_small_signal_change_is_held_and_a_large_one_moves_to_the_band_edge():
+    dates, prices, forecasts = _band_inputs()
+    lam = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL]
+
+    breakdowns = schedule_breakdowns(forecasts, prices, **_SCHEDULE_KWARGS)
+    first, small, large = (breakdowns[dates[i]] for i in (17, 20, 23))
+
+    assert (first.equity, first.drifted, first.held) == (0.5, None, False)
+
+    cov = covariance_at_rebalance(dates[20], prices, horizon=3, train_window=15, embargo=2)
+    d = cov.loc[EQUITY, EQUITY] - 2 * cov.loc[EQUITY, BOND] + cov.loc[BOND, BOND]
+    assert small.band == pytest.approx((3.0 + 5.0) / 1e4 / (lam * d))
+    assert abs(small.bounded - small.drifted) <= small.band
+    assert small.held and small.equity == small.drifted
+
+    assert large.bounded == DEFAULT_WEIGHT_BOUNDS[1]
+    assert large.bounded - large.drifted > large.band
+    assert not large.held
+    assert large.equity == pytest.approx(large.bounded - large.band)
+
+
+def test_a_held_rebalance_trades_nothing_in_the_backtest():
+    dates, prices, forecasts = _band_inputs()
+
+    backtest = run_backtest(prices, weight_schedule(forecasts, prices, **_SCHEDULE_KWARGS))
+
+    assert backtest.optimised.turnover[dates[20]] == pytest.approx(0.0, abs=1e-12)
+    assert backtest.optimised.turnover[dates[23]] > 0

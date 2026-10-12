@@ -202,6 +202,15 @@ TERMS: Mapping[str, str] = {
         "one extreme. The optimiser starts from 50/50 and tilts; the floor only "
         "clips how far."
     ),
+    "No-trade band": (
+        "Between rebalances the portfolio drifts with the markets. At each "
+        "rebalance it trades only if the new target is far enough from where it "
+        "drifted to to be worth the trading cost: within the band it holds, and "
+        "outside it, it trades only as far as the band's edge. The band is the "
+        "cost of moving the equity weight by one (both indices' costs) over risk "
+        "aversion times the variance of the difference between the two indices' "
+        "returns, so it is narrower when the signals are acted on more."
+    ),
     "Directional P&L": (
         "What you would have earned by holding this index only when the model "
         "forecast a rise, and sitting in cash otherwise, compared with simply "
