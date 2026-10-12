@@ -135,7 +135,8 @@ date of the price each label reaches, which the splitter uses to purge.
 - **Windows.** Test windows of `DEFAULT_TEST_WINDOW` rows roll forward by that
   many rows. Each training window is the `TRAIN_WINDOW` rows ending `embargo` rows
   before its test window, and may reach back into the tuning period. Both windows
-  are the same for every model on both targets, and fixed rather than settings:
+  are the same for every model on both targets (the research model, §9.1, alone
+  trains on every earlier row, on the same test windows), and fixed rather than settings:
   trying windows until one scores well is overfitting that no single run can see.
   Every row of the results table is therefore scored on the same dates, and both
   targets forecast the same rebalance days.
@@ -146,7 +147,7 @@ date of the price each label reaches, which the splitter uses to purge.
   than a standard error; on bond both scored below it. Folds of the expanding
   window trained on under five years scored +0.225, those on five years or more
   +0.075, so a longer history did not help. `splitters.expanding` remains only
-  for the research benchmark (§9).
+  for the research model (§9.1).
 - **Embargo.** `EMBARGO_DAYS`, the longest horizon (20 days), whichever horizon is
   chosen.
 - **Purge.** A training row is dropped if its label's price (`label_end`) is dated
@@ -177,7 +178,9 @@ for) clears only that model's row. Every
 family is optional; Run is disabled until one besides the naive baseline is
 ticked, and the naive baseline runs with every Run. The polynomial runs one
 source at a time, derived or the user's own function, each under its own row
-name, and switching source clears nothing. Each family chooses only among its own
+name, and switching source clears nothing. The Equity tab also offers the
+research model (§9.1) under its own checkbox and row, beside whichever polynomial
+runs. Each family chooses only among its own
 configurations, so which families run together never changes any family's
 result.
 
@@ -278,22 +281,6 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   return forecasts and Rapach, Strauss & Zhou (2010) on combining correlated
   predictors. On the Sep 2026 data it was the best candidate for both targets at
   every fold placement tried; degrees 4 and 5 were never chosen.
-- **Research benchmark, not run on the page** (`models/sign_ruled.SignRuledPolynomial`).
-  The October 2026 model research chose, from about 300 trials, a shrinkage fit
-  on four fixed equity inputs, `ECONOMIC_INPUTS` (HY OAS, IG OAS, VIX and the
-  2s10s slope, all read as levels, each with a sign of +1), with the forecast's
-  level fixed at the mean of the first `LEVEL_ROWS` training labels, on an
-  expanding window. On the Sep 2026 data it scored the highest equity Rank IC of
-  anything tried, +0.24 (+0.32 on Oct 2024 – Sep 2026), against +0.12 for the
-  screened shrinkage candidate. It is not the derived polynomial because its
-  inputs, their signs and its level were chosen by looking at results over Aug
-  2016 – Sep 2024, which overlaps the scored period, and no out-of-sample score
-  can count those choices; only Oct 2024 – Sep 2026 is out of sample for it (+0.32, t about 2.2
-  on about 24 independent 20-day periods). Its research notes say over half of
-  that came from one quarter (the spring 2025 spread spike and rebound) and that
-  the 1990–2016 history points the other way. Its fixed inputs also ignore any
-  other signal in the data. It is kept in the code so the result can be
-  reproduced.
 - **Machine learning** (`models/boosted.py`). XGBoost and LightGBM, each with
   `_FIXED_PARAMS` and gain feature importance, and minimum leaf size
   (`_LEAF_KEYS`) capped at `LEAF_CAP_SHARE` of a fit's training rows.
@@ -322,6 +309,56 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   - A fold needs at least `_MIN_TRAINING_ROWS` complete rows.
   - SHAP (mean |SHAP value| per signal) is computed once, for the winning
     library's last fold, refitted with that fold's tune.
+
+### 9.1 Research model (fixed inputs)
+
+`models/sign_ruled.run_sign_ruled_polynomial`, the row "Research model (fixed
+inputs)", Equity tab only, with its own checkbox. It is the model the October 2026
+model research chose from about 300 trials, run exactly as origin/main ran it as
+its derived polynomial (`cbd1a64`): a shrinkage fit
+(`SignRuledPolynomial`) on four fixed inputs, `ECONOMIC_INPUTS` (HY OAS, IG OAS,
+VIX and the 2s10s slope, each with a sign of +1), read as levels whatever the
+transform map says (§4 differences the 2s10s slope), each clipped to its training
+mean ± `CLIP_SD` standard deviations and standardised, with the forecast's level
+the mean of the first `LEVEL_ROWS` training labels, and the shrinkage sampler's
+settings of the derived polynomial's shrinkage candidate (`COMMON_SLOPE_SCALE`,
+`MAX_OVERLAP`, `CHAINS`, `BURN_IN`, `KEPT_SWEEPS`, `SEED`). A fold needs at least
+`_MIN_TRAINING_ROWS` complete rows. The inputs are found by ticker; if the
+committed data lacks one, or holds two columns for one, the tab says so and the
+row does not run. `tests/unit/test_sign_ruled.py` checks its pooled forecasts,
+baselines and realised returns against ones produced by origin/main's code.
+
+**Why an expanding window and fixed inputs when everything else uses 504 rows
+and per-fold choices.** The row exists to reproduce the research result, and that
+result is the fit on these inputs on an expanding window: the research found the
+edge needed every earlier row and disappeared in a 252-row rolling window, so
+running it at 504 rows would be a different model with no research behind it.
+Its windows are `splitters.expanding` of the page's splitter: the same test
+windows and embargo, with the first test window opening where every other
+model's does, so its rows are scored on the same dates as every other row and
+its forecasts line up with the bond model's rebalance days. Only the training
+window differs, so it is set active with no train window (`train_window` is
+`None`), which `store.active_model.settings_match` allows: what a two-asset run
+needs is the same horizon, test window and dataset.
+
+**Why its score is optimistic.** Its inputs, their signs and its level were
+chosen by looking at results over Aug 2016 – Sep 2024, which overlaps the scored
+period, and no out-of-sample score can count those choices. On the Sep 2026 data
+it scored an equity Rank IC of +0.24 (+0.32 on Oct 2024 – Sep 2026, the only part
+out of sample for it, t about 2.2 on about 24 independent 20-day periods),
+against +0.12 for the screened shrinkage candidate; its research notes say over
+half of that came from one quarter (the spring 2025 spread spike and rebound) and
+that the 1990–2016 history points the other way. Its fixed inputs also ignore any
+other signal in the data. The page therefore captions its row: "Inputs and signs
+chosen in the Oct 2026 model research on data overlapping this test period; treat
+its score as optimistic." The derived polynomial makes every such choice inside
+each fold instead.
+
+It is gated like every other model (§12) and can be set active for equity like
+any model, so the optimiser can use either it or the derived polynomial. The
+active-model store saves its forecast and each date's baseline, its fold's
+training-mean target, so its signal is `forecast − baseline`
+(`harness.signal_forecasts`), as for every model.
 
 ## 10. Metrics
 
@@ -618,6 +655,7 @@ Values are Python literals as the code holds them.
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.shrinkage` | `30` |
 | `ECONOMIC_INPUTS` | `forecasting_engine.models.sign_ruled` | `{"equity": {"LF98OAS": 1, "LUACOAS": 1, "VIX": 1, "USYC2Y10": 1}}` |
 | `LEVEL_ROWS` | `forecasting_engine.models.sign_ruled` | `252` |
+| `_MIN_TRAINING_ROWS` | `forecasting_engine.models.sign_ruled` | `30` |
 | `CANDIDATE_REGULARIZERS` | `forecasting_engine.models.polynomial` | `("lasso",)` |
 | `CLIP_SD` | `forecasting_engine.models.polynomial` | `4.0` |
 | `INNER_CV_SPLITS` | `forecasting_engine.models.polynomial` | `5` |
@@ -660,7 +698,7 @@ them is [docs/evidence/2026-10-12-verify.py](evidence/2026-10-12-verify.py).
 
 | Decision | Ticket | Evidence |
 |---|---|---|
-| A rolling 504-day train window for every model on both targets, and a fixed 20-day test window (§7) | FYP-217, FYP-161 | 1A, 1D, 1E |
+| A rolling 504-day train window for every model on both targets but the research model, and a fixed 20-day test window (§7, §9.1) | FYP-217, FYP-161 | 1A, 1D, 1E |
 | Machine learning tunes on 252-row mini folds inside its 504-row tuning period (§9) | FYP-217 | 1E |
 | Derived grid: Lasso at degrees 1–3 plus shrinkage; no elastic net, no degrees 4–5 (§9) | FYP-161 | 2B, run times |
 | No PBO; Rank IC within folds and Beyond 2 s.e. dropped from the table (§10, §11) | FYP-216 | 2A, 2C |

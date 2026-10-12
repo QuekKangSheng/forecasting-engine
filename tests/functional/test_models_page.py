@@ -53,9 +53,13 @@ POLY = "Polynomial (derived)"
 USER_POLY = "Polynomial (user-supplied)"
 #: The settings these tests run the page under (see ``small_data_defaults``):
 #: 5-day horizon, 120/20 walk-forward windows, a 10-term cap on the derived
-#: polynomial and a blank user-supplied function.
+#: polynomial, a blank user-supplied function and the research model's fit version.
 DEFAULT_SHARED = (5, 120, 20)
-DEFAULT_MODEL_SETTINGS = {POLY: 10, USER_POLY: ("", ())}
+DEFAULT_MODEL_SETTINGS = {
+    POLY: 10,
+    USER_POLY: ("", ()),
+    "Research model (fixed inputs)": "sign-ruled v1",
+}
 NAIVE = "Naive (training mean)"
 
 
@@ -242,7 +246,12 @@ def test_the_model_checkboxes_default_to_every_family_and_none_is_compulsory():
     app = _page()
 
     boxes = {c.label: c for c in app.checkbox}
-    assert set(boxes) == {"Polynomial", "Fama-French 5", "Machine learning"}
+    assert set(boxes) == {
+        "Polynomial",
+        "Fama-French 5",
+        "Research model (fixed inputs)",
+        "Machine learning",
+    }
     assert all(box.value and not box.disabled for box in boxes.values())
 
 
@@ -1254,3 +1263,97 @@ def test_a_run_without_saved_forecasts_shows_no_directional_check():
 
     assert "Would the forecast's direction have paid?" not in _markdown(app)
     assert not [s for s in app.selectbox if s.label == "Forecasts from"]
+
+
+# --- the research model (fixed inputs) ----------------------------------------------
+
+RESEARCH = "Research model (fixed inputs)"
+RESEARCH_CAPTION = (
+    "Inputs and signs chosen in the Oct 2026 model research on data overlapping this "
+    "test period; treat its score as optimistic."
+)
+#: The research model's four inputs, by the ticker it finds each one by.
+RESEARCH_INPUTS = {
+    "LF98OAS_Index_PX_LAST": "LF98OAS Index",
+    "LUACOAS_Index_PX_LAST": "LUACOAS Index",
+    "VIX_Index_PX_LAST": "VIX Index",
+    "USYC2Y10_Index_PX_LAST": "USYC2Y10 Index",
+}
+
+
+def _with_research_inputs() -> tuple[pd.DataFrame, dict[str, ColumnSource]]:
+    committed = _committed()
+    rng = np.random.default_rng(1)
+    committed["LF98OAS_Index_PX_LAST"] = 4 + np.cumsum(rng.normal(scale=0.05, size=200))
+    committed["USYC2Y10_Index_PX_LAST"] = 0.5 + np.cumsum(rng.normal(scale=0.02, size=200))
+    sources = {SPX: ColumnSource("SPX Index", "PX_LAST")}
+    sources |= {col: ColumnSource(security, "PX_LAST") for col, security in RESEARCH_INPUTS.items()}
+    return committed, sources
+
+
+def test_only_the_equity_tab_offers_the_research_model_with_its_own_checkbox():
+    app = _page(bond=True)
+
+    labels = [c.label for c in app.checkbox]
+    assert labels.count(RESEARCH) == 1
+    assert labels.count("Polynomial") == 2
+
+
+def test_without_its_inputs_the_research_model_says_so_and_runs_nothing(stub_ml):
+    app = _press_run(_untick(_page(), "Fama-French 5"))
+
+    assert not app.exception
+    assert (
+        "No research model for this target: the sign-ruled polynomial needs LF98OAS, "
+        "LUACOAS, VIX, USYC2Y10 in the committed data." in _captions(app)
+    )
+    assert RESEARCH not in _stored_runs(app)
+
+
+def test_the_research_model_runs_beside_the_derived_polynomial_on_the_same_dates(stub_ml):
+    committed, sources = _with_research_inputs()
+    app = _page(committed=committed, sources=sources)
+    app = _press_run(_untick(app, "Fama-French 5", "Machine learning"))
+
+    assert not app.exception
+    runs = _stored_runs(app)
+    assert {NAIVE, POLY, RESEARCH} <= set(runs)
+    assert runs[RESEARCH].result.forecast.index[0] == runs[POLY].result.forecast.index[0]
+    assert runs[RESEARCH].result.forecast.index[-1] == runs[POLY].result.forecast.index[-1]
+    assert f"**{RESEARCH}**: gate" in _markdown(app)
+    assert f"{RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+    assert f"{RESEARCH} · S&P 500" in _expander_labels(app)
+
+
+def test_unticking_the_research_model_runs_it_not(stub_ml):
+    committed, sources = _with_research_inputs()
+    app = _page(committed=committed, sources=sources)
+    app = _press_run(_untick(app, "Fama-French 5", RESEARCH))
+
+    assert set(_stored_runs(app)) == {NAIVE, POLY, "Machine Learning"}
+
+
+def test_the_research_model_is_gated_and_captioned_under_its_row():
+    app = _page({EQUITY: {POLY: _polynomial_run(), RESEARCH: _polynomial_run(_result())}})
+
+    assert f"**{RESEARCH}**: gate met — Signal Rank IC above 0.02 and t above 2." in _markdown(app)
+    assert "Gate met" in _table(app).split(RESEARCH, 1)[1].split("</tr>", 1)[0]
+    assert f"{RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+
+
+def test_the_research_model_can_be_set_active_with_its_signal_and_no_train_window():
+    forecast = _oos([0.01, -0.01, 0.02, 0.0] * 10)
+    baseline = _oos([0.004] * 20 + [0.006] * 20)
+    result = replace(_result(), forecast=forecast, realised=_oos([0.0] * 40), baseline=baseline)
+    app = _page({EQUITY: {POLY: _polynomial_run(), RESEARCH: _polynomial_run(result)}})
+    (select,) = [s for s in app.selectbox if s.label == "Model to set active"]
+    assert list(select.options) == [POLY, RESEARCH]
+    select.select(RESEARCH).run()
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert not app.exception
+    record = active_model.get_active_model(EQUITY)
+    assert record.model_name == RESEARCH
+    assert record.train_window is None
+    signal = active_model.get_active_model_signal(EQUITY)
+    pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)

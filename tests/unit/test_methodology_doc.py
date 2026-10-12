@@ -52,6 +52,7 @@ DOCUMENTED = {
     ("forecasting_engine.models.shrinkage", "_MIN_TRAINING_ROWS"),
     ("forecasting_engine.models.sign_ruled", "ECONOMIC_INPUTS"),
     ("forecasting_engine.models.sign_ruled", "LEVEL_ROWS"),
+    ("forecasting_engine.models.sign_ruled", "_MIN_TRAINING_ROWS"),
     ("forecasting_engine.models.polynomial", "CANDIDATE_REGULARIZERS"),
     ("forecasting_engine.models.polynomial", "CLIP_SD"),
     ("forecasting_engine.models.polynomial", "INNER_CV_SPLITS"),

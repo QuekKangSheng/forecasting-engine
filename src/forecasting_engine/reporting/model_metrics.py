@@ -18,6 +18,7 @@ MODEL_ORDER: tuple[str, ...] = (
     "Naive (training mean)",
     "FF5 Benchmark",
     "Polynomial (derived)",
+    "Research model (fixed inputs)",
     "Polynomial (user-supplied)",
     "Machine Learning",
 )

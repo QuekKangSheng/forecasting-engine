@@ -14,6 +14,7 @@ from __future__ import annotations
 import functools
 import html
 import time
+from collections.abc import Mapping
 
 import pandas as pd
 import streamlit as st
@@ -58,6 +59,12 @@ from forecasting_engine.models.polynomial import (
     run_user_polynomial,
 )
 from forecasting_engine.models.shrinkage import ShrinkageDataError
+from forecasting_engine.models.sign_ruled import VERSION as SIGN_RULED_VERSION
+from forecasting_engine.models.sign_ruled import (
+    SignRuledInputsError,
+    economic_signs,
+    run_sign_ruled_polynomial,
+)
 from forecasting_engine.portfolio.directional import (
     DirectionalDataError,
     directional_pnl,
@@ -98,12 +105,22 @@ from model_settings import (
 )
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
-NAIVE, FF5, DERIVED, USER, ML = MODEL_ORDER
+NAIVE, FF5, DERIVED, RESEARCH, USER, ML = MODEL_ORDER
 
-ACTIVE_MODEL_CANDIDATES = (DERIVED, USER, ML)
+ACTIVE_MODEL_CANDIDATES = (DERIVED, RESEARCH, USER, ML)
 
 #: Every model but the naive baseline, which is the bar the others are read against.
-GATED = (FF5, DERIVED, USER, ML)
+GATED = (FF5, DERIVED, RESEARCH, USER, ML)
+
+#: The research model's own setting: the version of its fit, so a saved result
+#: from an older fit is refitted rather than shown.
+RESEARCH_SETTING = f"sign-ruled v{SIGN_RULED_VERSION}"
+
+#: Shown under the research model's row wherever its score is.
+RESEARCH_CAPTION = (
+    "Inputs and signs chosen in the Oct 2026 model research on data overlapping this "
+    "test period; treat its score as optimistic."
+)
 
 #: The polynomial's two sources; exactly one runs.
 DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
@@ -213,7 +230,8 @@ with st.expander("Settings"):
     test = DEFAULT_TEST_WINDOW
     st.caption(
         f"The train window is fixed: every model on both targets trains on the latest "
-        f"{TRAIN_WINDOW} dates.",
+        f"{TRAIN_WINDOW} dates. The research model alone trains on every earlier date, "
+        "as its research did.",
         help=glossary.term("Walk-forward train window (days)"),
     )
     st.caption(
@@ -307,9 +325,7 @@ def _polynomial_settings(
     }
     if not run_poly:
         return None, settings
-    st.markdown(
-        ui.eyebrow("Polynomial", glossary.term("Function source")), unsafe_allow_html=True
-    )
+    st.markdown(ui.eyebrow("Polynomial", glossary.term("Function source")), unsafe_allow_html=True)
     source = st.radio(
         "Function source",
         (DERIVE_OPTION, OWN_OPTION),
@@ -443,6 +459,44 @@ def _run_derived(
         columns=panel.signals,
     )
     return model_runs.ModelRun(result, description, function=fn)
+
+
+def _run_research(
+    signs: Mapping[str, int],
+    frame: pd.DataFrame,
+    price_col: str,
+    horizon: int,
+    splitter: PurgedWalkForward,
+) -> model_runs.ModelRun:
+    """The October 2026 research model, run as the research ran it: its four fixed
+    inputs read as levels, on an expanding window over ``splitter``'s test dates."""
+    result, description, panel = run_sign_ruled_polynomial(
+        frame, signs, price_col, horizon, splitter
+    )
+    fn = from_description(
+        description,
+        origin=Origin.DERIVED,
+        target=price_col,
+        horizon=horizon,
+        columns=panel.signals,
+    )
+    return model_runs.ModelRun(result, description, function=fn)
+
+
+def _research_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None]:
+    """The research model's inputs for ``role``, or why it can't run here."""
+    try:
+        return economic_signs(signal_cols, sources, role), None
+    except SignRuledInputsError as exc:
+        return None, str(exc)
+
+
+def _active_settings(name: str) -> dict[str, int | str | None]:
+    """What a model set active was run under. The research model trains on every
+    earlier date, so it has no train window."""
+    if name == RESEARCH:
+        return {**ACTIVE_SETTINGS, "train_window": None}
+    return ACTIVE_SETTINGS
 
 
 def _run_user(
@@ -837,7 +891,7 @@ def _confirm_high_risk(
     cols = st.columns(2)
     if cols[0].button("Set active anyway", type="primary", key=f"confirm_{role.value}"):
         active_model.set_active_model(
-            role, model_name, result, high_risk=True, **ACTIVE_SETTINGS
+            role, model_name, result, high_risk=True, **_active_settings(model_name)
         )
         st.session_state.pop(pending_key, None)
         st.rerun()
@@ -879,7 +933,7 @@ def _show_active_picker(
         else:
             st.session_state.pop(pending_key, None)
             active_model.set_active_model(
-                role, selected, result, high_risk=False, **ACTIVE_SETTINGS
+                role, selected, result, high_risk=False, **_active_settings(selected)
             )
             st.rerun()
     pending = st.session_state.get(pending_key)
@@ -1017,11 +1071,17 @@ def _show_directional(
 def _render_tab(role: TargetRole, price_col: str) -> None:
     target_name = label(price_col)
     key = role.value
-    # FF5 is an equity-factor benchmark, so only the Equity tab offers it.
-    check_cols = st.columns([3, 4, 4, 7] if role == TargetRole.EQUITY else [3, 4, 11])
+    # FF5 is an equity-factor benchmark and the research model's inputs are equity
+    # gauges, so only the Equity tab offers them.
+    equity = role == TargetRole.EQUITY
+    check_cols = st.columns([3, 4, 6, 4, 1] if equity else [3, 4, 11])
     run_poly = check_cols[0].checkbox("Polynomial", value=True, key=f"run_poly_{key}")
-    run_ff5 = role == TargetRole.EQUITY and check_cols[1].checkbox(
-        "Fama-French 5", value=True, key=f"run_ff5_{key}"
+    run_ff5 = equity and check_cols[1].checkbox("Fama-French 5", value=True, key=f"run_ff5_{key}")
+    research_ticked = equity and check_cols[2].checkbox(
+        RESEARCH,
+        value=True,
+        key=f"run_research_{key}",
+        help=glossary.term(RESEARCH),
     )
     ml_fits = fits_tuning_period(int(train), int(test), EMBARGO_DAYS, TUNING_ROWS)
     ml_ticked = check_cols[-2].checkbox(
@@ -1043,11 +1103,19 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     _show_alignment(panel, target_name)
 
     polynomial, settings = _polynomial_settings(key, panel, run_poly)
+    signs, unavailable = _research_signs(role) if equity else (None, None)
+    if research_ticked and not signs:
+        st.caption(f"No research model for this target: {unavailable}")
+    run_research = research_ticked and bool(signs)
+    if equity:
+        settings[RESEARCH] = RESEARCH_SETTING
     tab_runs = model_runs.tab(stored, role, settings)
     models = [NAIVE]
     user_formula, user_bindings = settings[USER]
     if polynomial == DERIVED or (polynomial == USER and user_formula and user_bindings is not None):
         models.append(polynomial)
+    if run_research:
+        models.append(RESEARCH)
     if run_ff5:
         models.append(FF5)
     if run_ml:
@@ -1062,8 +1130,9 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if (clicked or run_all) and not nothing_to_run and not running:
         runners = {
             NAIVE: functools.partial(_run_naive, panel, splitter),
-            DERIVED: functools.partial(
-                _run_derived, settings[DERIVED], panel, price_col, splitter
+            DERIVED: functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter),
+            RESEARCH: functools.partial(
+                _run_research, signs, indexed, price_col, horizon, splitter
             ),
             USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
@@ -1101,13 +1170,22 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         if name in runs:
             st.markdown(_gate_line(name, runs[name].result))
     _show_table({name: run.result for name, run in runs.items()})
+    if RESEARCH in runs:
+        st.caption(f"{RESEARCH}: {RESEARCH_CAPTION}")
     _show_directional(role, runs, target_name)
     _show_active_picker(role, runs, target_name)
 
     _show_screening(runs, target_name)
-    for name in (DERIVED, USER):
+    for name in (DERIVED, RESEARCH, USER):
         if name in runs:
             with st.expander(f"{name} · {target_name}"):
+                if name == RESEARCH:
+                    st.caption(
+                        "HY OAS, IG OAS, VIX and the 2s10s slope, read as levels and "
+                        "fixed by the research. Each fold trains on every date before "
+                        f"its test window, not the latest {TRAIN_WINDOW}, as the "
+                        "research did. " + RESEARCH_CAPTION
+                    )
                 _show_polynomial(runs[name])
     if FF5 in runs and role == TargetRole.EQUITY:
         with st.expander(f"Fama-French 5 · {target_name}"):

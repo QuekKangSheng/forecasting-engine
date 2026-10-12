@@ -36,6 +36,17 @@ TERMS: Mapping[str, str] = {
         "under the same settings as every other model. Each gets its own row, "
         "named for which kind it is."
     ),
+    "Research model (fixed inputs)": (
+        "The equity model the October 2026 model research chose: a degree-1 "
+        "polynomial in HY OAS, IG OAS, VIX and the 2s10s slope, read as levels, "
+        "each signed so a higher value means a higher expected return, with the "
+        "slopes shrunk toward one common slope. It trains on every earlier date "
+        "rather than the latest 504, as the research did, and is scored on the "
+        "same test dates as every other model and gated the same way. Its inputs "
+        "and signs were chosen in that research on data overlapping this test "
+        "period, so treat its score as optimistic. The derived polynomial makes "
+        "every such choice inside each fold instead."
+    ),
     "Max terms": (
         "The most terms the derived equation may keep. The cap works through the "
         "regularization itself: only penalty strengths whose fit keeps this many "
@@ -62,7 +73,8 @@ TERMS: Mapping[str, str] = {
         "a setting: every model on both targets studies the latest 504 days (about "
         "two years), long enough to span more than one market episode but short "
         "enough to follow a change in how the markets behave. Trying windows until "
-        "one scores well would itself be a way to overfit."
+        "one scores well would itself be a way to overfit. The research model is "
+        "the one exception: it trains on every earlier date, as its research did."
     ),
     "Walk-forward test window (days)": (
         "The days right after each training block, used only for grading: 20 "
