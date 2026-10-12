@@ -239,11 +239,10 @@ def placeholders(formula: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(node.id for node in names))
 
 
-# ── DerivedPolynomial: PolynomialFeatures + Lasso/ElasticNet ─────────────────
+# ── DerivedPolynomial: PolynomialFeatures + Lasso ────────────────────────────
 
-#: Regularizer -> its L1 share. Lasso is all L1; 0.5 is scikit-learn's
-#: ElasticNetCV default, kept so the regularizer means what it did before.
-_REGULARIZERS: dict[str, float] = {"lasso": 1.0, "elasticnet": 0.5}
+#: Regularizer -> its L1 share. Lasso is all L1.
+_REGULARIZERS: dict[str, float] = {"lasso": 1.0}
 
 #: The penalty grid, as scikit-learn's LassoCV builds it: this many values,
 #: spanning from the smallest penalty that zeroes every term down by this factor.
@@ -493,19 +492,24 @@ def _time_series_cv(n_rows: int, gap: int) -> TimeSeriesSplit:
 
 # ── Bridging to the shared comparison view (ModelRunResult) ─────────────────
 
-CANDIDATE_DEGREES: tuple[int, ...] = (1, 2, 3, 4, 5)
-CANDIDATE_REGULARIZERS: tuple[str, ...] = ("lasso", "elasticnet")
+CANDIDATE_DEGREES: tuple[int, ...] = (1, 2, 3)
+"""The degrees the derived polynomial's grid tries. ``MAX_DEGREE`` still caps a
+user-supplied function at 5, but degrees 4 and 5 were never the best configuration
+on the Sep 2026 data, and a single degree-5 fold took 6-9 minutes
+(docs/evidence/2026-10-12-design-verification.md)."""
+
+CANDIDATE_REGULARIZERS: tuple[str, ...] = ("lasso",)
+"""The regularizers the grid tries. Elastic net's forecasts correlated 0.98-1.00
+with lasso's at the same degree on both targets, so it added nothing to choose
+between (docs/evidence/2026-10-12-design-verification.md)."""
 
 CANDIDATE_CONFIGS: tuple[DerivedPolynomial, ...] = tuple(
     DerivedPolynomial(degree=degree, regularizer=regularizer)
     for degree in CANDIDATE_DEGREES
     for regularizer in CANDIDATE_REGULARIZERS
 )
-"""The lasso and elastic-net configurations in the derived polynomial's grid: every
-degree the sponsor allows (up to 5) with each regularizer. On the Sep 2026 data
-degrees 4 and 5 were never the best configuration, but they cost about two minutes
-a run and PBO counts them, so a grid that reaches them is checked for overfitting
-like any other."""
+"""The lasso configurations in the derived polynomial's grid, one per degree in
+``CANDIDATE_DEGREES``."""
 
 SHRINKAGE: str = "shrinkage"
 """The grid's other candidate: ``shrinkage.ShrinkagePolynomial``, a degree-1 fit

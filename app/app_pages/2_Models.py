@@ -329,9 +329,9 @@ def _polynomial_settings(
         _keep(terms_key, int(max_terms))
         settings[DERIVED] = int(max_terms)
         st.caption(
-            f"Tries a small grid of degrees (1-3, of up to {MAX_DEGREE} allowed) and "
-            "regularizers (Lasso, ElasticNet), compares them via PBO, and reports the "
-            "one with the best out-of-sample rank IC."
+            f"Tries a Lasso fit at each degree from 1 to 3 (of up to {MAX_DEGREE} allowed) "
+            "and a shrinkage fit, compares them via PBO, and reports the one with the "
+            "best Signal Rank IC."
         )
         return DERIVED, settings
     formula = st.text_input(

@@ -586,7 +586,7 @@ Values are Python literals as the code holds them.
 | `MAX_AGE` | `forecasting_engine.ingest.fama_french` | `timedelta(days=30)` |
 | `_TIMEOUT_SECONDS` | `forecasting_engine.ingest.fama_french` | `30` |
 | `MAX_DEGREE` | `forecasting_engine.models.polynomial` | `5` |
-| `CANDIDATE_DEGREES` | `forecasting_engine.models.polynomial` | `(1, 2, 3, 4, 5)` |
+| `CANDIDATE_DEGREES` | `forecasting_engine.models.polynomial` | `(1, 2, 3)` |
 | `SHRINKAGE` | `forecasting_engine.models.polynomial` | `"shrinkage"` |
 | `CLIP_SD` | `forecasting_engine.models.shrinkage` | `4.0` |
 | `COMMON_SLOPE_SCALE` | `forecasting_engine.models.shrinkage` | `0.2` |
@@ -598,10 +598,10 @@ Values are Python literals as the code holds them.
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.shrinkage` | `30` |
 | `ECONOMIC_INPUTS` | `forecasting_engine.models.sign_ruled` | `{"equity": {"LF98OAS": 1, "LUACOAS": 1, "VIX": 1, "USYC2Y10": 1}}` |
 | `LEVEL_ROWS` | `forecasting_engine.models.sign_ruled` | `252` |
-| `CANDIDATE_REGULARIZERS` | `forecasting_engine.models.polynomial` | `("lasso", "elasticnet")` |
+| `CANDIDATE_REGULARIZERS` | `forecasting_engine.models.polynomial` | `("lasso",)` |
 | `CLIP_SD` | `forecasting_engine.models.polynomial` | `4.0` |
 | `INNER_CV_SPLITS` | `forecasting_engine.models.polynomial` | `5` |
-| `_REGULARIZERS` | `forecasting_engine.models.polynomial` | `{"lasso": 1.0, "elasticnet": 0.5}` |
+| `_REGULARIZERS` | `forecasting_engine.models.polynomial` | `{"lasso": 1.0}` |
 | `_N_ALPHAS` | `forecasting_engine.models.polynomial` | `100` |
 | `_ALPHA_EPS` | `forecasting_engine.models.polynomial` | `1e-3` |
 | `_PATH_CHUNK` | `forecasting_engine.models.polynomial` | `10` |

@@ -529,7 +529,7 @@ def test_a_cap_no_fit_reaches_changes_nothing():
     panel = _many_signals_panel()
     fits = []
     for cap in (None, 10_000):
-        model = DerivedPolynomial(degree=2, regularizer="elasticnet", max_terms=cap)
+        model = DerivedPolynomial(degree=2, regularizer="lasso", max_terms=cap)
         model.fit(panel, panel.frame.index)
         fits.append(model.describe())
 
