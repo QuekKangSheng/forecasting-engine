@@ -11,7 +11,6 @@ from streamlit.testing.v1 import AppTest
 import glossary
 import model_runs
 from forecasting_engine.extraction.targets import TargetRole
-from forecasting_engine.models import sign_ruled
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult, ScreeningSummary
 from forecasting_engine.reporting.polynomial_function import (
@@ -20,9 +19,6 @@ from forecasting_engine.reporting.polynomial_function import (
     from_description,
 )
 from forecasting_engine.validation.crash import CrashDiagnostics
-
-#: The derived row's own setting, as the Models page writes it.
-DERIVED_SETTING = f"sign-ruled v{sign_ruled.VERSION}"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODELS_PAGE = REPO_ROOT / "app" / "app_pages" / "2_Models.py"
@@ -53,7 +49,6 @@ def _result() -> ModelRunResult:
         oos_rank_ic=0.04,
         signal_rank_ic=0.04,
         rmse=0.01,
-        pbo=0.3,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
         screening=ScreeningSummary(folds=4, fell_back=0, counts=(("VIX_Index_PX_LAST", 4),)),
     )
@@ -69,9 +64,9 @@ def models_page() -> AppTest:
     )
     committed = _committed()
     fn = from_description(description, origin=Origin.DERIVED, target="SPX_Index_PX_LAST", horizon=5)
-    stored = model_runs.StoredRuns((dataset_fingerprint(committed), 20, 252, 20))
+    stored = model_runs.StoredRuns((dataset_fingerprint(committed), 20, 504, 20))
     stored.tabs[TargetRole.EQUITY] = model_runs.TabRuns(
-        {"Polynomial (derived)": DERIVED_SETTING, "Polynomial (user-supplied)": ("", ())},
+        {"Polynomial (derived)": 10, "Polynomial (user-supplied)": ("", ())},
         {"Polynomial (derived)": model_runs.ModelRun(_result(), description, function=fn)},
     )
     app = AppTest.from_file(str(MODELS_PAGE), default_timeout=30)
@@ -109,7 +104,7 @@ def test_the_user_supplied_function_box_explains_both_polynomials(models_page):
     assert function_help == glossary.term("Function source")
 
 
-@pytest.mark.parametrize("metric", ["IC", "Signal Rank IC", "OOS Rank IC", "RMSE", "PBO"])
+@pytest.mark.parametrize("metric", ["IC", "Signal Rank IC", "t", "OOS Rank IC", "RMSE"])
 def test_every_headline_metric_explains_itself(models_page, metric):
     hint = html.escape(glossary.term(metric), quote=True)
     assert f'<th title="{hint}">{metric}' in _table(models_page)
@@ -118,8 +113,8 @@ def test_every_headline_metric_explains_itself(models_page, metric):
 
 def test_the_walk_forward_windows_explain_what_walk_forward_means(models_page):
     helps = _helps(models_page)
-    assert "Walk-forward train window (days)" in helps
-    assert "Walk-forward test window (days)" in helps
+    assert glossary.term("Walk-forward train window (days)") in helps.values()
+    assert glossary.term("Walk-forward test window (days)") in helps.values()
 
 
 def test_the_embargo_caption_explains_the_leak_it_prevents(models_page):
@@ -154,20 +149,18 @@ def _table(app: AppTest) -> str:
 def test_the_comparison_table_explains_every_column_it_can(models_page):
     table = _table(models_page)
     assert not models_page.exception
-    for column in ("IC", "OOS Rank IC", "RMSE", "PBO", "Crash Recall"):
+    for column in ("IC", "OOS Rank IC", "RMSE", "Crash Recall"):
         assert "<th title=" in table
         assert column in table
     explained = [
         "IC",
         "Signal Rank IC",
+        "t",
         "OOS Rank IC",
         "RMSE",
-        "PBO",
         "Crash Recall",
         "Crash Precision",
         "Crash F1",
-        "Rank IC within folds",
-        "Beyond 2 s.e.",
         "Constant folds",
     ]
     for column in explained:

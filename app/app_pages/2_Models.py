@@ -4,8 +4,8 @@ one walk-forward harness under one set of settings and compared side by side
 (FYP-161), with FYP-162's check of whether a forecast's direction would have paid.
 
 Reads the dataset committed via "Use Updated Data" on the Data page. No maths
-lives here — fitting is in forecasting_engine.models.polynomial / sign_ruled /
-famafrench / boosted; the walk-forward loop is in forecasting_engine.validation.harness;
+lives here — fitting is in forecasting_engine.models.polynomial / famafrench /
+boosted; the walk-forward loop is in forecasting_engine.validation.harness;
 table formatting is in forecasting_engine.reporting.model_metrics.
 """
 
@@ -39,7 +39,7 @@ from forecasting_engine.ingest.align import (
 )
 from forecasting_engine.ingest.fama_french import FactorFetchError
 from forecasting_engine.models.base import ModelDescription
-from forecasting_engine.models.boosted import BoostedConfigError, run_boosted
+from forecasting_engine.models.boosted import BoostedConfigError, fits_tuning_period, run_boosted
 from forecasting_engine.models.famafrench import (
     FACTOR_COLUMNS,
     FamaFrenchDataError,
@@ -49,17 +49,22 @@ from forecasting_engine.models.famafrench import (
 )
 from forecasting_engine.models.naive import NaiveDataError, run_naive
 from forecasting_engine.models.polynomial import (
+    CANDIDATE_CONFIGS,
+    CLIP_SD,
+    MAX_DEGREE,
+    DerivedPolynomial,
     PolynomialConfigError,
     placeholders,
+    run_derived_polynomial,
     run_user_polynomial,
 )
+from forecasting_engine.models.shrinkage import ShrinkageDataError
+from forecasting_engine.models.sign_ruled import VERSION as SIGN_RULED_VERSION
 from forecasting_engine.models.sign_ruled import (
-    CLIP_SD,
     SignRuledInputsError,
     economic_signs,
     run_sign_ruled_polynomial,
 )
-from forecasting_engine.models.sign_ruled import VERSION as SIGN_RULED_VERSION
 from forecasting_engine.portfolio.directional import (
     DirectionalDataError,
     directional_pnl,
@@ -84,31 +89,41 @@ from forecasting_engine.reporting.polynomial_function import (
     to_latex,
 )
 from forecasting_engine.store import active_model
-from forecasting_engine.validation.gates import evaluate_candidate, is_high_risk
+from forecasting_engine.validation.gates import (
+    ValidationOutcome,
+    evaluate_candidate,
+    is_high_risk,
+)
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 from model_settings import (
     DEFAULT_HORIZON,
+    DEFAULT_MAX_TERMS,
     DEFAULT_TEST_WINDOW,
-    DEFAULT_TRAIN_WINDOW,
     EMBARGO_DAYS,
     HORIZONS,
+    TRAIN_WINDOW,
 )
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
-NAIVE, FF5, DERIVED, USER, ML = MODEL_ORDER
+NAIVE, FF5, DERIVED, RESEARCH, USER, ML = MODEL_ORDER
 
-ACTIVE_MODEL_CANDIDATES = (DERIVED, USER, ML)
+ACTIVE_MODEL_CANDIDATES = (DERIVED, RESEARCH, USER, ML)
 
-#: Single-configuration models gated on Signal Rank IC alone (no PBO to gate). The
-#: derived polynomial is a forecasting model, not a benchmark like FF5.
-SIGNAL_GATED = (DERIVED,)
+#: Every model but the naive baseline, which is the bar the others are read against.
+GATED = (FF5, DERIVED, RESEARCH, USER, ML)
+
+#: The research model's own setting: the version of its fit, so a saved result
+#: from an older fit is refitted rather than shown.
+RESEARCH_SETTING = f"sign-ruled v{SIGN_RULED_VERSION}"
+
+#: Shown under the research model's row wherever its score is.
+RESEARCH_CAPTION = (
+    "Inputs and signs chosen in the Oct 2026 model research on data overlapping this "
+    "test period; treat its score as optimistic."
+)
 
 #: The polynomial's two sources; exactly one runs.
 DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
-
-#: The derived row's own setting: the sign-ruled fit's version, so a result saved
-#: under an older fit is refitted (docs/methodology.md, section 9).
-SIGN_RULED_SETTING = f"sign-ruled v{SIGN_RULED_VERSION}"
 
 ROLE_NAMES: dict[TargetRole, str] = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
 
@@ -116,15 +131,13 @@ TABLE_COLUMNS: tuple[str, ...] = (
     "Model",
     "IC",
     "Signal Rank IC",
+    "t",
     "OOS Rank IC",
     "RMSE",
-    "PBO",
     "Crash Recall",
     "Crash Precision",
     "Crash F1",
     "Rows scored",
-    "Rank IC within folds",
-    "Beyond 2 s.e.",
     "Constant folds",
 )
 
@@ -135,23 +148,25 @@ BADGE_LABELS = {"success": "Gate met", "danger": "Gate failed"}
 COLUMN_TERMS = {
     "IC": "IC",
     "Signal Rank IC": "Signal Rank IC",
+    "t": "t",
     "OOS Rank IC": "OOS Rank IC",
     "RMSE": "RMSE",
-    "PBO": "PBO",
     "Crash Recall": "Crash diagnostics",
     "Crash Precision": "Crash diagnostics",
     "Crash F1": "Crash diagnostics",
-    "Rank IC within folds": "Rank IC within folds",
-    "Beyond 2 s.e.": "Beyond 2 s.e.",
     "Constant folds": "Constant folds",
 }
 
-GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "pbo": "PBO"}
+GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 
 #: Bumped whenever what a saved result holds changes meaning, so a result saved
 #: by older code is refitted rather than shown under today's columns. 2: the
-#: gate moved to the Signal Rank IC and results carry each fold's baseline.
-RESULT_VERSION = 2
+#: gate moved to the Signal Rank IC and results carry each fold's baseline. 3: the
+#: derived grid reaches degree 5, adds the shrinkage fit, and trains equity on
+#: every earlier date. 4: every model trains on the latest 504 dates, and machine
+#: learning tunes on 252-row folds inside its tuning period. 5: every model
+#: but the naive baseline is gated on Signal Rank IC and t.
+RESULT_VERSION = 5
 
 st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
 ui.inject()
@@ -211,19 +226,17 @@ with st.expander("Settings"):
         format_func=lambda days: f"{days} day" if days == 1 else f"{days} days",
         help=glossary.term("Forecast horizon"),
     )
-    cols = st.columns(2)
-    train = cols[0].number_input(
-        "Walk-forward train window (days)",
-        min_value=10,
-        value=DEFAULT_TRAIN_WINDOW,
-        step=10,
+    train = TRAIN_WINDOW
+    test = DEFAULT_TEST_WINDOW
+    st.caption(
+        f"The train window is fixed: every model on both targets trains on the latest "
+        f"{TRAIN_WINDOW} dates. The research model alone trains on every earlier date, "
+        "as its research did.",
         help=glossary.term("Walk-forward train window (days)"),
     )
-    test = cols[1].number_input(
-        "Walk-forward test window (days)",
-        min_value=1,
-        value=DEFAULT_TEST_WINDOW,
-        step=5,
+    st.caption(
+        f"The test window is fixed: each walk-forward fold is scored on the next "
+        f"{DEFAULT_TEST_WINDOW} dates.",
         help=glossary.term("Walk-forward test window (days)"),
     )
     st.caption(
@@ -251,7 +264,7 @@ stored = model_runs.stored(st.session_state, shared_settings)
 
 #: What every row on the page was run under, stated beside the results (FYP-161).
 SETTINGS_STAMP = (
-    f"{horizon}-day horizon · walk-forward train {int(train)} / test {int(test)} days · "
+    f"{horizon}-day horizon · walk-forward train {int(train)} days / test {int(test)} days · "
     f"embargo {EMBARGO_DAYS} days · signals lagged {PRODUCTION_LAG_DAYS} day · "
     f"first {TUNING_ROWS} dates kept for tuning"
 )
@@ -298,39 +311,21 @@ def _keep(widget_key: str, value: object) -> None:
     st.session_state[f"{widget_key}_kept"] = value
 
 
-SIGN_RULED_CAPTION = (
-    "A degree-1 polynomial in HY OAS, IG OAS, VIX and the 2s10s slope, read as levels "
-    "and each oriented so that a higher value means a higher expected return. Its "
-    "slopes are shrunk toward one common positive slope, and every fold trains on all "
-    "earlier rows, whatever the train window above says. In testing, no term above "
-    "degree 1 helped out of sample. Expect a modest edge, earned mostly when credit "
-    "spreads and VIX spike and then come back down."
-)
-
-
 def _polynomial_settings(
-    key: str,
-    panel: FeaturePanel,
-    run_poly: bool,
-    signs: Mapping[str, int] | None,
-    unavailable: str | None,
+    key: str, panel: FeaturePanel, run_poly: bool
 ) -> tuple[str | None, dict[str, object]]:
     """Which polynomial runs, if any, and each polynomial row's own setting.
 
     Only the chosen source's input is shown. Each row depends only on its own
-    setting, so switching source or unticking clears nothing. ``signs`` are the
-    sign-ruled fit's inputs, or ``None`` (with ``unavailable`` saying why) when this
-    target's data can't support it, which leaves no derived polynomial to run."""
-    formula_key = f"formula_{key}"
+    setting, so switching source or unticking clears nothing."""
+    terms_key, formula_key = f"terms_{key}", f"formula_{key}"
     settings: dict[str, object] = {
-        DERIVED: SIGN_RULED_SETTING,
+        DERIVED: int(_kept(terms_key, DEFAULT_MAX_TERMS)),
         USER: _user_function(key, str(_kept(formula_key, "")), panel),
     }
     if not run_poly:
         return None, settings
-    st.markdown(
-        ui.eyebrow("Polynomial", glossary.term("Function source")), unsafe_allow_html=True
-    )
+    st.markdown(ui.eyebrow("Polynomial", glossary.term("Function source")), unsafe_allow_html=True)
     source = st.radio(
         "Function source",
         (DERIVE_OPTION, OWN_OPTION),
@@ -339,10 +334,20 @@ def _polynomial_settings(
         key=f"poly_source_{key}",
     )
     if source == DERIVE_OPTION:
-        if not signs:
-            st.caption(f"No derived polynomial for this target: {unavailable}")
-            return None, settings
-        st.caption(SIGN_RULED_CAPTION)
+        max_terms = st.number_input(
+            "Max terms per candidate (optional cap)",
+            min_value=1,
+            value=settings[DERIVED],
+            step=1,
+            key=terms_key,
+            help=glossary.term("Max terms"),
+        )
+        _keep(terms_key, int(max_terms))
+        settings[DERIVED] = int(max_terms)
+        st.caption(
+            f"Tries a Lasso fit at each degree from 1 to 3 (of up to {MAX_DEGREE} allowed) "
+            "and a shrinkage fit, and reports the one with the best Signal Rank IC."
+        )
         return DERIVED, settings
     formula = st.text_input(
         "Function — write its shape with placeholders, then pick each one's signal",
@@ -438,13 +443,33 @@ def _latest(series: pd.Series) -> str:
     return f"{present.iloc[-1]:.4g}" if len(present) else "—"
 
 
-def _run_sign_ruled(
+def _run_derived(
+    max_terms: int, panel: FeaturePanel, price_col: str, splitter: PurgedWalkForward
+) -> model_runs.ModelRun:
+    candidates = tuple(
+        DerivedPolynomial(degree=c.degree, regularizer=c.regularizer, max_terms=max_terms)
+        for c in CANDIDATE_CONFIGS
+    )
+    result, description = run_derived_polynomial(panel, splitter, candidates=candidates)
+    fn = from_description(
+        description,
+        origin=Origin.DERIVED,
+        target=price_col,
+        horizon=panel.horizon,
+        columns=panel.signals,
+    )
+    return model_runs.ModelRun(result, description, function=fn)
+
+
+def _run_research(
     signs: Mapping[str, int],
     frame: pd.DataFrame,
     price_col: str,
     horizon: int,
     splitter: PurgedWalkForward,
 ) -> model_runs.ModelRun:
+    """The October 2026 research model, run as the research ran it: its four fixed
+    inputs read as levels, on an expanding window over ``splitter``'s test dates."""
     result, description, panel = run_sign_ruled_polynomial(
         frame, signs, price_col, horizon, splitter
     )
@@ -458,12 +483,20 @@ def _run_sign_ruled(
     return model_runs.ModelRun(result, description, function=fn)
 
 
-def _economic_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None]:
-    """The sign-ruled fit's inputs for ``role``, or why it can't run here."""
+def _research_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None]:
+    """The research model's inputs for ``role``, or why it can't run here."""
     try:
         return economic_signs(signal_cols, sources, role), None
     except SignRuledInputsError as exc:
         return None, str(exc)
+
+
+def _active_settings(name: str) -> dict[str, int | str | None]:
+    """What a model set active was run under. The research model trains on every
+    earlier date, so it has no train window."""
+    if name == RESEARCH:
+        return {**ACTIVE_SETTINGS, "train_window": None}
+    return ACTIVE_SETTINGS
 
 
 def _run_user(
@@ -519,6 +552,7 @@ def _run_naive(panel: FeaturePanel, splitter: PurgedWalkForward) -> model_runs.M
 #: Errors whose message is written for a portfolio manager.
 MODEL_ERRORS = (
     PolynomialConfigError,
+    ShrinkageDataError,
     FamaFrenchDataError,
     BoostedConfigError,
     FactorFetchError,
@@ -621,8 +655,8 @@ def _cell_html(cell: Cell) -> str:
 def _show_table(results: dict[str, ModelRunResult]) -> None:
     # A hand-built table has no Streamlit help=, so each heading explains
     # itself through the browser's own title tooltip.
-    rows = build_metrics_rows(results, gated=SIGNAL_GATED)
-    header ="".join(_header_html(col) for col in TABLE_COLUMNS)
+    rows = build_metrics_rows(results, gated=GATED)
+    header = "".join(_header_html(col) for col in TABLE_COLUMNS)
     body = "".join(
         "<tr>" + "".join(f"<td>{_cell_html(row[col])}</td>" for col in TABLE_COLUMNS) + "</tr>"
         for row in rows
@@ -637,14 +671,15 @@ def _show_table(results: dict[str, ModelRunResult]) -> None:
 def _gate_line(name: str, result: ModelRunResult) -> str:
     if name == NAIVE:
         return f"**{name}**: the baseline to beat — not gated."
-    if result.pbo is None and name not in SIGNAL_GATED:
-        return f"**{name}**: not gated — no configuration search, so no PBO."
-    outcome = evaluate_candidate(result.gated_rank_ic, result.pbo)
-    no_pbo = " (one configuration, so no PBO)" if result.pbo is None else ""
+    outcome = _outcome(result)
     if outcome.promoted:
-        return f"**{name}**: gate met{no_pbo}."
+        return f"**{name}**: gate met — Signal Rank IC above 0.02 and t above 2."
     failed = " and ".join(GATE_NAMES[g] for g in outcome.failed_gates)
-    return f"**{name}**: gate failed on {failed}{no_pbo}."
+    return f"**{name}**: gate failed on {failed}."
+
+
+def _outcome(result: ModelRunResult) -> ValidationOutcome:
+    return evaluate_candidate(result.gated_rank_ic, result.signal_t)
 
 
 def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> None:
@@ -743,12 +778,6 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
             "by a signal, or expands to more than 50 terms), so it has no term table."
         )
         return
-    if run.description.name == "SignRuledPolynomial":
-        st.caption(
-            "Sign-ruled fit: inputs read as levels, slopes shrunk toward one common "
-            "positive slope, every fold trained on all earlier rows. Shown: the latest "
-            "fold's fit."
-        )
     if fn.origin == Origin.DERIVED:
         _show_no_signal_folds(run.result.screening)
         _show_fold_term_count(fn, run.result.terms)
@@ -794,10 +823,6 @@ def _show_famafrench(run: model_runs.ModelRun) -> None:
 def _show_ml(run: model_runs.ModelRun) -> None:
     _show_fitted_terms(run.description, is_ml=True)
     _show_no_signal_folds(run.result.screening)
-    st.caption(
-        "PBO here compares only two candidates, tuned XGBoost and tuned LightGBM, so it "
-        "is coarse — read it as a rough check rather than a precise probability."
-    )
     tuning = run.tuning
     if tuning is None:
         return
@@ -866,7 +891,7 @@ def _confirm_high_risk(
     cols = st.columns(2)
     if cols[0].button("Set active anyway", type="primary", key=f"confirm_{role.value}"):
         active_model.set_active_model(
-            role, model_name, result, high_risk=True, **ACTIVE_SETTINGS
+            role, model_name, result, high_risk=True, **_active_settings(model_name)
         )
         st.session_state.pop(pending_key, None)
         st.rerun()
@@ -903,18 +928,18 @@ def _show_active_picker(
     pending_key = f"pending_active_{key}"
     if cols[1].button("Set as active", key=f"set_active_{key}"):
         result = runs[selected].result
-        if is_high_risk(evaluate_candidate(result.gated_rank_ic, result.pbo)):
+        if is_high_risk(_outcome(result)):
             st.session_state[pending_key] = selected
         else:
             st.session_state.pop(pending_key, None)
             active_model.set_active_model(
-                role, selected, result, high_risk=False, **ACTIVE_SETTINGS
+                role, selected, result, high_risk=False, **_active_settings(selected)
             )
             st.rerun()
     pending = st.session_state.get(pending_key)
     if pending in runs:
         result = runs[pending].result
-        outcome = evaluate_candidate(result.gated_rank_ic, result.pbo)
+        outcome = _outcome(result)
         _confirm_high_risk(role, pending, result, outcome.failed_gates, target_name)
 
 
@@ -925,9 +950,7 @@ def _directional_default(role: TargetRole, options: list[str], runs) -> int:
     if current is not None and current.model_name in options:
         return options.index(current.model_name)
     for i, name in enumerate(options):
-        result = runs[name].result
-        gated = result.pbo is not None or name in SIGNAL_GATED
-        if gated and evaluate_candidate(result.gated_rank_ic, result.pbo).promoted:
+        if name in GATED and _outcome(runs[name].result).promoted:
             return i
     forecasting = [i for i, name in enumerate(options) if name in ACTIVE_MODEL_CANDIDATES]
     return forecasting[0] if forecasting else 0
@@ -1048,13 +1071,29 @@ def _show_directional(
 def _render_tab(role: TargetRole, price_col: str) -> None:
     target_name = label(price_col)
     key = role.value
-    # FF5 is an equity-factor benchmark, so only the Equity tab offers it.
-    check_cols = st.columns([3, 4, 4, 7] if role == TargetRole.EQUITY else [3, 4, 11])
+    # FF5 is an equity-factor benchmark and the research model's inputs are equity
+    # gauges, so only the Equity tab offers them.
+    equity = role == TargetRole.EQUITY
+    check_cols = st.columns([3, 4, 6, 4, 1] if equity else [3, 4, 11])
     run_poly = check_cols[0].checkbox("Polynomial", value=True, key=f"run_poly_{key}")
-    run_ff5 = role == TargetRole.EQUITY and check_cols[1].checkbox(
-        "Fama-French 5", value=True, key=f"run_ff5_{key}"
+    run_ff5 = equity and check_cols[1].checkbox("Fama-French 5", value=True, key=f"run_ff5_{key}")
+    research_ticked = equity and check_cols[2].checkbox(
+        RESEARCH,
+        value=True,
+        key=f"run_research_{key}",
+        help=glossary.term(RESEARCH),
     )
-    run_ml = check_cols[-2].checkbox("Machine learning", value=True, key=f"run_ml_{key}")
+    ml_fits = fits_tuning_period(int(train), int(test), EMBARGO_DAYS, TUNING_ROWS)
+    ml_ticked = check_cols[-2].checkbox(
+        "Machine learning", value=True, key=f"run_ml_{key}", disabled=not ml_fits
+    )
+    run_ml = ml_fits and ml_ticked
+    if not ml_fits:
+        st.caption(
+            f"Machine learning can't run with a {int(train)}-day train window: it tunes on "
+            f"the first {TUNING_ROWS} dates, which leaves no room for its own walk-forward "
+            "folds."
+        )
     _show_active_status(role, target_name)
     if not signal_cols:
         st.info("Need at least one other signal column, alongside the target, to model.")
@@ -1063,13 +1102,20 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     panel = align_and_lag(indexed, signal_cols, price_col, horizon=horizon, transforms=transforms)
     _show_alignment(panel, target_name)
 
-    signs, unavailable = _economic_signs(role)
-    polynomial, settings = _polynomial_settings(key, panel, run_poly, signs, unavailable)
+    polynomial, settings = _polynomial_settings(key, panel, run_poly)
+    signs, unavailable = _research_signs(role) if equity else (None, None)
+    if research_ticked and not signs:
+        st.caption(f"No research model for this target: {unavailable}")
+    run_research = research_ticked and bool(signs)
+    if equity:
+        settings[RESEARCH] = RESEARCH_SETTING
     tab_runs = model_runs.tab(stored, role, settings)
     models = [NAIVE]
     user_formula, user_bindings = settings[USER]
     if polynomial == DERIVED or (polynomial == USER and user_formula and user_bindings is not None):
         models.append(polynomial)
+    if run_research:
+        models.append(RESEARCH)
     if run_ff5:
         models.append(FF5)
     if run_ml:
@@ -1084,8 +1130,9 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if (clicked or run_all) and not nothing_to_run and not running:
         runners = {
             NAIVE: functools.partial(_run_naive, panel, splitter),
-            DERIVED: functools.partial(
-                _run_sign_ruled, signs, indexed, price_col, horizon, splitter
+            DERIVED: functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter),
+            RESEARCH: functools.partial(
+                _run_research, signs, indexed, price_col, horizon, splitter
             ),
             USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
@@ -1123,13 +1170,22 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         if name in runs:
             st.markdown(_gate_line(name, runs[name].result))
     _show_table({name: run.result for name, run in runs.items()})
+    if RESEARCH in runs:
+        st.caption(f"{RESEARCH}: {RESEARCH_CAPTION}")
     _show_directional(role, runs, target_name)
     _show_active_picker(role, runs, target_name)
 
     _show_screening(runs, target_name)
-    for name in (DERIVED, USER):
+    for name in (DERIVED, RESEARCH, USER):
         if name in runs:
             with st.expander(f"{name} · {target_name}"):
+                if name == RESEARCH:
+                    st.caption(
+                        "HY OAS, IG OAS, VIX and the 2s10s slope, read as levels and "
+                        "fixed by the research. Each fold trains on every date before "
+                        f"its test window, not the latest {TRAIN_WINDOW}, as the "
+                        "research did. " + RESEARCH_CAPTION
+                    )
                 _show_polynomial(runs[name])
     if FF5 in runs and role == TargetRole.EQUITY:
         with st.expander(f"Fama-French 5 · {target_name}"):

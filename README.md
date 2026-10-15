@@ -20,8 +20,11 @@ Then run the dashboard:
 uv run streamlit run app/Home.py
 ```
 
-It opens at <http://localhost:8501>. The pages follow the order a portfolio
-manager works in:
+It opens at <http://localhost:8501>. A Run spreads independent work over up to
+4 processes; on a machine with more cores, set `FORECASTING_WORKERS` (for
+example `FORECASTING_WORKERS=8`) before starting it. The results are the same
+either way. The pages follow the order a portfolio
+manager works in, and **Home** says where the pipeline stands and what to do next:
 
 1. **Data** — upload the terminal's original Bloomberg history exports (CSV or
    XLSX), with the equity and bond target indices in one box and every other
@@ -68,8 +71,9 @@ hosting step is needed.
   changes across every numeric Bloomberg column; values are reported, not altered.
 - **Gap review** — identifies rows with missing values and lets the user include
   or exclude them from downloads.
-- **Data quality report** — on the dashboard's front page: date range,
-  per-column completeness, and every flagged observation, expandable by column.
+- **Data quality report** — on the Data page: date range, per-column
+  completeness, and every flagged observation, expandable by column. Home shows
+  how many observations it flagged.
 - **Lag-safe alignment** — signals are read as of each target date and lagged
   one row, so a model never sees a value before it was published.
 
@@ -78,17 +82,18 @@ hosting step is needed.
 - **Model families**, each forecasting a 1-, 5-, 10- or 20-day forward return:
   - a naive training-mean baseline, the bar every model has to beat;
   - the Fama-French five-factor benchmark (equity only);
-  - a polynomial, one at a time: derived automatically (the sign-ruled fit on HY
-    OAS, IG OAS, VIX and the 2s10s slope, equity only), or the user's own shape (placeholders pointed at signals) with only a scale and
+  - a polynomial, one at a time: derived automatically from the signals (a grid of
+    lasso fits at degrees 1 to 3 and a shrinkage fit, chosen per run),
+    or the user's own shape (placeholders pointed at signals) with only a scale and
     intercept fitted;
   - machine learning: XGBoost and LightGBM, tuned with Optuna on a rolling
     schedule, with SHAP feature attribution.
-- **Walk-forward validation** — every model is trained on a past window and
-  scored on the days after it, with an embargo between the two, under one shared
-  set of settings that the results table states.
+- **Walk-forward validation** — every model on both targets is trained on the
+  latest 504 trading days and scored on the next 20, with a 20-day embargo
+  between the two, under one shared set of settings that the results table states.
 - **Overfitting checks** — Signal Rank IC (what a model adds to its training-mean
-  forecast, out of sample), PBO (probability of backtest overfitting), crash-day
-  diagnostics, and promotion gates on Signal Rank IC and PBO.
+  forecast, out of sample) with its Newey-West t, crash-day diagnostics, and a
+  promotion gate on both: Signal Rank IC above 0.02 and t above 2.
 - **Active model** — the model chosen to carry forward for each index, saved in
   DuckDB, with a confirmation step for a model that failed both gates.
 - **Directional P&L** — for one model and one index, what holding the index only
@@ -100,7 +105,8 @@ hosting step is needed.
 
 - **Optimiser** — starts from 50/50 and tilts towards whichever index the active
   models' signals favour, sized by recent risk and a 1–5 risk-aversion scale,
-  rebalanced every forecast horizon.
+  rebalanced every forecast horizon, and trading only when a move is worth its
+  cost (a no-trade band around the weight the portfolio has drifted to).
 - **Backtest against 50/50** — runs the optimised weights and a monthly-reset
   50/50 benchmark through the same days, before and after trading costs, and
   compares Sharpe, Sortino, Calmar and maximum drawdown side by side.
@@ -128,7 +134,7 @@ src/forecasting_engine/     core library, never imports Streamlit
   ingest/                   upload checks, Fama-French factors, lag-safe alignment
   features/                 signal screening
   models/                   naive, Fama-French, polynomial and boosted forecasters
-  validation/               walk-forward splitter, metrics, PBO, crash checks, gates
+  validation/               walk-forward splitter, metrics, crash checks, gates
   portfolio/                optimiser, backtest, performance, directional P&L
   reporting/                tables and labels the dashboard shows
   store/                    DuckDB upload and active-model history

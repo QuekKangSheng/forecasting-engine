@@ -5,9 +5,10 @@ import pytest
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.polynomial import (
     PolynomialConfigError,
+    run_derived_polynomial,
     run_user_polynomial,
 )
-from forecasting_engine.reporting.model_metrics import NO_CONFIG_SEARCH, build_metrics_rows
+from forecasting_engine.reporting.model_metrics import build_metrics_rows
 from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
@@ -25,28 +26,44 @@ def _splitter() -> PurgedWalkForward:
     return PurgedWalkForward(train=30, test=8, embargo=2)
 
 
-def test_run_user_polynomial_has_no_configuration_search():
+def test_run_user_polynomial_is_scored_like_any_model():
     result, description = run_user_polynomial("2 * sig", _panel(), _splitter())
-    assert result.pbo is None
     assert result.oos_rank_ic == result.oos_rank_ic  # a real number, not NaN
     assert description.terms == ("2 * sig",)
 
 
 def test_run_user_polynomial_result_matches_the_shared_comparison_contract():
-    """Regression test: a pbo=None result (no configuration search) must
-    still plug into evaluate_candidate() and build_metrics_rows() without
-    raising — this exact shape once crashed evaluate_candidate() (fixed in
-    validation/gates.py) because nothing had exercised it before FF5/FYP-42."""
+    """Regression test: a single-configuration result must plug into
+    evaluate_candidate() and build_metrics_rows() without raising."""
     result, _description = run_user_polynomial("2 * sig", _panel(), _splitter())
 
-    outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
+    outcome = evaluate_candidate(result.gated_rank_ic, result.signal_t)
     assert outcome.promoted in (True, False)
 
     rows = build_metrics_rows({"Polynomial": result})
-    assert rows[0]["PBO"].text == NO_CONFIG_SEARCH
+    assert "t" in rows[0]
 
 
 def test_run_user_polynomial_raises_when_the_split_produces_no_folds():
     too_short = _panel(n=20)
     with pytest.raises(PolynomialConfigError):
         run_user_polynomial("sig", too_short, _splitter())
+
+
+def test_run_derived_polynomial_reports_the_winning_candidate():
+    result, description = run_derived_polynomial(_panel(), _splitter())
+    assert result.signal_rank_ic == result.signal_rank_ic  # a real number, not NaN
+    assert description.terms  # the winning candidate's surviving terms
+
+
+def test_run_derived_polynomial_result_matches_the_shared_comparison_contract():
+    """Regression test against FYP-14's contract: a Polynomial run must plug
+    into evaluate_candidate() and build_metrics_rows() completely unmodified."""
+    result, _description = run_derived_polynomial(_panel(), _splitter())
+
+    outcome = evaluate_candidate(result.gated_rank_ic, result.signal_t)
+    assert outcome.promoted in (True, False)
+
+    rows = build_metrics_rows({"Polynomial": result})
+    assert rows[0]["Model"].text == "Polynomial"
+    assert "t" in rows[0]

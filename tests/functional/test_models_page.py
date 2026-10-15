@@ -26,7 +26,7 @@ from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest import fama_french
 from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile, ResolvedFactors
 from forecasting_engine.ingest.provenance import SourceFile
-from forecasting_engine.models import boosted, sign_ruled
+from forecasting_engine.models import boosted
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import Tune, TuningLog
 from forecasting_engine.models.famafrench import FACTOR_COLUMNS, FactorCoverage
@@ -53,22 +53,29 @@ AGG = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
 POLY = "Polynomial (derived)"
 USER_POLY = "Polynomial (user-supplied)"
 #: The settings these tests run the page under (see ``small_data_defaults``):
-#: 5-day horizon, 120/20 walk-forward windows, the derived polynomial's version and
-#: a blank user-supplied function.
+#: 5-day horizon, 120/20 walk-forward windows, a 10-term cap on the derived
+#: polynomial, a blank user-supplied function and the research model's fit version.
 DEFAULT_SHARED = (5, 120, 20)
-DEFAULT_MODEL_SETTINGS = {POLY: f"sign-ruled v{sign_ruled.VERSION}", USER_POLY: ("", ())}
+DEFAULT_MODEL_SETTINGS = {
+    POLY: 10,
+    USER_POLY: ("", ()),
+    "Research model (fixed inputs)": "sign-ruled v1",
+}
 NAIVE = "Naive (training mean)"
 
 
 @pytest.fixture(autouse=True)
 def small_data_defaults(request, monkeypatch):
-    """The fixture data is 200 rows, too short for the real 252-day default train
-    window, so the page starts at a 5-day horizon and a 120-day window instead.
-    A test marked ``real_defaults`` sees the page's own defaults."""
+    """The fixture data is 200 rows, too short for the real 252-day train window,
+    so the page runs at a 5-day horizon and a 120-day window instead. A test marked
+    ``real_defaults`` sees the page's own settings."""
     if "real_defaults" in request.keywords:
         return
     monkeypatch.setattr(model_settings, "DEFAULT_HORIZON", 5)
-    monkeypatch.setattr(model_settings, "DEFAULT_TRAIN_WINDOW", 120)
+    monkeypatch.setattr(model_settings, "TRAIN_WINDOW", 120)
+    # The fixture's 40-row tuning period is too short for machine learning to
+    # tune in for real; its runs are stubbed, so let the page offer it.
+    monkeypatch.setattr(boosted, "fits_tuning_period", lambda *args: True)
 
 
 @pytest.fixture(autouse=True)
@@ -102,7 +109,7 @@ def _committed(*, bond: bool = False) -> pd.DataFrame:
 def _result(
     screening: ScreeningSummary | None = None,
     *,
-    pbo: float | None = 0.3,
+    se: float = 0.01,
     oos_rank_ic: float = 0.04,
     terms: FoldTerms | None = None,
 ) -> ModelRunResult:
@@ -111,7 +118,8 @@ def _result(
         oos_rank_ic=oos_rank_ic,
         signal_rank_ic=oos_rank_ic,
         rmse=0.01,
-        pbo=pbo,
+        signal_rank_ic_se=se,
+        signal_rank_ic_se_test=se,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
         screening=screening,
         terms=terms,
@@ -239,7 +247,12 @@ def test_the_model_checkboxes_default_to_every_family_and_none_is_compulsory():
     app = _page()
 
     boxes = {c.label: c for c in app.checkbox}
-    assert set(boxes) == {"Polynomial", "Fama-French 5", "Machine learning"}
+    assert set(boxes) == {
+        "Polynomial",
+        "Fama-French 5",
+        "Research model (fixed inputs)",
+        "Machine learning",
+    }
     assert all(box.value and not box.disabled for box in boxes.values())
 
 
@@ -251,12 +264,32 @@ def test_settings_hold_the_horizon_windows_and_embargo():
     (horizon,) = settings.segmented_control
     assert list(horizon.options) == ["1 day", "5 days", "10 days", "20 days"]
     assert horizon.value == 20
-    windows = {n.label: n.value for n in settings.number_input}
-    assert windows == {
-        "Walk-forward train window (days)": 252,
-        "Walk-forward test window (days)": 20,
-    }
+    assert not settings.number_input
     assert any(c.value.startswith("Embargo is fixed") for c in settings.caption)
+
+
+@pytest.mark.real_defaults
+def test_the_train_and_test_windows_are_fixed_and_stated_not_chosen():
+    app = _page()
+
+    (settings,) = [e for e in app.expander if e.label == "Settings"]
+    assert not [c for c in settings.segmented_control if "train" in c.label.lower()]
+    assert not settings.number_input
+    captions = _captions(app)
+    assert (
+        "The train window is fixed: every model on both targets trains on the latest "
+        "504 dates."
+    ) in captions
+    assert "The test window is fixed: each walk-forward fold is scored on the next 20 dates." in (
+        captions
+    )
+
+
+def test_every_model_trains_on_the_same_rolling_window(splitter_calls, stub_ml):
+    app = _press_run(_untick(_page(), "Fama-French 5", "Machine learning"))
+
+    assert not app.exception
+    assert {call["train"] for call in splitter_calls} == {120}
 
 
 def test_the_embargo_and_signal_lag_are_not_inputs():
@@ -382,8 +415,9 @@ def test_the_comparison_table_has_one_row_per_completed_model_with_every_metric_
     assert len(rows) == 3  # header + Polynomial + Machine Learning
 
     headers = re.findall(r"<th[^>]*>([^<]+)", rows[0])
-    for column in ("Model", "IC", "Signal Rank IC", "OOS Rank IC", "RMSE", "PBO", "Crash Recall"):
+    for column in ("Model", "IC", "Signal Rank IC", "t", "OOS Rank IC", "RMSE", "Crash Recall"):
         assert column in headers
+    assert "PBO" not in headers  # removed: every model is gated on Signal Rank IC and t
 
     # Both stored runs share the same fixture values (_result()'s defaults), so every
     # model's row should format each metric the same way, to the same precision.
@@ -391,7 +425,7 @@ def test_the_comparison_table_has_one_row_per_completed_model_with_every_metric_
         cells = re.findall(r"<td>([^<]*)", data_row)
         assert cells[headers.index("IC")] == "0.0500"
         assert cells[headers.index("RMSE")] == "0.0100"
-        assert cells[headers.index("PBO")].startswith("0.3000")
+        assert cells[headers.index("t")].startswith("4.00")  # 0.04 / its 0.01 s.e.
         assert cells[headers.index("Crash Recall")] == "0.5000"
 
 
@@ -402,17 +436,17 @@ def test_the_table_shows_rows_scored():
 
 
 def test_each_model_gets_a_one_line_gate_summary():
-    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    failing = _result(oos_rank_ic=0.01)
     benchmark = model_runs.ModelRun(
-        _result(pbo=None),
+        _result(),
         ModelDescription("FamaFrench5", FACTOR_COLUMNS, (0.1,) * 5),
         coverage=FactorCoverage(pd.Timestamp("2024-01-01"), pd.Timestamp("2024-08-30"), 150, 5),
     )
     app = _page({EQUITY: {POLY: _polynomial_run(failing), "FF5 Benchmark": benchmark}})
 
     text = _markdown(app)
-    assert "**Polynomial (derived)**: gate failed on Signal Rank IC and PBO." in text
-    assert "**FF5 Benchmark**: not gated" in text
+    assert "**Polynomial (derived)**: gate failed on Signal Rank IC and t." in text
+    assert "**FF5 Benchmark**: gate met — Signal Rank IC above 0.02 and t above 2." in text
 
 
 def test_each_targets_results_stay_in_its_own_tab():
@@ -463,7 +497,7 @@ def test_setting_a_new_active_model_replaces_the_prior_one():
 
 def test_the_active_model_picker_excludes_benchmarks():
     benchmark = model_runs.ModelRun(
-        _result(pbo=None),
+        _result(),
         ModelDescription("FamaFrench5", FACTOR_COLUMNS, (0.1,) * 5),
         coverage=FactorCoverage(pd.Timestamp("2024-01-01"), pd.Timestamp("2024-08-30"), 150, 5),
     )
@@ -491,7 +525,7 @@ def test_with_no_forecasting_model_run_the_picker_shows_a_caption_instead():
 
 
 def test_a_high_risk_model_asks_for_confirmation_before_being_set_active():
-    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    failing = _result(oos_rank_ic=0.01)
     app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
     next(b for b in app.button if b.label == "Set as active").click().run()
 
@@ -502,7 +536,7 @@ def test_a_high_risk_model_asks_for_confirmation_before_being_set_active():
 
 
 def test_confirming_a_high_risk_model_sets_it_active():
-    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    failing = _result(oos_rank_ic=0.01)
     app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
     next(b for b in app.button if b.label == "Set as active").click().run()
     next(b for b in app.button if b.label == "Set active anyway").click().run()
@@ -513,7 +547,7 @@ def test_confirming_a_high_risk_model_sets_it_active():
 
 
 def test_cancelling_a_high_risk_model_leaves_nothing_active():
-    failing = _result(oos_rank_ic=0.01, pbo=0.7)
+    failing = _result(oos_rank_ic=0.01)
     app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
     next(b for b in app.button if b.label == "Set as active").click().run()
     next(b for b in app.button if b.label == "Cancel").click().run()
@@ -523,7 +557,7 @@ def test_cancelling_a_high_risk_model_leaves_nothing_active():
 
 
 def test_a_model_that_only_fails_one_gate_is_not_treated_as_high_risk():
-    one_gate_failing = _result(oos_rank_ic=0.01, pbo=0.3)
+    one_gate_failing = _result(oos_rank_ic=0.01, se=0.001)  # t is 10; the IC fails
     app = _page({EQUITY: {POLY: _polynomial_run(one_gate_failing)}})
     next(b for b in app.button if b.label == "Set as active").click().run()
 
@@ -668,24 +702,15 @@ def _two_tabs() -> dict:
     return {EQUITY: {POLY: _polynomial_run()}, BOND: {POLY: _polynomial_run()}}
 
 
-def test_changing_a_shared_setting_clears_every_tabs_results():
-    app = _page(_two_tabs(), bond=True)
-    (train,) = [n for n in app.number_input if n.label.startswith("Walk-forward train")]
-    train.set_value(130).run()
-
-    assert not app.exception
-    assert _stored_runs(app, EQUITY) == {}
-    assert _stored_runs(app, BOND) == {}
-    assert not _has_table(app)
-
-
 def test_changing_the_horizon_clears_every_tabs_results():
     app = _page(_two_tabs(), bond=True)
     (horizon,) = [c for c in app.segmented_control if c.label == "Forecast horizon"]
     horizon.set_value(1).run()
 
+    assert not app.exception
     assert _stored_runs(app, EQUITY) == {}
     assert _stored_runs(app, BOND) == {}
+    assert not _has_table(app)
 
 
 def test_changing_a_function_clears_only_that_tabs_user_supplied_row():
@@ -701,11 +726,11 @@ def test_changing_a_function_clears_only_that_tabs_user_supplied_row():
     assert set(_stored_runs(app, BOND)) == {POLY, USER_POLY}
 
 
-def test_a_new_version_of_the_derived_fit_clears_only_that_tabs_derived_row(monkeypatch):
+def test_changing_the_term_cap_clears_only_that_tabs_derived_row():
     tabs = {EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run()}}
     app = _page(tabs)
-    monkeypatch.setattr(sign_ruled, "VERSION", sign_ruled.VERSION + 1)
-    app.run()
+    (cap,) = [n for n in app.number_input if n.label.startswith("Max terms")]
+    cap.set_value(5).run()
 
     assert set(_stored_runs(app)) == {"Machine Learning"}
 
@@ -721,19 +746,22 @@ def test_switching_the_polynomial_source_clears_nothing_and_keeps_each_input():
     tabs = {EQUITY: {POLY: _polynomial_run(), USER_POLY: _polynomial_run()}}
     app = _page(tabs)
     _source(app).set_value(OWN).run()
+    assert not [n for n in app.number_input if n.label.startswith("Max terms")]
     _source(app).set_value(DERIVE).run()
 
     assert set(_stored_runs(app)) == {POLY, USER_POLY}
+    (cap,) = [n for n in app.number_input if n.label.startswith("Max terms")]
+    assert cap.value == 10
 
 
 def test_only_the_chosen_sources_input_is_shown():
-    app = _economic_page()
-    assert "shrunk toward one common positive slope" in _captions(app)
+    app = _page()
+    assert [n for n in app.number_input if n.label.startswith("Max terms")]
     assert not [t for t in app.text_input if t.label.startswith("Function")]
 
     _source(app).set_value(OWN).run()
 
-    assert "shrunk toward one common positive slope" not in _captions(app)
+    assert not [n for n in app.number_input if n.label.startswith("Max terms")]
     assert [t for t in app.text_input if t.label.startswith("Function")]
 
 
@@ -804,7 +832,7 @@ def test_run_fits_every_ticked_model_and_one_failure_does_not_stop_the_rest(monk
 
 
 def test_the_naive_baseline_runs_every_time_on_the_polynomials_rows(stub_ml):
-    app = _press_run(_untick(_economic_page(), "Fama-French 5", "Machine learning"))
+    app = _press_run(_untick(_page(), "Fama-French 5", "Machine learning"))
 
     runs = _stored_runs(app)
     assert runs[NAIVE].result.rows_scored == runs[POLY].result.rows_scored
@@ -863,7 +891,7 @@ def test_each_tab_has_its_own_model_checkboxes():
 
 @pytest.mark.parametrize(("source", "ran"), [("derive", POLY), ("own", USER_POLY)])
 def test_only_the_chosen_polynomial_runs(stub_ml, source, ran):
-    app = _untick(_economic_page(), "Fama-French 5", "Machine learning")
+    app = _untick(_page(), "Fama-French 5", "Machine learning")
     app = _run_equity(app) if source == "own" else _press_run(app)
 
     assert set(_stored_runs(app)) == {NAIVE, ran}
@@ -912,11 +940,10 @@ def test_a_broken_function_fails_its_own_row_but_the_rest_still_run(stub_ml):
     assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
 
 
-def test_ml_results_show_shap_and_the_coarse_pbo_note(stub_ml):
+def test_ml_results_show_shap(stub_ml):
     app = _run_equity(_untick(_page(), "Fama-French 5"))
 
     assert "Feature attribution (SHAP)" in _markdown(app)
-    assert "only two candidates" in _captions(app)
 
 
 def test_ml_results_show_which_tune_each_fold_used_and_the_latest_settings(stub_ml):
@@ -1001,7 +1028,7 @@ def test_changing_a_placeholders_signal_clears_only_the_user_supplied_row():
 def test_a_user_function_is_shown_as_its_fitted_scale_and_intercept():
     description = ModelDescription("UserPolynomial", (f"{VIX} / {IG}",), (0.0004,), -0.0012)
     fn = from_description(description, origin=Origin.USER_SUPPLIED, target=SPX, horizon=5)
-    run = model_runs.ModelRun(_result(pbo=None), description, function=fn)
+    run = model_runs.ModelRun(_result(), description, function=fn)
     app = _page({EQUITY: {USER_POLY: run}})
 
     (equation,) = [e.value for e in app.latex]
@@ -1127,8 +1154,8 @@ def test_the_results_state_the_settings_every_row_was_run_under():
     captions = _captions(_page({EQUITY: {POLY: _polynomial_run()}}))
 
     assert (
-        "Every row was run under: 5-day horizon · walk-forward train 120 / test 20 days · "
-        "embargo 20 days · signals lagged 1 day"
+        "Every row was run under: 5-day horizon · walk-forward train 120 days / test 20 "
+        "days · embargo 20 days · signals lagged 1 day"
     ) in captions
 
 
@@ -1152,8 +1179,8 @@ def test_a_user_supplied_function_can_be_set_active():
 
 def test_a_shared_change_says_why_the_results_went():
     app = _page(_two_tabs(), bond=True)
-    (train,) = [n for n in app.number_input if n.label.startswith("Walk-forward train")]
-    train.set_value(130).run()
+    (horizon,) = [c for c in app.segmented_control if c.label == "Forecast horizon"]
+    horizon.set_value(1).run()
 
     assert "were cleared because the data or a shared setting changed" in _captions(app)
 
@@ -1262,9 +1289,15 @@ def test_a_run_without_saved_forecasts_shows_no_directional_check():
     assert not [s for s in app.selectbox if s.label == "Forecasts from"]
 
 
-# --- the sign-ruled derived polynomial -------------------------------------------
+# --- the research model (fixed inputs) ----------------------------------------------
 
-ECONOMIC = {
+RESEARCH = "Research model (fixed inputs)"
+RESEARCH_CAPTION = (
+    "Inputs and signs chosen in the Oct 2026 model research on data overlapping this "
+    "test period; treat its score as optimistic."
+)
+#: The research model's four inputs, by the ticker it finds each one by.
+RESEARCH_INPUTS = {
     "LF98OAS_Index_PX_LAST": "LF98OAS Index",
     "LUACOAS_Index_PX_LAST": "LUACOAS Index",
     "VIX_Index_PX_LAST": "VIX Index",
@@ -1272,52 +1305,79 @@ ECONOMIC = {
 }
 
 
-def _economic_page(*, bond: bool = False) -> AppTest:
-    """The page on data holding every input the sign-ruled fit needs."""
-    committed = _committed(bond=bond)
-    rng = np.random.default_rng(7)
-    n = len(committed)
-    committed["LF98OAS_Index_PX_LAST"] = 4 + np.cumsum(rng.normal(scale=0.05, size=n))
-    committed["USYC2Y10_Index_PX_LAST"] = 30 + np.cumsum(rng.normal(size=n))
-    sources = {c: ColumnSource(security=s, field="PX_LAST") for c, s in ECONOMIC.items()}
-    sources[SPX] = ColumnSource(security="SPX Index", field="PX_LAST")
-    if bond:
-        sources[AGG] = ColumnSource(security="LBUSTRUU Index", field="TOT_RETURN_INDEX_GROSS_DVDS")
-    return _page(bond=bond, sources=sources, committed=committed)
+def _with_research_inputs() -> tuple[pd.DataFrame, dict[str, ColumnSource]]:
+    committed = _committed()
+    rng = np.random.default_rng(1)
+    committed["LF98OAS_Index_PX_LAST"] = 4 + np.cumsum(rng.normal(scale=0.05, size=200))
+    committed["USYC2Y10_Index_PX_LAST"] = 0.5 + np.cumsum(rng.normal(scale=0.02, size=200))
+    sources = {SPX: ColumnSource("SPX Index", "PX_LAST")}
+    sources |= {col: ColumnSource(security, "PX_LAST") for col, security in RESEARCH_INPUTS.items()}
+    return committed, sources
 
 
-def test_deriving_automatically_explains_the_sign_ruled_fit_and_offers_no_other():
-    app = _economic_page()
-    assert "all earlier rows" in _captions(app)
-    assert not [r for r in app.radio if r.label == "Derivation method"]
-    assert not [n for n in app.number_input if n.label.startswith("Max terms")]
+def test_only_the_equity_tab_offers_the_research_model_with_its_own_checkbox():
+    app = _page(bond=True)
+
+    labels = [c.label for c in app.checkbox]
+    assert labels.count(RESEARCH) == 1
+    assert labels.count("Polynomial") == 2
 
 
-def test_without_its_inputs_no_derived_polynomial_runs_and_the_page_says_why(stub_ml):
-    app = _page()
-    assert "needs LF98OAS" in _captions(app)
-    app = _press_run(_untick(app, "Fama-French 5"))
-    assert POLY not in _stored_runs(app)
-
-
-def test_the_bond_tab_has_no_derived_polynomial(stub_ml):
-    app = _economic_page(bond=True)
-    assert "equity target only" in _captions(app)
-    (_equity_run, bond_run) = [b for b in app.button if b.label == "Run"]
-    bond_run.click().run()
-    assert POLY not in _stored_runs(app, BOND)
-
-
-def test_running_the_sign_ruled_fit_shows_its_equation_in_the_four_gauges(stub_ml):
-    app = _press_run(_untick(_economic_page(), "Fama-French 5", "Machine learning"))
+def test_without_its_inputs_the_research_model_says_so_and_runs_nothing(stub_ml):
+    app = _press_run(_untick(_page(), "Fama-French 5"))
 
     assert not app.exception
-    run = _stored_runs(app)[POLY]
-    assert run.description.name == "SignRuledPolynomial"
-    assert set(run.description.terms) == set(ECONOMIC)
-    assert run.result.pbo is None
-    assert run.result.rows_scored == _stored_runs(app)[NAIVE].result.rows_scored
-    assert "shrunk toward one common positive slope" in _captions(app)
-    # A forecasting model, so gated on Signal Rank IC even with no PBO; not a benchmark.
-    assert "**Polynomial (derived)**: gate" in _markdown(app)
-    assert "(one configuration, so no PBO)" in _markdown(app)
+    assert (
+        "No research model for this target: the sign-ruled polynomial needs LF98OAS, "
+        "LUACOAS, VIX, USYC2Y10 in the committed data." in _captions(app)
+    )
+    assert RESEARCH not in _stored_runs(app)
+
+
+def test_the_research_model_runs_beside_the_derived_polynomial_on_the_same_dates(stub_ml):
+    committed, sources = _with_research_inputs()
+    app = _page(committed=committed, sources=sources)
+    app = _press_run(_untick(app, "Fama-French 5", "Machine learning"))
+
+    assert not app.exception
+    runs = _stored_runs(app)
+    assert {NAIVE, POLY, RESEARCH} <= set(runs)
+    assert runs[RESEARCH].result.forecast.index[0] == runs[POLY].result.forecast.index[0]
+    assert runs[RESEARCH].result.forecast.index[-1] == runs[POLY].result.forecast.index[-1]
+    assert f"**{RESEARCH}**: gate" in _markdown(app)
+    assert f"{RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+    assert f"{RESEARCH} · S&P 500" in _expander_labels(app)
+
+
+def test_unticking_the_research_model_runs_it_not(stub_ml):
+    committed, sources = _with_research_inputs()
+    app = _page(committed=committed, sources=sources)
+    app = _press_run(_untick(app, "Fama-French 5", RESEARCH))
+
+    assert set(_stored_runs(app)) == {NAIVE, POLY, "Machine Learning"}
+
+
+def test_the_research_model_is_gated_and_captioned_under_its_row():
+    app = _page({EQUITY: {POLY: _polynomial_run(), RESEARCH: _polynomial_run(_result())}})
+
+    assert f"**{RESEARCH}**: gate met — Signal Rank IC above 0.02 and t above 2." in _markdown(app)
+    assert "Gate met" in _table(app).split(RESEARCH, 1)[1].split("</tr>", 1)[0]
+    assert f"{RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+
+
+def test_the_research_model_can_be_set_active_with_its_signal_and_no_train_window():
+    forecast = _oos([0.01, -0.01, 0.02, 0.0] * 10)
+    baseline = _oos([0.004] * 20 + [0.006] * 20)
+    result = replace(_result(), forecast=forecast, realised=_oos([0.0] * 40), baseline=baseline)
+    app = _page({EQUITY: {POLY: _polynomial_run(), RESEARCH: _polynomial_run(result)}})
+    (select,) = [s for s in app.selectbox if s.label == "Model to set active"]
+    assert list(select.options) == [POLY, RESEARCH]
+    select.select(RESEARCH).run()
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert not app.exception
+    record = active_model.get_active_model(EQUITY)
+    assert record.model_name == RESEARCH
+    assert record.train_window is None
+    signal = active_model.get_active_model_signal(EQUITY)
+    pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)

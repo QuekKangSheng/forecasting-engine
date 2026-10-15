@@ -18,6 +18,7 @@ import streamlit as st
 
 import bloomberg_extraction_panel
 import glossary
+import portfolio_summary
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
@@ -36,7 +37,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     tail_rows,
 )
 from forecasting_engine.store import active_model
-from model_settings import EMBARGO_DAYS
+from model_settings import EMBARGO_DAYS, TRAIN_WINDOW
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 
@@ -66,11 +67,10 @@ if missing:
 if not active_model.settings_match(equity_active, bond_active):
     st.warning(
         "The active equity and bond models were run under different settings — "
-        f"equity: {equity_active.horizon}-day horizon, {equity_active.train_window}/"
-        f"{equity_active.test_window}-day train/test window; bond: "
-        f"{bond_active.horizon}-day horizon, {bond_active.train_window}/"
-        f"{bond_active.test_window}-day train/test window. Re-run both under the same "
-        "settings on the Models page, then set them active again.",
+        f"equity: {equity_active.horizon}-day horizon, {equity_active.test_window}-day "
+        f"test window; bond: {bond_active.horizon}-day horizon, {bond_active.test_window}-"
+        "day test window. Re-run both under the same settings on the Models page, then "
+        "set them active again.",
         icon=":material/warning:",
     )
     st.stop()
@@ -153,16 +153,21 @@ with st.expander("Settings"):
     upper = 1 - lower
     st.caption(f"Each index stays between {lower:.0%} and {upper:.0%}.")
 
-schedule = optimize.weight_schedule(
-    signals,
-    prices,
-    horizon=equity_active.horizon,
-    train_window=equity_active.train_window,
-    test_window=equity_active.test_window,
-    embargo=EMBARGO_DAYS,
-    risk_aversion=risk_aversion,
-    bounds=(lower, upper),
-)
+try:
+    breakdowns = optimize.schedule_breakdowns(
+        signals,
+        prices,
+        horizon=equity_active.horizon,
+        train_window=TRAIN_WINDOW,
+        test_window=equity_active.test_window,
+        embargo=EMBARGO_DAYS,
+        risk_aversion=risk_aversion,
+        bounds=(lower, upper),
+    )
+except BacktestDataError as exc:
+    st.warning(f"The allocation could not be set: {exc}", icon=":material/warning:")
+    st.stop()
+schedule = optimize.schedule_weights(breakdowns)
 
 if schedule.empty:
     st.info("No rebalance date has both a forecast and enough price history yet.")
@@ -181,21 +186,10 @@ cols[0].metric(equity_name, f"{latest[EQUITY]:.0%}")
 cols[1].metric(bond_name, f"{latest[BOND]:.0%}")
 
 latest_signal = optimize.expected_returns(pd.DatetimeIndex([latest_date]), signals).iloc[0]
-breakdown = optimize.weight_breakdown(
-    latest_signal,
-    optimize.covariance_at_rebalance(
-        latest_date,
-        prices,
-        horizon=equity_active.horizon,
-        train_window=equity_active.train_window,
-        embargo=EMBARGO_DAYS,
-    ),
-    risk_aversion=risk_aversion,
-    bounds=(lower, upper),
-)
+breakdown = breakdowns[latest_date]
 direction = "adds" if breakdown.forecast_tilt >= 0 else "takes"
 cap = (
-    f", which the {lower:.0%}–{upper:.0%} limits cap at {breakdown.equity:.0%}"
+    f", which the {lower:.0%}–{upper:.0%} limits cap at {breakdown.bounded:.0%}"
     if breakdown.capped
     else ""
 )
@@ -206,6 +200,28 @@ st.caption(
     f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%} at risk "
     f"aversion {risk_level}, giving {breakdown.unconstrained:.0%}{cap}."
 )
+if breakdown.held:
+    st.caption(
+        f"Held: within the no-trade band. Since the last rebalance the portfolio had "
+        f"drifted to {breakdown.drifted:.1%} {equity_name}, within the ±{breakdown.band:.1%} "
+        f"band around it, so it was left as it was rather than pay to trade.",
+        help=glossary.term("No-trade band"),
+    )
+elif breakdown.drifted is not None:
+    st.caption(
+        f"Since the last rebalance the portfolio had drifted to {breakdown.drifted:.1%} "
+        f"{equity_name}. Trading costs set a no-trade band of ±{breakdown.band:.1%} around "
+        f"it, so it traded only to the band's edge, {breakdown.equity:.1%}.",
+        help=glossary.term("No-trade band"),
+    )
+after_first = list(breakdowns.values())[1:]
+if after_first:
+    held = sum(b.held for b in after_first)
+    st.caption(
+        f"{held} of {len(after_first)} rebalances after the first ({held / len(after_first):.0%}) "
+        "were held by the no-trade band.",
+        help=glossary.term("No-trade band"),
+    )
 
 st.markdown(
     ui.eyebrow(
@@ -255,6 +271,15 @@ try:
 except BacktestDataError as exc:
     st.warning(f"The allocation could not be backtested: {exc}", icon=":material/warning:")
     st.stop()
+
+st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
+    dataset_fingerprint=str(dataset_fingerprint(merged)),
+    as_of=latest_date,
+    equity_weight=float(latest[EQUITY]),
+    bond_weight=float(latest[BOND]),
+    net_sharpe=backtest.metrics[("optimised", "net")].sharpe,
+    baseline_net_sharpe=backtest.metrics[("baseline", "net")].sharpe,
+)
 
 costs = backtest.costs_bps
 st.caption(

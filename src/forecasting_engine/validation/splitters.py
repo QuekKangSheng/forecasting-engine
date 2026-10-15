@@ -79,6 +79,20 @@ class PurgedWalkForward:
         )
 
 
+def expanding(splitter: PurgedWalkForward) -> PurgedWalkForward:
+    """``splitter``'s test windows, each trained on every row before its embargo.
+
+    The first test window opens where ``splitter``'s does, after the longer of its
+    train window and tuning period, so every model on the page is scored on the same
+    dates."""
+    return PurgedWalkForward(
+        train=None,
+        test=splitter.test,
+        embargo=splitter.embargo,
+        tuning_rows=max(splitter.train or 0, splitter.tuning_rows),
+    )
+
+
 def _first_label_reaching(
     label_end: pd.Series,
     index: pd.DatetimeIndex,

@@ -16,18 +16,34 @@ bound whatever the signals say.
 A rebalance happens once every ``horizon`` trading days over the out-of-sample
 period, so each allocation is held for exactly as long as the forecast it was
 set from looks ahead.
+
+Between rebalances the portfolio drifts with the two indices' returns, and a
+rebalance trades only when the new target is worth its cost (FYP-49): within a
+no-trade band of ``c / (λ·D)`` around the drifted weight, where ``c`` is the cost
+of moving the equity weight by 1 (equity's plus bond's cost) and ``D`` the variance
+of the difference between the two indices' returns, the portfolio holds; outside
+it, it trades only as far as the band's near edge. A portfolio that has drifted
+outside the weight bounds is traded back to the nearest bound, whatever the band.
+The first rebalance buys the target from cash.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel
-from forecasting_engine.portfolio.backtest import ASSETS, BASELINE_WEIGHTS
+from forecasting_engine.portfolio.backtest import (
+    ASSETS,
+    BASELINE_WEIGHTS,
+    DEFAULT_COSTS_BPS,
+    asset_returns,
+)
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 
 
@@ -172,15 +188,29 @@ class WeightBreakdown:
     """What the difference between the signals adds to equity at this risk
     aversion, before any bound."""
     equity: float
-    """Equity's final weight, after the bounds."""
+    """Equity's final weight, after the bounds and any no-trade band."""
+    target: float | None = None
+    """Equity's weight after the bounds, before any no-trade band. ``None`` where
+    no band applied, so it is ``equity``."""
+    band: float = 0.0
+    """The no-trade band's half-width around ``drifted``: 0 where none applied."""
+    drifted: float | None = None
+    """Equity's weight as the last allocation drifted to by this rebalance, or
+    ``None`` at the first, which buys from cash."""
+    held: bool = False
+    """Whether this rebalance traded nothing: the target was within the band."""
 
     @property
     def unconstrained(self) -> float:
         return self.anchor + self.forecast_tilt
 
     @property
+    def bounded(self) -> float:
+        return self.equity if self.target is None else self.target
+
+    @property
     def capped(self) -> bool:
-        return self.equity != self.unconstrained
+        return self.bounded != self.unconstrained
 
 
 def risk_aversion_for(level: int) -> float:
@@ -203,11 +233,7 @@ def weight_breakdown(
     equity, bond = ASSETS
     anchor = float(BASELINE_WEIGHTS[equity])
     signal_diff = expected_signal[equity] - expected_signal[bond]
-    var_diff = (
-        covariance.loc[equity, equity]
-        - 2 * covariance.loc[equity, bond]
-        + covariance.loc[bond, bond]
-    )
+    var_diff = _var_diff(covariance)
     tilt = float(signal_diff / (risk_aversion * var_diff)) if var_diff > 0 else 0.0
     w_equity = min(max(anchor + tilt, bounds[0]), bounds[1])
     return WeightBreakdown(anchor=anchor, forecast_tilt=tilt, equity=w_equity)
@@ -248,21 +274,62 @@ def weight_schedule(
     embargo: int,
     risk_aversion: float = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
+    costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
 ) -> pd.DataFrame:
     """The full weight schedule ``portfolio.backtest.run_backtest`` chains
-    through history: one row of equity/bond weights per rebalance date, solved
-    from each active model's signal and the equity/bond covariance over that
-    rebalance's own training window.
+    through history: one row of equity/bond weights per rebalance date, from
+    ``schedule_breakdowns``."""
+    return schedule_weights(
+        schedule_breakdowns(
+            signals,
+            prices,
+            horizon=horizon,
+            train_window=train_window,
+            test_window=test_window,
+            embargo=embargo,
+            risk_aversion=risk_aversion,
+            bounds=bounds,
+            costs_bps=costs_bps,
+        )
+    )
+
+
+def schedule_weights(breakdowns: Mapping[pd.Timestamp, WeightBreakdown]) -> pd.DataFrame:
+    """One row of equity/bond weights per rebalance in ``breakdowns``. A held
+    rebalance's row is the drifted weights, so the backtest trades nothing there."""
+    equity, bond = ASSETS
+    weights = np.array([b.equity for b in breakdowns.values()], dtype=float)
+    return pd.DataFrame(
+        {equity: weights, bond: 1 - weights}, index=pd.DatetimeIndex(list(breakdowns))
+    )
+
+
+def schedule_breakdowns(
+    signals: Mapping[TargetRole, pd.Series],
+    prices: Mapping[TargetRole, pd.Series],
+    *,
+    horizon: int,
+    train_window: int,
+    test_window: int,
+    embargo: int,
+    risk_aversion: float = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
+    bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
+    costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
+) -> dict[pd.Timestamp, WeightBreakdown]:
+    """How each rebalance's equity weight was reached, in date order: the target
+    solved from that date's signals and the covariance over its own training
+    window, then the no-trade band against the weight the last allocation drifted
+    to. Zero costs leave no band, so every rebalance moves to its target.
 
     A rebalance whose signal is missing (a model had no prediction that day) or
     whose training window can't support a covariance estimate is left out rather
-    than guessed at.
+    than guessed at; the portfolio drifts on through it.
     """
     rebalance_dates = common_rebalance_dates(
         prices, horizon=horizon, train_window=train_window, test_window=test_window, embargo=embargo
     )
     returns = expected_returns(rebalance_dates, signals)
-    rows: dict[pd.Timestamp, pd.Series] = {}
+    targets: dict[pd.Timestamp, tuple[WeightBreakdown, float]] = {}
     for date in rebalance_dates:
         row = returns.loc[date]
         if row.isna().any():
@@ -273,5 +340,62 @@ def weight_schedule(
             )
         except OptimizeDataError:
             continue
-        rows[date] = solve_weights(row, covariance, risk_aversion=risk_aversion, bounds=bounds)
-    return pd.DataFrame(rows).T.sort_index()
+        breakdown = weight_breakdown(row, covariance, risk_aversion=risk_aversion, bounds=bounds)
+        targets[date] = (breakdown, _var_diff(covariance))
+    if not targets:
+        return {}
+
+    cost = sum(costs_bps[role] for role in ASSETS) / 1e4
+    daily_returns = asset_returns(prices, pd.DataFrame(index=pd.DatetimeIndex(list(targets))))
+    held: np.ndarray | None = None
+    breakdowns: dict[pd.Timestamp, WeightBreakdown] = {}
+    for i, (day, row) in enumerate(daily_returns[list(ASSETS)].iterrows()):
+        if i > 0 and held is not None:
+            # Drifted as backtest.chain drifts it, so a held rebalance trades nothing.
+            daily = row.to_numpy(dtype=float)
+            held = held * (1 + daily) / (1 + float(held @ daily))
+        if day not in targets:
+            continue
+        breakdown, var_diff = targets[day]
+        if held is not None and cost > 0:
+            band = cost / (risk_aversion * var_diff) if var_diff > 0 else math.inf
+            breakdown = _banded(breakdown, float(held[0]), band, bounds)
+        breakdowns[day] = breakdown
+        held = np.array([breakdown.equity, 1 - breakdown.equity])
+    return breakdowns
+
+
+def _var_diff(covariance: pd.DataFrame) -> float:
+    """``D = σ_e² − 2σ_eb + σ_b²``: the variance of the difference between the
+    two indices' returns, which a tilt from the benchmark is sized against."""
+    equity, bond = ASSETS
+    return float(
+        covariance.loc[equity, equity]
+        - 2 * covariance.loc[equity, bond]
+        + covariance.loc[bond, bond]
+    )
+
+
+def _banded(
+    target: WeightBreakdown, drifted: float, band: float, bounds: tuple[float, float]
+) -> WeightBreakdown:
+    """Trade to the nearest bound if the portfolio has drifted outside ``bounds``.
+    Otherwise hold at ``drifted`` if the target is within ``band`` of it (an
+    infinite band, where D ≤ 0, always holds), or move to the band's near edge."""
+    lower, upper = bounds
+    if not lower <= drifted <= upper:
+        held, equity = False, min(max(drifted, lower), upper)
+    else:
+        gap = target.equity - drifted
+        held = abs(gap) <= band
+        edge = target.equity - math.copysign(band, gap)
+        equity = drifted if held else min(max(edge, lower), upper)
+    return WeightBreakdown(
+        anchor=target.anchor,
+        forecast_tilt=target.forecast_tilt,
+        equity=equity,
+        target=target.equity,
+        band=band,
+        drifted=drifted,
+        held=held,
+    )

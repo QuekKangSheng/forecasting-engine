@@ -33,18 +33,13 @@ def _run(panel=None, splitter=None, **kwargs):
         splitter or _splitter(),
         n_trials=_N_TRIALS,
         retune_trials=_N_TRIALS,
-        n_blocks=4,
         **kwargs,
     )
 
 
-def test_run_boosted_computes_a_real_pbo():
-    # Unlike FF5/UserPolynomial, there are always two candidates here (tuned
-    # XGBoost vs. tuned LightGBM), so pbo is never None.
+def test_run_boosted_reports_the_winning_library():
     result, description, _tuning = _run()
 
-    assert result.pbo is not None
-    assert 0.0 <= result.pbo <= 1.0
     assert result.oos_rank_ic == result.oos_rank_ic  # a real number, not NaN
     assert description.terms == ("sig_a", "sig_b")
 
@@ -59,7 +54,7 @@ def test_run_boosted_result_matches_the_shared_comparison_contract():
     evaluate_candidate() and build_metrics_rows() completely unmodified."""
     result, _description, _tuning = _run()
 
-    outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
+    outcome = evaluate_candidate(result.gated_rank_ic, result.signal_t)
     assert outcome.promoted in (True, False)
 
     rows = build_metrics_rows({"Machine Learning": result})
@@ -144,18 +139,19 @@ def test_no_tuning_label_reaches_the_test_window_it_tunes_for():
 
 
 def test_a_retune_starts_from_the_previous_best(monkeypatch):
-    warm_starts = []
+    warm_starts: dict[str, list] = {}
     real = boosted.tune_hyperparameters
 
-    def recording(*args, warm_start=None, **kwargs):
-        warm_starts.append(warm_start)
-        return real(*args, warm_start=warm_start, **kwargs)
+    def recording(panel, window, library, *args, warm_start=None, **kwargs):
+        warm_starts.setdefault(library, []).append(warm_start)
+        return real(panel, window, library, *args, warm_start=warm_start, **kwargs)
 
     monkeypatch.setattr(boosted, "tune_hyperparameters", recording)
     _result, _description, tuning = _run(retune_every=30)
 
-    assert warm_starts[:2] == [None, None]  # the first tune, one per library
-    assert warm_starts[2] == tuning.tunes[0].params["xgboost"]
+    for library, starts in warm_starts.items():
+        assert starts[0] is None  # each library's first tune starts cold
+        assert starts[1] == tuning.tunes[0].params[library]
 
 
 def test_the_explained_last_fold_uses_the_latest_tune(monkeypatch):

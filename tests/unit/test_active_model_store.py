@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import datetime
 
+import duckdb
 import pandas as pd
 import pytest
 
@@ -20,12 +21,11 @@ from forecasting_engine.validation.crash import CrashDiagnostics
 SETTINGS = {"horizon": 5, "train_window": 120, "test_window": 20, "dataset_fingerprint": "fp-1"}
 
 
-def _result(ic=0.05, oos_rank_ic=0.03, rmse=0.01, pbo=0.4, forecast=None):
+def _result(ic=0.05, oos_rank_ic=0.03, rmse=0.01, forecast=None):
     return ModelRunResult(
         ic=ic,
         oos_rank_ic=oos_rank_ic,
         rmse=rmse,
-        pbo=pbo,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=10),
         forecast=forecast,
     )
@@ -59,7 +59,6 @@ def test_setting_an_active_model_round_trips_every_field(db):
     assert row.ic == 0.05
     assert row.oos_rank_ic == 0.03
     assert row.rmse == 0.01
-    assert row.pbo == 0.4
     assert row.high_risk is False
     assert row.set_at == at
     assert row.horizon == 5
@@ -107,7 +106,7 @@ def test_a_high_risk_selection_is_recorded_as_such(db):
     set_active_model(
         TargetRole.BOND,
         "Polynomial",
-        _result(oos_rank_ic=0.01, pbo=0.6),
+        _result(oos_rank_ic=0.01),
         high_risk=True,
         db_path=db,
         **SETTINGS,
@@ -116,17 +115,20 @@ def test_a_high_risk_selection_is_recorded_as_such(db):
     assert get_active_model(TargetRole.BOND, db_path=db).high_risk is True
 
 
-def test_a_benchmark_with_no_pbo_can_still_be_set_active(db):
+def test_a_database_made_when_active_models_recorded_pbo_still_works(db):
+    # Older databases have a nullable pbo column; a new row simply leaves it empty.
+    db.parent.mkdir(parents=True)
+    with duckdb.connect(str(db)) as conn:
+        conn.execute(
+            "CREATE TABLE active_models (role TEXT NOT NULL, model_name TEXT NOT NULL, "
+            "ic DOUBLE NOT NULL, oos_rank_ic DOUBLE NOT NULL, rmse DOUBLE NOT NULL, "
+            "pbo DOUBLE, high_risk BOOLEAN NOT NULL, set_at TIMESTAMP NOT NULL)"
+        )
     set_active_model(
-        TargetRole.EQUITY,
-        "FF5 Benchmark",
-        _result(pbo=None),
-        high_risk=False,
-        db_path=db,
-        **SETTINGS,
+        TargetRole.EQUITY, "FF5 Benchmark", _result(), high_risk=False, db_path=db, **SETTINGS
     )
 
-    assert get_active_model(TargetRole.EQUITY, db_path=db).pbo is None
+    assert get_active_model(TargetRole.EQUITY, db_path=db).model_name == "FF5 Benchmark"
 
 
 # --- forecast persistence -----------------------------------------------------------
@@ -218,7 +220,7 @@ def test_matching_settings_are_reported_as_matching(db):
 
 @pytest.mark.parametrize(
     "overridden",
-    ["horizon", "train_window", "test_window", "dataset_fingerprint"],
+    ["horizon", "test_window", "dataset_fingerprint"],
 )
 def test_a_differing_setting_is_reported_as_a_mismatch(db, overridden):
     bond_settings = dict(SETTINGS)
@@ -231,6 +233,25 @@ def test_a_differing_setting_is_reported_as_a_mismatch(db, overridden):
     equity = get_active_model(TargetRole.EQUITY, db_path=db)
     bond = get_active_model(TargetRole.BOND, db_path=db)
     assert settings_match(equity, bond) is False
+
+
+def test_differing_train_windows_still_match(db):
+    # Equity's derived polynomial trains on every earlier date (no train window)
+    # while bond trains on the latest 252: both still forecast the same days.
+    set_active_model(
+        TargetRole.EQUITY,
+        "Polynomial",
+        _result(),
+        high_risk=False,
+        db_path=db,
+        **{**SETTINGS, "train_window": None},
+    )
+    set_active_model(TargetRole.BOND, "ML", _result(), high_risk=False, db_path=db, **SETTINGS)
+
+    equity = get_active_model(TargetRole.EQUITY, db_path=db)
+    bond = get_active_model(TargetRole.BOND, db_path=db)
+    assert equity.train_window is None
+    assert settings_match(equity, bond) is True
 
 
 # --- the signal: each forecast less its fold's training mean ----------------------

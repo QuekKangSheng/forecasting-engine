@@ -26,14 +26,32 @@ TERMS: Mapping[str, str] = {
         "a setting changed."
     ),
     "Function source": (
-        "Choose one. **Derive automatically** fits the sign-ruled polynomial (equity "
-        "only): one term each for HY OAS, IG OAS, VIX and the 2s10s slope, as levels, "
-        "with their slopes pulled toward one shared positive value, since all four "
-        "measure the pay for holding risk. It trains on all earlier rows.\n\n"
+        "Choose one. **Derive automatically** searches a small grid of polynomial "
+        "degrees and regularizers and reports the best one. Regularization pushes "
+        "weak terms to exactly zero, so the result stays short enough to read.\n\n"
         "**Use your own function** takes the shape you write, using placeholders "
         "such as x and y that you then point at signals, and fits only a scale "
         "and an intercept to it on each training window, so the forecast is a "
-        "return rather than a signal's level. Each gets its own row."
+        "return rather than a signal's level. A view you already hold is judged "
+        "under the same settings as every other model. Each gets its own row, "
+        "named for which kind it is."
+    ),
+    "Research model (fixed inputs)": (
+        "The equity model the October 2026 model research chose: a degree-1 "
+        "polynomial in HY OAS, IG OAS, VIX and the 2s10s slope, read as levels, "
+        "each signed so a higher value means a higher expected return, with the "
+        "slopes shrunk toward one common slope. It trains on every earlier date "
+        "rather than the latest 504, as the research did, and is scored on the "
+        "same test dates as every other model and gated the same way. Its inputs "
+        "and signs were chosen in that research on data overlapping this test "
+        "period, so treat its score as optimistic. The derived polynomial makes "
+        "every such choice inside each fold instead."
+    ),
+    "Max terms": (
+        "The most terms the derived equation may keep. The cap works through the "
+        "regularization itself: only penalty strengths whose fit keeps this many "
+        "terms or fewer are considered, and the best of those by time-ordered "
+        "validation is used. No term is picked out in advance."
     ),
     "Forecast horizon": (
         "How many trading days ahead to predict: 1, 5, 10 or 20 (about a month). "
@@ -51,14 +69,17 @@ TERMS: Mapping[str, str] = {
         "flatters it."
     ),
     "Walk-forward train window (days)": (
-        "How much history the model studies before each grading period "
-        "(252 days ≈ 1 year). Longer gives the fit more to learn from; "
-        "shorter keeps it closer to current market conditions."
+        "How much history a model studies before each grading period. Fixed, not "
+        "a setting: every model on both targets studies the latest 504 days (about "
+        "two years), long enough to span more than one market episode but short "
+        "enough to follow a change in how the markets behave. Trying windows until "
+        "one scores well would itself be a way to overfit. The research model is "
+        "the one exception: it trains on every earlier date, as its research did."
     ),
     "Walk-forward test window (days)": (
-        "The days right after each training block, used only for grading. "
-        "The model never sees them while fitting, so its score here is its "
-        "out-of-sample score."
+        "The days right after each training block, used only for grading: 20 "
+        "days, fixed. The model never sees them while fitting, so its score here "
+        "is its out-of-sample score."
     ),
     "Embargo": (
         "A gap of unused days between a training block and the days it is "
@@ -88,8 +109,7 @@ TERMS: Mapping[str, str] = {
         "moves with recent performance whatever the signals say, so it can drown "
         "a real signal or pass a model that has none. The two s.e.s beside it "
         "are standard errors, one allowing for overlapping labels, one for errors "
-        "shared within a test window: a value within about two of the larger of "
-        "zero may be luck."
+        "shared within a test window; t divides the score by the larger."
     ),
     "OOS Rank IC": (
         "Out-of-sample Rank IC of the whole forecast, its level included: the "
@@ -99,38 +119,24 @@ TERMS: Mapping[str, str] = {
         "average whatever the signals say. Far apart from the Signal Rank IC "
         "means the level, not the signals, drove this score."
     ),
-    "Rank IC within folds": (
-        "The OOS Rank IC again, but with each fold's forecasts ranked only against "
-        "each other before pooling. Pooling ranks forecasts across folds, so a model "
-        "can score there just because its forecast level shifts from fold to fold — "
-        "a model that uses no signal at all can pass the gate that way. Here it "
-        "can't: only ranking days within a fold counts. Far below the OOS Rank IC "
-        "means most of that score came from levels, not from the signals."
-    ),
-    "Beyond 2 s.e.": (
-        "Whether the Signal Rank IC is more than two standard errors from zero, "
-        "judged on the larger of the two standard errors. No means a score of "
-        "this size could easily be luck, even if it meets the gate. A diagnostic "
-        "only: it does not change whether the gate is met."
+    "t": (
+        "The Signal Rank IC divided by the larger of its two standard errors: how "
+        "many standard errors the score sits from zero. The second promotion gate "
+        "asks for more than 2. A model with no skill at all clears a small Signal "
+        "Rank IC bar surprisingly often, so the score has to be both large enough "
+        "and clearly more than luck."
     ),
     "Constant folds": (
         "How many walk-forward folds forecast a single value for their whole test "
-        "window. Such a fold ranks no day above another, so it adds nothing to "
-        "the Rank IC within folds, but it still counts towards the pooled score "
-        "through its level. The naive baseline is constant in every fold by design."
+        "window. Such a fold ranks no day above another and adds nothing to the "
+        "Signal Rank IC, though it still counts towards the OOS Rank IC through its "
+        "level. The naive baseline is constant in every fold by design."
     ),
     "RMSE": (
         "Root mean squared error: the typical size of a miss, in the same "
         "units as the return being predicted. Lower is better. It says how far "
         "off the model is, whereas IC says whether it got the direction right "
         "— a model can do well on one and badly on the other."
-    ),
-    "PBO": (
-        "Probability of Backtest Overfitting: when several configurations are "
-        "tried, how often the best-looking one turns out to be below average "
-        "on data held back from the search. High PBO means the winner was "
-        "probably luck. Reported as N/A when only one configuration was fitted, "
-        "since there was no search to overfit."
     ),
     "Crash diagnostics": (
         "How well the model's most negative predictions line up with the days "
@@ -179,9 +185,9 @@ TERMS: Mapping[str, str] = {
         "says nothing about direction, only weight."
     ),
     "Promotion gate": (
-        "The bar a model has to clear before it is considered for use: Signal "
-        "Rank IC above the threshold and PBO below it. The badge shows each "
-        "separately, so a model that scores well but overfits is visibly not "
+        "The bar every model but the naive baseline has to clear before it is "
+        "considered for use: Signal Rank IC above 0.02 and t above 2. The badges "
+        "show each separately, so a model whose score could be luck is visibly not "
         "promotable."
     ),
     "Active model": (
@@ -206,6 +212,15 @@ TERMS: Mapping[str, str] = {
         "noisy difference between the two signals swinging the portfolio to "
         "one extreme. The optimiser starts from 50/50 and tilts; the floor only "
         "clips how far."
+    ),
+    "No-trade band": (
+        "Between rebalances the portfolio drifts with the markets. At each "
+        "rebalance it trades only if the new target is far enough from where it "
+        "drifted to to be worth the trading cost: within the band it holds, and "
+        "outside it, it trades only as far as the band's edge. The band is the "
+        "cost of moving the equity weight by one (both indices' costs) over risk "
+        "aversion times the variance of the difference between the two indices' "
+        "returns, so it is narrower when the signals are acted on more."
     ),
     "Directional P&L": (
         "What you would have earned by holding this index only when the model "

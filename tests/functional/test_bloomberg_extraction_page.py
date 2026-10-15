@@ -237,42 +237,46 @@ def test_a_column_with_no_data_at_all_is_dropped_and_noted(page):
     assert "Dropped 1 column" in texts(result.caption)
 
 
-def test_a_dropped_column_is_listed_in_the_home_data_quality_report(page):
+def test_a_dropped_column_is_listed_in_the_committed_data_quality_report(page):
     rows = ["1/2/2020,6.5,#N/A N/A", "1/3/2020,6.6,#N/A N/A"]
     csv = export("JPMVXYGL Index", rows, fields="PX_LAST,PX_BID")
     result = upload(page, [("jpm.csv", csv, "text/csv")])
-    next(b for b in result.button if b.label == "Use Updated Data").click().run()
+    committed = next(b for b in result.button if b.label == "Use Updated Data").click().run()
 
-    home = AppTest.from_file(str(HOME_PAGE), default_timeout=30)
-    for key in ("extraction_committed", "extraction_committed_report"):
-        home.session_state[key] = result.session_state[key]
-    home.session_state["extraction_committed_dropped"] = result.session_state[
-        "extraction_committed_dropped"
-    ]
-    home.run()
-
-    assert not home.exception
-    assert "Columns dropped at ingest" in texts(home.markdown)
-    (dropped,) = [d.value for d in home.dataframe if list(d.value.columns) == ["Column"]]
+    assert not committed.exception
+    assert "Columns dropped at ingest" in texts(committed.markdown)
+    (dropped,) = [d.value for d in committed.dataframe if list(d.value.columns) == ["Column"]]
     assert dropped["Column"].tolist() == ["JPMVXYGL_Index_PX_BID"]
 
 
-def test_the_home_page_shows_pending_before_any_data_is_committed():
+def _home(committed: AppTest | None = None) -> AppTest:
+    """The Home page, given what the Data page committed (if anything)."""
     home = AppTest.from_file(str(HOME_PAGE), default_timeout=30)
-    home.run()
+    if committed is not None:
+        for key in (
+            "extraction_committed",
+            "extraction_committed_report",
+            "extraction_committed_dropped",
+        ):
+            home.session_state[key] = committed.session_state[key]
+    return home.run()
+
+
+def test_the_home_page_shows_pending_before_any_data_is_committed():
+    # The quality report lives on the Data page; Home shows the pipeline's status,
+    # and before a commit every stage after upload is still pending.
+    home = _home()
 
     assert not home.exception
-    assert "No data committed yet" in texts(home.info)
-    assert "This report fills in once a cleaned dataset is committed." in texts(home.caption)
-    rendered = texts(home.markdown)
-    for title in ("Schema validation", "Duplicate dates", "Weekend rows", "Day-over-day moves"):
-        assert title in rendered
-    assert "Pending" in rendered
+    captions = texts(home.caption)
+    assert "Nothing committed yet." in captions
+    assert "Commit data first." in captions
+    assert "quality issue" not in captions
 
 
-def test_the_full_report_renders_on_the_home_page_once_committed(page):
-    # Same anomaly fixture as the Data-page version of this check — here the
-    # same committed report is read back on the Home page, not the Data page.
+def test_the_full_report_renders_once_committed_and_home_points_to_it(page):
+    # Same anomaly fixture as the uncommitted Data-page check: the committed report
+    # is read back on the Data page, and Home counts its flags and points there.
     dates = pd.bdate_range("2024-01-01", periods=60)
     values = [100.0 + i for i in range(60)]
     values[30] = 200.0
@@ -280,45 +284,31 @@ def test_the_full_report_renders_on_the_home_page_once_committed(page):
     result = upload(page, [("a.csv", export("A Index", rows), "text/csv")])
     result = next(b for b in result.button if b.label == "Use Updated Data").click().run()
 
-    home = AppTest.from_file(str(HOME_PAGE), default_timeout=30)
-    for key in (
-        "extraction_committed",
-        "extraction_committed_report",
-        "extraction_committed_dropped",
-    ):
-        home.session_state[key] = result.session_state[key]
-    home.run()
-
-    assert not home.exception
-    labels = {m.label: m.value for m in home.metric}
+    assert not result.exception
+    labels = {m.label: m.value for m in result.metric}
     assert labels["Flagged"] == "1"
-    assert "1 observation flagged below for information" in texts(home.success)
-    assert "none of them stop a run" in texts(home.success)
-    expander = next(e for e in home.expander if "statistically unusual move" in e.label)
+    assert "1 observation flagged below for information" in texts(result.success)
+    assert "none of them stop a run" in texts(result.success)
+    expander = next(e for e in result.expander if "statistically unusual move" in e.label)
     assert expander.label == "A_Index_PX_LAST — 1 statistically unusual move"
-    assert dates[30].strftime("%d/%m/%Y") in texts(home.markdown)
+    assert dates[30].strftime("%d/%m/%Y") in texts(result.markdown)
+
+    home = _home(result)
+    assert not home.exception
+    assert "1 quality issue flagged → Data" in texts(home.caption)
 
 
-def test_completeness_by_column_renders_on_the_home_page_for_a_partially_filled_signal(page):
+def test_completeness_by_column_renders_once_committed_for_a_partially_filled_signal(page):
     lf98truu, legatruu = gappy_csv()
     result = upload(
         page, [("lf98truu.csv", lf98truu, "text/csv"), ("legatruu.csv", legatruu, "text/csv")]
     )
     result = next(b for b in result.button if b.label == "Use Updated Data").click().run()
 
-    home = AppTest.from_file(str(HOME_PAGE), default_timeout=30)
-    for key in (
-        "extraction_committed",
-        "extraction_committed_report",
-        "extraction_committed_dropped",
-    ):
-        home.session_state[key] = result.session_state[key]
-    home.run()
-
-    assert not home.exception
-    assert "Completeness by column" in texts(home.markdown)
+    assert not result.exception
+    assert "Completeness by column" in texts(result.markdown)
     (completeness,) = [
-        d.value for d in home.dataframe if list(d.value.columns) == ["Column", "Missing %"]
+        d.value for d in result.dataframe if list(d.value.columns) == ["Column", "Missing %"]
     ]
     row = completeness.loc[completeness["Column"] == "LF98TRUU_Index_PX_LAST"].iloc[0]
     assert row["Missing %"] == pytest.approx(100 / 3)
@@ -599,3 +589,18 @@ def test_missing_one_target_role_does_not_block_committing(page):
     result = commit_button.click().run()
 
     assert "now committed" in texts(result.success)
+
+
+def test_uploads_stay_visible_after_leaving_the_page_and_coming_back(page):
+    upload_targets(page, [("spx.csv", SPX, "text/csv")])
+    upload(page, [("vix.csv", VIX, "text/csv")])
+
+    # Leaving the page empties both uploaders; the parsed files stay in session state.
+    page.file_uploader[0].set_value([])
+    page.file_uploader[1].set_value([])
+    back = page.run()
+
+    shown = texts(back.caption)
+    assert "In use from your last upload: **spx.csv**" in shown
+    assert "In use from your last upload: **vix.csv**" in shown
+    assert "Merged 1 file(s) into 2 rows, 1 data columns" in texts(back.success)

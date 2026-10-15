@@ -3,7 +3,7 @@ turn the result into the fixed contract FYP-45/FYP-14 already built the comparis
 and promotion gates against.
 
 FYP-45 already built what happens *after* a model produces fold-by-fold predictions —
-``pbo.compute_pbo``, ``crash.crash_diagnostics_over_folds``, ``gates.evaluate_candidate``
+``crash.crash_diagnostics_over_folds``, ``gates.evaluate_candidate``
 — but nothing fit a model and produced those predictions in the first place. This module
 is that missing piece: "plug a model into the shared walk-forward harness" means running
 it through ``evaluate()``, then ``summarize()`` (one configuration) or
@@ -12,10 +12,9 @@ Polynomial's degree/regularizer grid or Boosted's tuned XGBoost vs. LightGBM).
 
 ``evaluate()`` deliberately returns raw predictions and realised values per fold rather
 than pre-scored metrics, because each downstream consumer scores differently: crash
-diagnostics want the raw series, IC/RankIC/RMSE get averaged across folds, and PBO
-needs several *different* models' fold results compared against each other, not one
-model's alone (so ``summarize()`` takes an already-computed PBO rather than computing
-one itself).
+diagnostics want the raw series, IC/RankIC/RMSE are pooled across folds, and
+selection compares several *different* configurations' fold results against each
+other, not one model's alone.
 """
 
 from __future__ import annotations
@@ -40,7 +39,6 @@ from forecasting_engine.validation.crash import (
     crash_diagnostics,
     label_crash_days,
 )
-from forecasting_engine.validation.pbo import N_BLOCKS, compute_pbo
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
 TRAINING_MEAN: str = "TrainingMean"
@@ -190,7 +188,7 @@ def _training_mean_fold(
 
 
 def summarize(
-    folds: tuple[FoldResult, ...], *, pbo: float | None = None
+    folds: tuple[FoldResult, ...],
 ) -> tuple[ModelRunResult, ModelDescription]:
     """IC, Rank IC and RMSE over every fold's test predictions pooled together,
     crash diagnostics, and the most recent fold's fitted description — the shape
@@ -204,8 +202,8 @@ def summarize(
     one over as many lags as a test window has rows, for errors a fold's single
     fit shares.
 
-    The gate is set on the Signal Rank IC: the pooled Rank IC of what the
-    signals add to each fold's training-mean return (``signal_forecasts``). The
+    The gates read the Signal Rank IC, the pooled Rank IC of what the signals
+    add to each fold's training-mean return (``signal_forecasts``), and its t. The
     plain pooled Rank IC also scores the forecast's level, which shifts with
     each fold's training mean whatever the signals say, so a model with no
     signal can score there and one with a real signal can be swamped there.
@@ -217,7 +215,6 @@ def summarize(
     knows what a portfolio manager should be told to fix.
     """
     predicted, realised = pooled(folds)
-    within = within_fold_ranks(folds)
     signal = signal_forecasts(folds)
     test_window_lags = max(len(f.test) for f in folds)
     result = ModelRunResult(
@@ -226,13 +223,10 @@ def summarize(
         oos_rank_ic_se=metrics.rank_ic_se(predicted, realised, lags=folds[0].horizon - 1),
         oos_rank_ic_se_test=metrics.rank_ic_se(predicted, realised, lags=test_window_lags),
         rmse=metrics.rmse(predicted, realised),
-        pbo=pbo,
         crash=_crash_over_folds(folds),
         screening=_screening_summary(folds),
         terms=FoldTerms(folds=len(folds), with_terms=sum(1 for f in folds if f.description.terms)),
         rows_scored=sum(int((f.predicted.notna() & f.realised.notna()).sum()) for f in folds),
-        oos_rank_ic_within=metrics.rank_ic(within, realised),
-        oos_rank_ic_within_se=metrics.rank_ic_se(within, realised, lags=test_window_lags),
         constant_forecasts=ConstantForecasts(
             folds=len(folds),
             constant=sum(1 for f in folds if f.predicted.dropna().nunique() <= 1),
@@ -251,44 +245,18 @@ def summarize(
     return result, folds[-1].description
 
 
-def select_best_candidate(
-    per_candidate: dict[str, tuple[FoldResult, ...]], *, n_blocks: int = N_BLOCKS
-) -> tuple[str, float]:
-    """Compare several named candidates' fold results via PBO, return the name of
-    the one with the best pooled OOS Rank IC and the shared PBO score every
-    candidate was judged against.
+def select_best_candidate(per_candidate: dict[str, tuple[FoldResult, ...]]) -> str:
+    """The name of the candidate with the best Signal Rank IC.
 
     Used by any ``run_*`` function that has more than one fixed configuration to
-    choose between — ``BoostedForecaster``'s tuned XGBoost vs. tuned LightGBM.
-    A single configuration (FF5, a polynomial) has nothing to compare
-    against and reports ``pbo=None`` directly to ``summarize()`` instead of
-    calling this. Selection, PBO and the gate all use the Signal Rank IC.
+    choose between — the derived polynomial's grid, ``BoostedForecaster``'s tuned
+    XGBoost vs. tuned LightGBM. Selection and the gate both use the Signal Rank IC.
     """
-    pooled_by_name = {
-        name: (signal_forecasts(folds), pooled(folds)[1]) for name, folds in per_candidate.items()
+    scores = {
+        name: _finite(metrics.rank_ic(signal_forecasts(folds), pooled(folds)[1]))
+        for name, folds in per_candidate.items()
     }
-    pbo_result = compute_pbo(pooled_by_name, n_blocks=n_blocks)
-    scores = {name: _finite(metrics.rank_ic(*pair)) for name, pair in pooled_by_name.items()}
-    best_name = max(scores, key=scores.__getitem__)
-    return best_name, pbo_result.pbo
-
-
-def within_fold_ranks(folds: tuple[FoldResult, ...]) -> pd.Series:
-    """Every fold's test predictions as ranks within that fold, centred on zero
-    and scaled to [-0.5, 0.5], end to end.
-
-    Pooled Rank IC ranks forecasts across folds, so a forecast whose level merely
-    shifts between folds can score without ranking any day within one. These
-    ranks carry no level: a fold's forecasts only compete with each other. A fold
-    that forecasts one value throughout ranks every day equal, so its ranks are
-    exactly zero and it adds nothing.
-    """
-    parts = []
-    for f in folds:
-        ranks = f.predicted.rank()
-        n = int(ranks.notna().sum())
-        parts.append((ranks - (n + 1) / 2) / max(n, 1))
-    return pd.concat(parts)
+    return max(scores, key=scores.__getitem__)
 
 
 def fold_baseline(fold: FoldResult) -> float:

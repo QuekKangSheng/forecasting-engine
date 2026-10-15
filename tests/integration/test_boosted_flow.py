@@ -33,15 +33,14 @@ def test_boosted_flows_from_a_raw_frame_through_the_shared_harness_to_the_compar
     panel = align_and_lag(frame, ["sig_a", "sig_b"], "price", horizon=1)
 
     result, description, _tuning = run_boosted(
-        panel, _splitter(), n_trials=_N_TRIALS, retune_trials=_N_TRIALS, n_blocks=4
+        panel, _splitter(), n_trials=_N_TRIALS, retune_trials=_N_TRIALS
     )
 
-    assert result.pbo is not None
     assert description.terms == ("sig_a", "sig_b")
 
     # The gate and the comparison table are FYP-45/FYP-14's already-built
     # contract — an ML result must satisfy both unmodified.
-    outcome = evaluate_candidate(result.oos_rank_ic, result.pbo)
+    outcome = evaluate_candidate(result.gated_rank_ic, result.signal_t)
     assert outcome.promoted in (True, False)
 
     rows = build_metrics_rows({"Machine Learning": result})

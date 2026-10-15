@@ -234,25 +234,27 @@ def render() -> None:
         for message in result.errors:
             st.error(message, icon=":material/error:")
         if result.merged is not None:
-            st.success(
-                f"Merged {len(result.exports)} file(s) into {len(result.merged):,} rows, "
-                f"{len(result.merged.columns) - 1} data columns.",
-                icon=":material/check_circle:",
-            )
-            if result.dropped:
-                st.caption(
-                    f"Dropped {len(result.dropped)} column(s) with no data at all (the "
-                    f"security has nothing for that field): {', '.join(result.dropped)}."
-                )
-            st.dataframe(
-                bloomberg_csv.with_display_dates(result.merged.head(10)), width="stretch"
-            )
             st.session_state[SIGNAL_MERGED_KEY] = result.merged
             st.session_state[SIGNAL_REPORT_KEY] = result.report
             st.session_state[_SIGNAL_EXPORTS_KEY] = result.exports
             st.session_state[_SIGNAL_DROPPED_KEY] = result.dropped
+    else:
+        _render_kept_files(st.session_state.get(_SIGNAL_EXPORTS_KEY, []))
 
     signal_merged = st.session_state.get(SIGNAL_MERGED_KEY)
+    if signal_merged is not None:
+        signal_dropped = st.session_state.get(_SIGNAL_DROPPED_KEY, [])
+        st.success(
+            f"Merged {len(st.session_state.get(_SIGNAL_EXPORTS_KEY, []))} file(s) into "
+            f"{len(signal_merged):,} rows, {len(signal_merged.columns) - 1} data columns.",
+            icon=":material/check_circle:",
+        )
+        if signal_dropped:
+            st.caption(
+                f"Dropped {len(signal_dropped)} column(s) with no data at all (the "
+                f"security has nothing for that field): {', '.join(signal_dropped)}."
+            )
+        st.dataframe(bloomberg_csv.with_display_dates(signal_merged.head(10)), width="stretch")
 
     # Uploading the same file to both merges its data in twice, once under
     # each role's own label — caught here before it happens.
@@ -389,6 +391,8 @@ def _render_target_uploader(
                     f"Dropped {len(result.dropped)} column(s) with no data at all: "
                     f"{', '.join(result.dropped)}."
                 )
+    else:
+        _render_kept_files(st.session_state.get(_TARGET_EXPORTS_KEY, []))
 
     merged = st.session_state.get(TARGET_MERGED_KEY)
     exports: list[BloombergCsvExport] = st.session_state.get(_TARGET_EXPORTS_KEY, [])
@@ -497,6 +501,17 @@ def _render_target_uploader(
         resolved[role] = resolved_col
 
     return resolved, merged
+
+
+def _render_kept_files(exports: list[BloombergCsvExport]) -> None:
+    """The uploader forgets its files when the user leaves the page, but the parsed
+    exports stay in session state; list them so the page doesn't look empty."""
+    if exports:
+        st.caption(
+            "In use from your last upload: "
+            + ", ".join(f"**{e.filename}**" for e in exports)
+            + ". Upload again to replace them."
+        )
 
 
 def _deconflict_signal_columns(
@@ -615,23 +630,10 @@ def offer_last_commit() -> bool:
     return False
 
 
-def render_summary() -> None:
-    """The Home page's data quality report, read back from session state.
-
-    Reflects whichever dataset was last committed on the Data page via
-    "Use Updated Data" — the same commit the Models page reads — not
-    every upload or gap-review edit.
-    """
-    ui.inject()
-    st.subheader("Data quality report", divider="grey")
-
-    report: ValidationReport | None = st.session_state.get(COMMITTED_REPORT_KEY)
-    merged = st.session_state.get(COMMITTED_KEY)
-    if report is None or merged is None:
-        _render_awaiting_upload()
-        return
-
-    _render_report(report, merged, st.session_state.get(COMMITTED_DROPPED_KEY, []))
+def quality_issue_count(report: ValidationReport) -> int:
+    """How many things the data quality report flags: schema issues plus flagged
+    observations. Home shows the count; the report itself is on the Data page."""
+    return len(report.schema_errors) + _flagged_count(report)
 
 
 def _dropped() -> list[str]:
@@ -642,22 +644,7 @@ def _dropped() -> list[str]:
     ]
 
 
-# --- shared between the Data page and the Home summary ---------------------
-
-
-def _render_awaiting_upload() -> None:
-    st.info(
-        "No data committed yet. Upload Bloomberg CSV or Excel exports on the **Data** page and "
-        "click **Use Updated Data**.",
-        icon=":material/hourglass_empty:",
-    )
-    st.caption("This report fills in once a cleaned dataset is committed.")
-    badge = ui.lozenge("Pending", "neutral")
-    rows = "".join(
-        ui.status_row(title, badge)
-        for title in ("Schema validation", "Duplicate dates", "Weekend rows", "Day-over-day moves")
-    )
-    st.markdown(rows, unsafe_allow_html=True)
+# --- the data quality report ------------------------------------------------
 
 
 def _render_report(report: ValidationReport, merged: pd.DataFrame, dropped: list[str]) -> None:

@@ -20,7 +20,14 @@ EMBARGO_DAYS: int = max(HORIZONS)
 #: +0.075; +0.034 at 5 days, about zero at 10), and the optimiser rebalances every
 #: horizon days, so a 20-day forecast is held for its own 20 days.
 DEFAULT_HORIZON: int = 20
-#: Working default, not sponsor-confirmed: about a year. Shorter windows' fold
-#: means and signal slopes swung the most on the Sep 2026 data.
-DEFAULT_TRAIN_WINDOW: int = 252
+#: Every model's train window on both targets, fixed rather than a setting: trying
+#: windows until one scores well is overfitting no single run can see. About two
+#: years. On the Sep 2026 data it scored best for the equity derived polynomial
+#: (Signal Rank IC +0.145 against +0.095 at 252 rows), neither expanding variant
+#: beat it by a standard error, and machine learning scored higher at 504 on both
+#: targets (docs/evidence/2026-10-12-design-verification.md).
+TRAIN_WINDOW: int = 504
+
+#: Every model's test window, fixed like the train window.
 DEFAULT_TEST_WINDOW: int = 20
+DEFAULT_MAX_TERMS: int = 10

@@ -147,12 +147,8 @@ class FamaFrench5:
 def run_famafrench(
     panel: FeaturePanel, splitter: PurgedWalkForward
 ) -> tuple[ModelRunResult, ModelDescription]:
-    """Single evaluate() pass — no candidate grid, no PBO. Matches
-    ``ModelRunResult``'s own docstring: ``pbo`` is ``None`` for FF5, "no
-    configuration search" — there's nothing to tune, so there's nothing for
-    PBO's CSCV to compare against, the same reason ``UserPolynomial`` reports
-    ``pbo=None``."""
+    """Single evaluate() pass — no candidate grid: there's nothing to tune."""
     folds = evaluate(FamaFrench5, panel, splitter)
     if not folds:
         raise FamaFrenchDataError(splitter.too_short(panel))
-    return summarize(folds, pbo=None)
+    return summarize(folds)

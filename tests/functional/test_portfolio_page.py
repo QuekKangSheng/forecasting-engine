@@ -1,5 +1,6 @@
 """The Portfolio Optimizer page, driven through the real Streamlit page script."""
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 import bloomberg_extraction_panel
+import model_settings
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
@@ -34,6 +36,13 @@ def no_tuning_period(monkeypatch):
     """Rebalance dates are built with the harness's own TUNING_ROWS (504) in
     the loop, same as a real model run — too large for this small fixture."""
     monkeypatch.setattr("forecasting_engine.portfolio.optimize.TUNING_ROWS", 0)
+
+
+@pytest.fixture(autouse=True)
+def short_train_window(monkeypatch):
+    """The covariance is estimated over the models' fixed train window (252 days),
+    longer than this 60-day fixture."""
+    monkeypatch.setattr(model_settings, "TRAIN_WINDOW", 15)
 
 
 def _committed() -> pd.DataFrame:
@@ -72,7 +81,6 @@ def _result(forecast=None, *, with_baseline=True) -> ModelRunResult:
         ic=0.05,
         oos_rank_ic=0.04,
         rmse=0.01,
-        pbo=0.3,
         crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=4),
         forecast=forecast,
         baseline=baseline,
@@ -124,12 +132,25 @@ def test_with_only_bond_active_names_equity_as_missing():
 
 def test_mismatched_settings_blocks_with_an_explanation():
     committed = _committed()
-    _set_active(EQUITY, forecast=_forecast(committed), train_window=15)
-    _set_active(BOND, forecast=_forecast(committed), train_window=20)
+    _set_active(EQUITY, forecast=_forecast(committed), test_window=10)
+    _set_active(BOND, forecast=_forecast(committed), test_window=5)
     app = _page(committed)
 
     assert not app.exception
     assert any("different settings" in w.value for w in app.warning)
+
+
+def test_an_equity_model_saved_with_no_train_window_combines_with_a_bond_model():
+    # An active model set before every model moved to one rolling window can carry
+    # no train window (an expanding one); both still forecast the same days.
+    committed = _committed()
+    _set_active(EQUITY, forecast=_forecast(committed, seed=1), train_window=None)
+    _set_active(BOND, forecast=_forecast(committed, seed=2))
+    app = _page(committed)
+
+    assert not app.exception
+    assert not any("different settings" in w.value for w in app.warning)
+    assert len(app.metric) == 2
 
 
 def test_active_models_set_on_another_dataset_are_refused():
@@ -253,13 +274,22 @@ def test_risk_aversion_is_a_1_to_5_scale_defaulting_to_the_middle():
     (scale,) = [s for s in app.select_slider if s.label == "Risk aversion"]
     assert list(scale.options) == ["1 · risk-loving", "2", "3", "4", "5 · risk-averse"]
     assert scale.value == 3
-    tilt = float(app.metric[0].value.strip("%")) / 100 - 0.5
+    tilt = _solved_weight(app) - 0.5
 
     scale.set_value(5).run()
 
     assert not app.exception
-    assert abs(float(app.metric[0].value.strip("%")) / 100 - 0.5) <= abs(tilt)
+    # The solved weight, before the no-trade band: a held rebalance's weight is
+    # wherever the portfolio drifted to, whatever the risk aversion.
+    assert abs(_solved_weight(app) - 0.5) <= abs(tilt)
     assert "Level 5 is λ = 100." in _captions(app)
+
+
+def _solved_weight(app) -> float:
+    """The latest rebalance's equity weight before any bound or band, from the
+    "How this was set" caption."""
+    caption = next(c.value for c in app.caption if c.value.startswith("How this was set"))
+    return float(re.search(r"giving (-?\d+)%", caption).group(1)) / 100
 
 
 def test_a_minimum_in_each_index_bounds_both_weights():
@@ -299,3 +329,12 @@ def test_without_active_models_the_page_explains_what_will_appear():
 
     assert any("against the equal-weight benchmark appear here" in t for t in _infos(app))
     assert not [m for m in app.markdown if '<table class="fe-table"' in m.value]
+
+
+def test_the_no_trade_band_is_explained_with_the_share_of_rebalances_it_held():
+    app = _happy_page()
+
+    assert not app.exception
+    captions = _captions(app)
+    assert "were held by the no-trade band." in captions
+    assert "Held: within the no-trade band." in captions or "no-trade band of ±" in captions

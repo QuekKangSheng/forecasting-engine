@@ -12,7 +12,6 @@ from forecasting_engine.validation.harness import (
     evaluate,
     select_best_candidate,
     summarize,
-    within_fold_ranks,
 )
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
@@ -123,7 +122,7 @@ def test_summarize_scores_ic_rank_ic_rmse_once_over_pooled_folds():
     folds = evaluate(_EchoForecaster, panel, splitter)
     assert len(folds) > 1, "fixture must produce more than one fold to test pooling"
 
-    result, _description = summarize(folds, pbo=None)
+    result, _description = summarize(folds)
 
     predicted = pd.concat([f.predicted for f in folds])
     realised = pd.concat([f.realised for f in folds])
@@ -138,7 +137,7 @@ def test_summarize_reports_newey_west_ses_over_the_horizon_and_the_test_window()
     panel = replace(_panel_with_varying_folds(n=60), horizon=5)
     folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=10, test=7, embargo=5))
 
-    result, _description = summarize(folds, pbo=None)
+    result, _description = summarize(folds)
 
     predicted = pd.concat([f.predicted for f in folds])
     realised = pd.concat([f.realised for f in folds])
@@ -150,19 +149,10 @@ def test_summarize_keeps_every_folds_forecast_and_realised_return_end_to_end():
     panel = _panel_with_varying_folds()
     folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=10, test=3, embargo=2))
 
-    result, _description = summarize(folds, pbo=None)
+    result, _description = summarize(folds)
 
     pd.testing.assert_series_equal(result.forecast, pd.concat([f.predicted for f in folds]))
     pd.testing.assert_series_equal(result.realised, pd.concat([f.realised for f in folds]))
-
-
-def test_summarize_passes_pbo_through_unchanged():
-    panel = _panel()
-    splitter = PurgedWalkForward(train=10, test=3, embargo=2)
-    folds = evaluate(_EchoForecaster, panel, splitter)
-
-    assert summarize(folds, pbo=0.42)[0].pbo == 0.42
-    assert summarize(folds, pbo=None)[0].pbo is None
 
 
 def test_summarize_returns_the_most_recent_folds_description():
@@ -170,7 +160,7 @@ def test_summarize_returns_the_most_recent_folds_description():
     splitter = PurgedWalkForward(train=10, test=3, embargo=2)
     folds = evaluate(_EchoForecaster, panel, splitter)
 
-    _result, description = summarize(folds, pbo=None)
+    _result, description = summarize(folds)
 
     assert description == folds[-1].description
 
@@ -180,7 +170,7 @@ def test_summarize_computes_crash_diagnostics():
     splitter = PurgedWalkForward(train=10, test=3, embargo=2)
     folds = evaluate(_EchoForecaster, panel, splitter)
 
-    result, _description = summarize(folds, pbo=None)
+    result, _description = summarize(folds)
 
     assert result.crash.n_true_tail_days >= 0
 
@@ -246,18 +236,12 @@ def test_screen_false_leaves_every_signal_unfiltered():
 
 
 def test_select_best_candidate_picks_the_higher_rank_ic_candidate():
-    # A bigger panel than the summarize()/evaluate() tests above — PBO's CSCV
-    # splits the combined strategy-return series into n_blocks pieces, so it
-    # needs enough total rows across folds to be meaningful.
     panel = _panel_with_varying_folds(n=80)
     splitter = PurgedWalkForward(train=30, test=8, embargo=2)
     strong = evaluate(_EchoForecaster, panel, splitter)
     weak = evaluate(_InverseForecaster, panel, splitter)
 
-    best_name, pbo_value = select_best_candidate({"strong": strong, "weak": weak}, n_blocks=4)
-
-    assert best_name == "strong"
-    assert 0.0 <= pbo_value <= 1.0
+    assert select_best_candidate({"strong": strong, "weak": weak}) == "strong"
 
 
 # --- per-fold screening, recorded on the fold and summarised for display ----
@@ -473,41 +457,6 @@ def _level_only_folds() -> tuple[FoldResult, ...]:
     )
 
 
-def test_a_forecast_that_only_shifts_level_between_folds_scores_nothing_within_them():
-    result, _ = summarize(_level_only_folds())
-
-    assert result.oos_rank_ic > 0.5, "pooling rewards the level shifts"
-    assert result.oos_rank_ic_within != result.oos_rank_ic_within  # NaN: no ranking to score
-
-
-def test_within_fold_ranking_is_scored_whatever_each_folds_level():
-    rng = np.random.default_rng(1)
-    outcomes = [rng.normal(0, 0.01, 30) for _ in range(4)]
-    skill = [realised * 100 + rng.normal(0, 0.5, 30) for realised in outcomes]
-
-    def run(levels):
-        folds = tuple(
-            _fold(i, list(level + forecast), list(realised))
-            for i, (level, forecast, realised) in enumerate(
-                zip(levels, skill, outcomes, strict=True)
-            )
-        )
-        return summarize(folds)[0]
-
-    flat, shifted = run([0.0] * 4), run([5.0, -3.0, 0.5, 9.0])
-
-    assert shifted.oos_rank_ic != pytest.approx(flat.oos_rank_ic), "levels move the pooled score"
-    assert shifted.oos_rank_ic_within == pytest.approx(flat.oos_rank_ic_within)
-    assert flat.oos_rank_ic_within > 0.5
-    assert shifted.oos_rank_ic_within_se is not None
-
-
-def test_within_fold_ranks_are_centred_so_a_constant_fold_is_exactly_neutral():
-    ranks = within_fold_ranks(_level_only_folds())
-
-    assert (ranks == 0.0).all()
-
-
 def test_summarize_counts_the_folds_whose_forecast_never_varies():
     varying = _fold(9, [0.1, 0.2, 0.3], [0.0, 0.1, 0.2])
     result, _ = summarize((*_level_only_folds(), varying))
@@ -587,6 +536,6 @@ def test_selection_chooses_by_signal_not_by_level():
         for i, (m, o) in pairs
     )
 
-    best, _ = select_best_candidate({"level": level, "signal": signal}, n_blocks=4)
+    best = select_best_candidate({"level": level, "signal": signal})
 
     assert best == "signal"
