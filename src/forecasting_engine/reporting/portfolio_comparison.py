@@ -1,9 +1,11 @@
 """FYP-19: the optimised portfolio against the equal-weight benchmark, as rows a
 page can show side by side, and as cumulative paths a chart can draw. FYP-56:
-the same two portfolios' historical tail risk, as rows beside max drawdown."""
+the same two portfolios' historical tail risk, as rows beside max drawdown.
+FYP-38: those rows for every VaR/CVaR method, with "Not run" for any not computed."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import pandas as pd
@@ -11,6 +13,14 @@ import pandas as pd
 from forecasting_engine.portfolio.backtest import BASES, BacktestResult
 from forecasting_engine.portfolio.directional import cumulative
 from forecasting_engine.portfolio.performance import PerformanceMetrics
+from forecasting_engine.risk.tail import (
+    HISTORICAL,
+    TAIL_METHODS,
+    VAR_CONFIDENCES,
+    TailRisk,
+)
+
+NOT_RUN: str = "Not run"
 
 PORTFOLIO_LABELS: dict[str, str] = {
     "optimised": "Optimised",
@@ -76,32 +86,46 @@ class TailRow:
     metric: str
     optimised: str
     baseline: str
+    method: str = HISTORICAL
 
 
-def tail_rows(result: BacktestResult, basis: str) -> list[TailRow]:
-    """Historical VaR and CVaR at each confidence, max drawdown, then each VaR's
-    breach rate against what it should be, for both portfolios on ``basis``.
-    Losses are positive percentages; lower is better on every row."""
+def tail_rows(
+    result: BacktestResult,
+    basis: str,
+    *,
+    simulated: Mapping[str, Mapping[tuple[str, str], TailRisk]] | None = None,
+) -> list[TailRow]:
+    """VaR and CVaR at each confidence for every method in ``TAIL_METHODS``, for
+    both portfolios on ``basis``. Historical's rows come first and are followed by
+    max drawdown and each VaR's breach rate against what it should be, which only
+    the historical path has, so every Historical row sits together. Losses are
+    positive percentages; lower is better on every row.
+
+    ``simulated`` maps a Monte Carlo method to ``{(portfolio, basis): TailRisk}``,
+    keyed like ``result.tail_risk``; a method without both portfolios on ``basis``
+    shows ``NOT_RUN``. Historical figures always come from the backtest."""
     if basis not in BASES:
         raise ValueError(f"basis must be one of {BASES}, got {basis!r}")
+    simulated = simulated or {}
+    for method, risks in simulated.items():
+        if method == HISTORICAL or method not in TAIL_METHODS:
+            raise ValueError(
+                f"simulated methods must be one of {TAIL_METHODS[1:]}, got {method!r}"
+            )
+        for key, risk in risks.items():
+            if risk.method != method:
+                raise ValueError(f"{key} under {method!r} is tagged {risk.method!r}")
     optimised = result.tail_risk[("optimised", basis)]
     baseline = result.tail_risk[("baseline", basis)]
-    rows = []
-    for mine, theirs in zip(optimised.levels, baseline.levels, strict=True):
-        level = f"{mine.confidence:.0%}"
-        rows.append(TailRow(f"1-day VaR {level}", _fmt(mine.var, True), _fmt(theirs.var, True)))
-        rows.append(
-            TailRow(f"1-day CVaR {level}", _fmt(mine.cvar, True), _fmt(theirs.cvar, True))
-        )
-    rows.append(
+    historical_only = [
         TailRow(
             "Max drawdown",
             _fmt(optimised.max_drawdown, True),
             _fmt(baseline.max_drawdown, True),
         )
-    )
+    ]
     for mine, theirs in zip(optimised.levels, baseline.levels, strict=True):
-        rows.append(
+        historical_only.append(
             TailRow(
                 f"VaR {mine.confidence:.0%} breach rate (expected "
                 f"{mine.expected_breach_rate:.0%})",
@@ -109,6 +133,29 @@ def tail_rows(result: BacktestResult, basis: str) -> list[TailRow]:
                 _fmt(theirs.breach_rate, True),
             )
         )
+    rows = []
+    for method in TAIL_METHODS:
+        risks = result.tail_risk if method == HISTORICAL else simulated.get(method, {})
+        mine_risk = risks.get(("optimised", basis))
+        theirs_risk = risks.get(("baseline", basis))
+        if mine_risk is None or theirs_risk is None:
+            for confidence in VAR_CONFIDENCES:
+                level = f"{confidence:.0%}"
+                rows.append(TailRow(f"1-day VaR {level}", NOT_RUN, NOT_RUN, method))
+                rows.append(TailRow(f"1-day CVaR {level}", NOT_RUN, NOT_RUN, method))
+            continue
+        for mine, theirs in zip(mine_risk.levels, theirs_risk.levels, strict=True):
+            level = f"{mine.confidence:.0%}"
+            rows.append(
+                TailRow(f"1-day VaR {level}", _fmt(mine.var, True), _fmt(theirs.var, True), method)
+            )
+            rows.append(
+                TailRow(
+                    f"1-day CVaR {level}", _fmt(mine.cvar, True), _fmt(theirs.cvar, True), method
+                )
+            )
+        if method == HISTORICAL:
+            rows.extend(historical_only)
     return rows
 
 

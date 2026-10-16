@@ -286,9 +286,11 @@ TERMS: Mapping[str, str] = {
         "this simple allocation to justify the forecasting behind it."
     ),
     "Historical tail risk": (
-        "How bad the worst days were, read straight off the backtest's own "
-        "daily returns — no model of volatility and no simulation. Historical "
-        "means these are losses that actually happened in this backtest."
+        "VaR and CVaR by method: how bad the worst days were, or could be. "
+        "Historical figures are read straight off the backtest's own daily "
+        "returns — no model of volatility and no simulation — so they are "
+        "losses that actually happened in this backtest. Monte Carlo methods "
+        "simulate instead, and show \"Not run\" until computed."
     ),
     "1-day VaR": (
         "Value at Risk: a one-day loss exceeded on only 5% (or 1%) of days. A "
@@ -303,6 +305,21 @@ TERMS: Mapping[str, str] = {
         "Near the expected rate means the past year was a fair guide to the "
         "risk; well above it means risk arrived faster than history suggested, "
         "as on entering a crisis."
+    ),
+    "Monte Carlo (Parametric / Bootstrap)": (
+        "VaR and CVaR from many simulated return paths, drawn from a fitted "
+        "distribution or by resampling past days. Forward-looking rather than a "
+        "record of what happened, so it is only as good as the assumptions "
+        "behind the simulation."
+    ),
+    "Monte Carlo (GARCH)": (
+        "Monte Carlo VaR and CVaR with volatility that changes over time — calm "
+        "spells followed by turbulent ones — so recent turbulence raises the "
+        "risk estimate. Optional, and shown only when enabled."
+    ),
+    "Not run": (
+        "This method hasn't been computed for this backtest. It is not a zero "
+        "and not a pass: the risk is simply unmeasured by this method."
     ),
 }
 

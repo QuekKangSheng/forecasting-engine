@@ -31,11 +31,13 @@ from forecasting_engine.portfolio.backtest import (
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
 from forecasting_engine.reporting.portfolio_comparison import (
+    NOT_RUN,
     PORTFOLIO_LABELS,
     comparison_rows,
     cumulative_paths,
     tail_rows,
 )
+from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, MONTE_CARLO_GARCH, TAIL_METHODS
 from forecasting_engine.store import active_model
 from model_settings import EMBARGO_DAYS, TRAIN_WINDOW
 
@@ -331,14 +333,27 @@ paths = cumulative_paths(backtest, basis) * 100
 st.line_chart(paths, x_label="Date", y_label="Cumulative return (%)")
 
 
-# --- FYP-56: historical VaR and CVaR, beside max drawdown ---------------------------
+# --- FYP-56 / FYP-38: VaR and CVaR by method, beside max drawdown -------------------
 
-TAIL_TERMS = {"1-day VaR": "1-day VaR", "1-day CVaR": "1-day CVaR", "Max drawdown": "Max drawdown"}
+TAIL_TERMS = {
+    "1-day VaR": "1-day VaR",
+    "1-day CVaR": "1-day CVaR",
+    "Max drawdown": "Max drawdown",
+    HISTORICAL: "Historical tail risk",
+    MONTE_CARLO: MONTE_CARLO,
+    MONTE_CARLO_GARCH: MONTE_CARLO_GARCH,
+}
 
+rows_by_method = tail_rows(backtest, basis)
+ran = {row.method for row in rows_by_method if row.optimised != NOT_RUN}
+lozenges = " ".join(
+    ui.lozenge(html.escape(m), "success")
+    if m in ran
+    else ui.lozenge(html.escape(f"{m} · {NOT_RUN}"), "neutral")
+    for m in TAIL_METHODS
+)
 st.markdown(
-    ui.eyebrow(
-        f"Tail risk {ui.lozenge('Historical', 'neutral')}", glossary.term("Historical tail risk")
-    ),
+    ui.eyebrow(f"Tail risk {lozenges}", glossary.term("Historical tail risk")),
     unsafe_allow_html=True,
 )
 
@@ -353,13 +368,20 @@ def _tail_cell(metric: str) -> str:
     )
 
 
+def _tail_value(value: str) -> str:
+    if value == NOT_RUN:
+        return f'<td title="{html.escape(glossary.term(NOT_RUN), quote=True)}">{NOT_RUN}</td>'
+    return f"<td>{html.escape(value)}</td>"
+
+
 tail_header = "".join(
     f"<th>{html.escape(h)}</th>"
-    for h in ("Metric", PORTFOLIO_LABELS["optimised"], PORTFOLIO_LABELS["baseline"])
+    for h in ("Method", "Measure", PORTFOLIO_LABELS["optimised"], PORTFOLIO_LABELS["baseline"])
 )
 tail_body = "".join(
-    f"<tr>{_tail_cell(row.metric)}<td>{row.optimised}</td><td>{row.baseline}</td></tr>"
-    for row in tail_rows(backtest, basis)
+    f"<tr>{_tail_cell(row.method)}{_tail_cell(row.metric)}"
+    f"{_tail_value(row.optimised)}{_tail_value(row.baseline)}</tr>"
+    for row in rows_by_method
 )
 st.markdown(
     f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{tail_header}</tr>'
@@ -377,4 +399,7 @@ st.caption(
         if tail.days > tail.window
         else f" The backtest is too short for that ({tail.window} days are needed first)."
     )
+    + ' Methods marked "Not run" have not been computed for this backtest, so a missing '
+    "figure is not a zero risk. Monte Carlo figures, once run, are simulated and answer a "
+    "different question from the historical ones."
 )

@@ -546,9 +546,15 @@ together.
   for any strategy. A rate well above `1 − c` means the historical window
   understated the risk that followed — typically on entering a crisis.
 
-The Portfolio page shows these under the performance table, tagged "Historical",
+The Portfolio page shows these under the performance table, labelled by method,
 for both portfolios on the chosen basis (before or after costs), with each
 path's maximum drawdown beside them.
+
+The page lists VaR and CVaR at each confidence for every method in
+`risk/tail.TAIL_METHODS` (Historical, Monte Carlo (Parametric / Bootstrap),
+Monte Carlo (GARCH)), beside the historical maximum drawdown. A method without
+results shows "Not run" rather than being left out. Only Historical is computed
+today.
 
 ## 17. Portfolio optimiser
 
