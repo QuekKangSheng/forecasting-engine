@@ -249,6 +249,19 @@ def test_a_dropped_column_is_listed_in_the_committed_data_quality_report(page):
     assert dropped["Column"].tolist() == ["JPMVXYGL_Index_PX_BID"]
 
 
+def test_the_data_committed_last_time_is_shown_on_the_data_page_once_used_again(page):
+    result = upload(page, [("spx.csv", SPX, "text/csv"), ("vix.csv", VIX, "text/csv")])
+    next(b for b in result.button if b.label == "Use Updated Data").click().run()
+
+    app = AppTest.from_file(str(PAGE), default_timeout=30).run()  # a new window
+    next(b for b in app.button if b.label == "Use the data committed last time").click().run()
+
+    assert not app.exception
+    assert "Using the data committed last time" in texts(app.success)
+    assert "Upload target index files" not in texts(app.info)
+    assert {m.label for m in app.metric} >= {"Flagged"}
+
+
 def _home(committed: AppTest | None = None) -> AppTest:
     """The Home page, given what the Data page committed (if anything)."""
     home = AppTest.from_file(str(HOME_PAGE), default_timeout=30)
