@@ -1,4 +1,7 @@
-"""FYP-19: the optimised portfolio beside the equal-weight benchmark."""
+"""FYP-19: the optimised portfolio beside the equal-weight benchmark; FYP-20: whether
+its outperformance is statistically significant."""
+
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -6,11 +9,13 @@ import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.backtest import month_end_rebalance_dates, run_backtest
+from forecasting_engine.portfolio.performance import RelativeMetrics
 from forecasting_engine.reporting.portfolio_comparison import (
     METRICS,
     NOT_RUN,
     comparison_rows,
     cumulative_paths,
+    significance_summary,
     tail_rows,
 )
 from forecasting_engine.risk.tail import (
@@ -211,3 +216,64 @@ def test_max_drawdown_matches_the_performance_table_for_both_portfolios(basis):
 def test_tail_rows_refuse_a_simulation_they_cannot_label(simulated):
     with pytest.raises(ValueError):
         tail_rows(_backtest(), "net", simulated=simulated)
+
+
+# --- FYP-20: the spread t-statistic, with a plain-language verdict -------------------
+
+
+def _with_t(t: float, days: int = 120, lags: int = 4):
+    result = _backtest()
+    relative = {
+        basis: RelativeMetrics(0.01, 0.5, spread_t=t, spread_t_lags=lags, days=days)
+        for basis in ("gross", "net")
+    }
+    return replace(result, relative=relative)
+
+
+def test_a_significant_outperformance_says_so_at_95_percent():
+    summary = significance_summary(_with_t(2.41), "net")
+
+    assert summary.t == "2.41"
+    assert summary.label == "Statistically significant at 95% confidence"
+    assert summary.tone == "success"
+
+
+def test_a_t_inside_the_critical_value_is_not_significant():
+    summary = significance_summary(_with_t(1.20), "net")
+
+    assert summary.label == "Not statistically significant"
+    assert summary.tone == "neutral"
+
+
+def test_a_significant_underperformance_is_called_out_rather_than_hidden():
+    summary = significance_summary(_with_t(-2.50), "net")
+
+    assert summary.label == "Significantly worse than the benchmark at 95% confidence"
+    assert summary.tone == "danger"
+
+
+def test_an_untestable_backtest_says_why_instead_of_showing_a_number():
+    summary = significance_summary(_with_t(float("nan")), "net")
+
+    assert summary.t == "—"
+    assert summary.label == "Cannot be tested"
+    assert "no difference to test" in summary.detail
+
+
+def test_the_detail_states_the_days_and_lags_the_test_used():
+    detail = significance_summary(_with_t(2.41, days=1_234, lags=6), "net").detail
+
+    assert "1,234 daily return differences" in detail
+    assert "Newey-West adjusted for 6 days" in detail
+
+
+def test_the_summary_reads_the_basis_it_is_asked_for():
+    result = _backtest()
+
+    for basis in ("gross", "net"):
+        assert significance_summary(result, basis).t == f"{result.relative[basis].spread_t:.2f}"
+
+
+def test_significance_refuses_an_unknown_basis():
+    with pytest.raises(ValueError):
+        significance_summary(_backtest(), "after tax")

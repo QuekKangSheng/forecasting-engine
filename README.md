@@ -110,11 +110,12 @@ hosting step is needed.
 - **Backtest against 50/50** — runs the optimised weights and a monthly-reset
   50/50 benchmark through the same days, before and after trading costs, and
   compares Sharpe, Sortino, Calmar and maximum drawdown side by side.
+- **Significance of the outperformance** — a paired, Newey-West-adjusted
+  t-statistic on the daily difference between the two, with a plain-language
+  verdict at 95% confidence, so luck isn't mistaken for skill.
 - **Tail risk** — historical one-day VaR and CVaR at 95% and 99% beside maximum
   drawdown, for both portfolios; the Monte Carlo methods are listed as "Not run"
   until computed.
-
-Significance checks on the backtest are not built yet.
 
 ## Interface
 

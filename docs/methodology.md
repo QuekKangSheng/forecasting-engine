@@ -483,7 +483,19 @@ same weights at every rebalance is the fixed-weight case.
      path, with the starting value as the first peak;
    - Calmar: annual return over the size of the maximum drawdown;
    - tracking error and information ratio of the optimised portfolio against the
-     baseline, from the daily difference in their returns.
+     baseline, from the daily difference in their returns;
+   - the spread t-statistic (FYP-52): a paired test of whether the mean daily
+     difference, optimised minus baseline, is above zero. It is the mean over its
+     Newey-West standard error (statsmodels' HAC estimate of a regression of the
+     difference on a constant, Bartlett weights, no small-sample correction, as
+     `validation/metrics.rank_ic_se` also uses), with ⌊4·(n/100)^(2/9)⌋ lags for
+     `n` days (Newey and West, 1994). It is significant when it is strictly
+     beyond ±`SIGNIFICANCE_T_GATE`, the sponsor's "t above 2" that every model is
+     gated on (§12): above it the optimised portfolio outperforms, below it it
+     underperforms. Beyond ±2 is about 95.4% two-sided confidence, which the
+     verdict states as `SIGNIFICANCE_CONFIDENCE`. Fewer than
+     three days, or a difference that never varies, leaves it undefined. The
+     dashboard shows it with a plain-language verdict (FYP-20).
 
    A ratio whose denominator is zero (no variation, no losing day, no drawdown)
    is undefined rather than infinite.
@@ -686,6 +698,7 @@ Values are Python literals as the code holds them.
 | `SIGNIFICANCE_T_GATE` | `forecasting_engine.validation.gates` | `2.0` |
 | `TRADING_DAYS_PER_YEAR` | `forecasting_engine.portfolio.performance` | `252` |
 | `RISK_FREE_RATE` | `forecasting_engine.portfolio.performance` | `0.0` |
+| `SIGNIFICANCE_CONFIDENCE` | `forecasting_engine.portfolio.performance` | `0.95` |
 | `BASELINE_WEIGHTS` | `forecasting_engine.portfolio.backtest` | `{"equity": 0.5, "bond": 0.5}` |
 | `DEFAULT_COSTS_BPS` | `forecasting_engine.portfolio.backtest` | `{"equity": 3.0, "bond": 5.0}` |
 | `REBALANCE_FREQUENCY` | `forecasting_engine.portfolio.backtest` | `"monthly"` |

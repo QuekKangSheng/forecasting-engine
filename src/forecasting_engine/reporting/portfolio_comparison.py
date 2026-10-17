@@ -1,7 +1,9 @@
 """FYP-19: the optimised portfolio against the equal-weight benchmark, as rows a
 page can show side by side, and as cumulative paths a chart can draw. FYP-56:
 the same two portfolios' historical tail risk, as rows beside max drawdown.
-FYP-38: those rows for every VaR/CVaR method, with "Not run" for any not computed."""
+FYP-38: those rows for every VaR/CVaR method, with "Not run" for any not computed.
+FYP-20: whether the optimised portfolio's outperformance is statistically
+significant, as a figure and a plain-language label."""
 
 from __future__ import annotations
 
@@ -12,7 +14,11 @@ import pandas as pd
 
 from forecasting_engine.portfolio.backtest import BASES, BacktestResult
 from forecasting_engine.portfolio.directional import cumulative
-from forecasting_engine.portfolio.performance import PerformanceMetrics
+from forecasting_engine.portfolio.performance import (
+    SIGNIFICANCE_CONFIDENCE,
+    PerformanceMetrics,
+    Significance,
+)
 from forecasting_engine.risk.tail import (
     HISTORICAL,
     TAIL_METHODS,
@@ -171,3 +177,49 @@ def _fmt(value: float, percent: bool, *, signed: bool = False, points: bool = Fa
         text = f"{value * 100:{sign}.2f}"
         return f"{text} pts" if points else f"{text}%"
     return f"{value:{sign}.2f}"
+
+
+@dataclass(frozen=True)
+class SignificanceSummary:
+    """The spread t-statistic as a page shows it."""
+
+    t: str
+    """The raw t-statistic, or "—" when it can't be computed."""
+    label: str
+    """Plain-language verdict, e.g. "Statistically significant at 95% confidence"."""
+    tone: str
+    """A ``ui.lozenge`` tone: success, danger or neutral."""
+    detail: str
+    """What the test was run on, for a caption."""
+
+
+def significance_summary(result: BacktestResult, basis: str) -> SignificanceSummary:
+    """Is the optimised portfolio's outperformance of the benchmark on ``basis``
+    more than noise? Read from the backtest's own paired, Newey-West t-statistic."""
+    if basis not in BASES:
+        raise ValueError(f"basis must be one of {BASES}, got {basis!r}")
+    relative = result.relative[basis]
+    level = f"{SIGNIFICANCE_CONFIDENCE:.0%}"
+    verdict = relative.significance
+    label, tone = {
+        Significance.OUTPERFORMS: (f"Statistically significant at {level} confidence", "success"),
+        Significance.UNDERPERFORMS: (
+            f"Significantly worse than the benchmark at {level} confidence",
+            "danger",
+        ),
+        Significance.NOT_SIGNIFICANT: ("Not statistically significant", "neutral"),
+        Significance.UNDEFINED: ("Cannot be tested", "neutral"),
+    }[verdict]
+    if verdict == Significance.UNDEFINED:
+        detail = (
+            "The two portfolios' daily returns never differ, or the backtest has fewer "
+            "than three days, so there is no difference to test."
+        )
+    else:
+        detail = (
+            f"Paired test on {relative.days:,} daily return differences (optimised minus "
+            f"benchmark), Newey-West adjusted for {relative.spread_t_lags} days of "
+            "neighbouring correlation."
+        )
+    t = "—" if relative.spread_t != relative.spread_t else f"{relative.spread_t:.2f}"
+    return SignificanceSummary(t=t, label=label, tone=tone, detail=detail)

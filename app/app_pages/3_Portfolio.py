@@ -35,6 +35,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     PORTFOLIO_LABELS,
     comparison_rows,
     cumulative_paths,
+    significance_summary,
     tail_rows,
 )
 from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, MONTE_CARLO_GARCH, TAIL_METHODS
@@ -60,8 +61,9 @@ missing = [
 if missing:
     st.info(
         f"Set an active model for {' and '.join(missing)} on the Models page before "
-        "running the optimiser. Once both are set, the optimised allocation and its "
-        "performance against the equal-weight benchmark appear here.",
+        "running the optimiser. Once both are set, the optimised allocation, its "
+        "performance against the equal-weight benchmark and whether that outperformance "
+        "is statistically significant appear here.",
         icon=":material/info:",
     )
     st.stop()
@@ -328,6 +330,23 @@ st.caption(
     "Difference is optimised minus benchmark: positive favours the optimised portfolio "
     "on every row, drawdown included."
 )
+
+# --- FYP-20 / FYP-52: is the outperformance more than noise? ------------------------
+
+significance = significance_summary(backtest, basis)
+st.markdown(
+    ui.eyebrow("Is the outperformance genuine?", glossary.term("Spread t-statistic")),
+    unsafe_allow_html=True,
+)
+st.markdown(
+    ui.status_row(
+        "Spread t-statistic",
+        ui.lozenge(html.escape(significance.label), significance.tone),
+        f"t = {significance.t}",
+    ),
+    unsafe_allow_html=True,
+)
+st.caption(f"{significance.detail} {basis_label}, the same basis as the table above.")
 
 paths = cumulative_paths(backtest, basis) * 100
 st.line_chart(paths, x_label="Date", y_label="Cumulative return (%)")

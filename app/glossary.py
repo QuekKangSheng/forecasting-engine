@@ -285,6 +285,13 @@ TERMS: Mapping[str, str] = {
         "the last trading day of each month. The optimised portfolio has to beat "
         "this simple allocation to justify the forecasting behind it."
     ),
+    "Spread t-statistic": (
+        "How many standard errors the optimised portfolio's average daily edge over "
+        "the benchmark sits from zero. Beyond ±2 — the bar every model is held to — "
+        "the edge is unlikely to be luck, at 95% confidence. It is adjusted (Newey-West) "
+        "for neighbouring days moving together, which would otherwise make a lucky "
+        "streak look reliable."
+    ),
     "Historical tail risk": (
         "VaR and CVaR by method: how bad the worst days were, or could be. "
         "Historical figures are read straight off the backtest's own daily "
