@@ -331,6 +331,9 @@ st.caption(
     "on every row, drawdown included."
 )
 
+paths = cumulative_paths(backtest, basis) * 100
+st.line_chart(paths, x_label="Date", y_label="Cumulative return (%)")
+
 # --- FYP-20 / FYP-52: is the outperformance more than noise? ------------------------
 
 significance = significance_summary(backtest, basis)
@@ -347,9 +350,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption(f"{significance.detail} {basis_label}, the same basis as the table above.")
-
-paths = cumulative_paths(backtest, basis) * 100
-st.line_chart(paths, x_label="Date", y_label="Cumulative return (%)")
 
 
 # --- FYP-56 / FYP-38: VaR and CVaR by method, beside max drawdown -------------------
