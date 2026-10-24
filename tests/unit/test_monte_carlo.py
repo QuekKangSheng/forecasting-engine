@@ -13,14 +13,15 @@ from forecasting_engine.risk.monte_carlo import (
     DEFAULT_PATHS,
     MAX_PATHS,
     MIN_PATHS,
-    MONTE_CARLO,
     PARAMETRIC,
     SAMPLING_METHODS,
     MonteCarloDataError,
+    as_tail_risk,
     history_window,
     path_drawdowns,
     simulate,
 )
+from forecasting_engine.risk.tail import MONTE_CARLO, TAIL_METHODS
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 ALL_EQUITY = {"equity": pd.Series({EQUITY: 1.0, BOND: 0.0})}
@@ -165,6 +166,15 @@ def test_cvar_is_never_below_var_and_99_is_never_milder_than_95():
         assert at_99.max_drawdown <= at_95.max_drawdown
 
 
+def test_drawdown_at_a_confidence_is_the_edge_of_the_tail_not_its_mean():
+    # Over one day a path's drawdown is its loss, so the two tails must agree.
+    result = _run(horizon=1, portfolios=ALL_EQUITY)
+
+    for level in result.risk["equity"].levels:
+        assert level.var > 0
+        assert level.max_drawdown == pytest.approx(-level.var)
+
+
 def test_every_portfolio_is_simulated_on_the_same_paths():
     twins = {"a": PORTFOLIOS["optimised"], "b": PORTFOLIOS["optimised"]}
 
@@ -212,6 +222,48 @@ def test_the_result_says_how_it_was_made():
     assert result.history_start == history.index[0]
     assert result.history_days == len(history)
     assert result.forecasts.equals(FORECASTS)
+
+
+# --- one-day figures, for the tail-risk table ---------------------------------------
+
+
+def test_with_no_spread_the_one_day_loss_is_a_days_share_of_the_forecast():
+    flat = _history([0.01] * 50, [0.002] * 50)
+    result = _run(flat, horizon=10, paths=MIN_PATHS)
+
+    for name, weights in PORTFOLIOS.items():
+        expected = float((FORECASTS / 10) @ weights)
+        for level in result.risk[name].one_day:
+            assert level.var == pytest.approx(-expected)
+            assert level.cvar == pytest.approx(-expected)
+
+
+def test_over_a_one_day_horizon_the_one_day_and_horizon_figures_are_the_same():
+    risk = _run(horizon=1).risk["optimised"]
+
+    assert risk.one_day == risk.levels
+
+
+def test_the_one_day_figures_fit_the_tail_risk_tables_shape_for_every_method():
+    result = _run()
+
+    tail = as_tail_risk(result, "baseline")
+
+    assert tail.method == MONTE_CARLO and MONTE_CARLO in TAIL_METHODS
+    assert [(lv.confidence, lv.var, lv.cvar) for lv in tail.levels] == [
+        (lv.confidence, lv.var, lv.cvar) for lv in result.risk["baseline"].one_day
+    ]
+    # Nothing realised to test a VaR against, or to draw down over.
+    assert all(math.isnan(level.breach_rate) for level in tail.levels)
+    assert math.isnan(tail.max_drawdown)
+    assert tail.days == result.paths
+
+
+def test_one_day_risk_is_smaller_than_the_horizons():
+    risk = _run().risk["optimised"]
+
+    for day, horizon in zip(risk.one_day, risk.levels, strict=True):
+        assert day.var < horizon.var
 
 
 # --- refused inputs --------------------------------------------------------------

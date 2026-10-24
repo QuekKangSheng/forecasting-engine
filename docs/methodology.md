@@ -31,11 +31,13 @@ flowchart TD
     N --> P
     J --> O["15. Directional P&L vs buy-and-hold<br/>portfolio/directional"]
     P["16. Historical VaR and CVaR<br/>risk/tail"]
+    Q --> R["18. Monte Carlo VaR, CVaR and drawdown<br/>risk/monte_carlo"]
 ```
 
 Step 14 consumes the optimiser's weight schedule (step 17), built from the active
 models' signals: it judges an allocation, not a forecast. Step 15 replays one model's out-of-sample
-forecasts for one index.
+forecasts for one index. Step 18 simulates the next horizon from the latest
+weights, centred on the active models' forecasts.
 
 ## 1. Ingestion and parsing
 
@@ -565,8 +567,9 @@ path's maximum drawdown beside them.
 The page lists VaR and CVaR at each confidence for every method in
 `risk/tail.TAIL_METHODS` (Historical, Monte Carlo (Parametric / Bootstrap),
 Monte Carlo (GARCH)), beside the historical maximum drawdown. A method without
-results shows "Not run" rather than being left out. Only Historical is computed
-today.
+results shows "Not run" rather than being left out. Historical is always
+computed; Monte Carlo (Parametric / Bootstrap) once the simulation in §18 is run,
+from each simulated path's first day; Monte Carlo (GARCH) is not built.
 
 ## 17. Portfolio optimiser
 
@@ -627,6 +630,60 @@ is left out, and the portfolio drifts on through it. The Portfolio page shows,
 for the latest rebalance, the benchmark weight, the signals and the tilt they
 gave, the drifted weight and band, whether it held, and the share of rebalances
 the band held.
+
+## 18. Monte Carlo VaR, CVaR and drawdown
+
+`risk/monte_carlo.simulate` asks what the next forecast horizon could bring from
+the latest rebalance, where §16 reads what the backtest's own days did. It
+simulates paths of daily equity and bond returns, holds each portfolio through
+them, and reads the tail off the simulated outcomes (FYP-36). Results are tagged
+Monte Carlo (Parametric / Bootstrap), `risk/tail.MONTE_CARLO`.
+
+1. **Centre.** Each asset's latest active-model forecast of its `h`-day return as
+   of the latest rebalance (`store/active_model.get_active_model_forecast`, read
+   as the optimiser reads signals, §17): the forecast itself, training mean
+   included, since a risk estimate needs the expected return and not only the
+   tilt. Each simulated day adds `forecast / h`, so a path's `h` days add up to
+   the forecast; compounding adds about half the horizon's variance on top.
+2. **Spread.** The two indices' daily returns over the `TRAIN_WINDOW` days up to
+   and including the as-of date, on the days both traded
+   (`risk/monte_carlo.history_window`), demeaned so the history sets the size and
+   shape of the moves but not their direction. Nothing after the as-of date is
+   used.
+3. **Sampling** (`SAMPLING_METHODS`, chosen on the page). **Bootstrap**, the
+   default, resamples whole historical days, equity and bond together, so fat
+   tails and how the two moved on stress days are kept. **Parametric** draws from
+   a two-asset normal with the history's covariance (its square root by
+   eigendecomposition, so an index that never moved draws zeros rather than
+   failing). A normal thins the tails, so its 99% figures usually come out lower.
+   Days are drawn independently in both: volatility clustering within the horizon
+   is not modelled.
+4. **Paths.** `DEFAULT_PATHS` by default, from `MIN_PATHS` to `MAX_PATHS`, from a
+   fixed `SEED` so the same inputs always give the same figures. They are drawn
+   `_CHUNK_PATHS` at a time off one random stream, which bounds memory without
+   changing the result.
+5. **Portfolios.** The optimised portfolio at its latest weights and the 50/50
+   benchmark, each left to drift through the path as the backtest drifts it
+   between rebalances. Nothing is traded, so there are no costs. Both are
+   simulated on the same paths, so their difference is the weights' alone.
+6. **Tail.** As in §16, with paths for days: at confidence `c` the tail is the
+   `⌈n·(1−c)⌉` worst paths. **VaR** is the loss over the whole horizon on the
+   last of them, **CVaR** the mean loss across them, and **max drawdown** the
+   drawdown only those paths exceed, the starting value counting as the first
+   peak (§14). VaR and CVaR are `h`-day losses, so they are not comparable with
+   §16's one-day figures.
+7. **One day.** Each path's first day is read the same way on its own
+   (`risk/monte_carlo.as_tail_risk`), as a one-day VaR and CVaR in §16's shape,
+   tagged Monte Carlo (Parametric / Bootstrap). That is what fills §16's Monte
+   Carlo rows, beside the historical one-day figures. A simulated path has no
+   realised days, so it has no breach rate and no drawdown of its own there, and
+   it trades nothing, so before and after costs are the same.
+
+The Portfolio page shows these under the tail-risk table once the user runs the
+simulation, beside the mean simulated return, with the sampling method and the
+number of paths (under Advanced settings) as its only settings. A result is shown
+only while its inputs (dataset, active models, latest rebalance and weights,
+method, paths) are unchanged.
 
 ## Parameters
 
@@ -707,6 +764,12 @@ Values are Python literals as the code holds them.
 | `RISK_AVERSION_SCALE` | `forecasting_engine.portfolio.optimize` | `{1: 1.0, 2: 3.0, 3: 10.0, 4: 30.0, 5: 100.0}` |
 | `DEFAULT_RISK_LEVEL` | `forecasting_engine.portfolio.optimize` | `3` |
 | `DEFAULT_WEIGHT_BOUNDS` | `forecasting_engine.portfolio.optimize` | `(0.2, 0.8)` |
+| `SAMPLING_METHODS` | `forecasting_engine.risk.monte_carlo` | `("bootstrap", "parametric")` |
+| `DEFAULT_PATHS` | `forecasting_engine.risk.monte_carlo` | `100_000` |
+| `MIN_PATHS` | `forecasting_engine.risk.monte_carlo` | `1_000` |
+| `MAX_PATHS` | `forecasting_engine.risk.monte_carlo` | `1_000_000` |
+| `SEED` | `forecasting_engine.risk.monte_carlo` | `0` |
+| `_CHUNK_PATHS` | `forecasting_engine.risk.monte_carlo` | `50_000` |
 
 ## Decisions and evidence
 

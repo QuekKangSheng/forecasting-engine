@@ -297,7 +297,7 @@ TERMS: Mapping[str, str] = {
         "Historical figures are read straight off the backtest's own daily "
         "returns — no model of volatility and no simulation — so they are "
         "losses that actually happened in this backtest. Monte Carlo methods "
-        "simulate instead, and show \"Not run\" until computed."
+        "simulate instead, and show \"Not run\" until the simulation below is run."
     ),
     "1-day VaR": (
         "Value at Risk: a one-day loss exceeded on only 5% (or 1%) of days. A "
@@ -306,6 +306,44 @@ TERMS: Mapping[str, str] = {
     "1-day CVaR": (
         "Conditional VaR: the average loss on the days beyond VaR — how bad the "
         "bad days were, not just where they start. Always at least the VaR."
+    ),
+    "Simulated tail risk": (
+        "What the next forecast horizon could bring from here, from many "
+        "simulated paths rather than the backtest's own days. Each path starts "
+        "from the active models' forecasts and draws its day-to-day moves from "
+        "the last two years. It looks forward where historical tail risk looks "
+        "back, so the two are read side by side."
+    ),
+    "Sampling method": (
+        "How each simulated day's moves are drawn. **Bootstrap** picks whole "
+        "days that happened, so fat tails and how equity and bonds moved together "
+        "on bad days are kept as they were. **Parametric** fits a normal "
+        "distribution to those days and draws from it: smoother, but it thins the "
+        "tails, so its 99% figures usually come out lower."
+    ),
+    "Simulated paths": (
+        "How many futures are simulated. More paths make the tail figures more "
+        "stable from run to run but take longer. At 100,000 the 99% figures rest "
+        "on the worst 1,000 paths."
+    ),
+    "Simulated VaR": (
+        "A loss over the whole horizon exceeded on only 5% (or 1%) of simulated "
+        "paths. A 20-day VaR of 4% at 95% means 19 paths in 20 lost less than 4% "
+        "over the 20 days."
+    ),
+    "Simulated CVaR": (
+        "The average loss across the paths beyond VaR: how bad the bad outcomes "
+        "were, not just where they start. Always at least the VaR."
+    ),
+    "Simulated max drawdown": (
+        "The worst fall from a peak within the horizon that only 5% (or 1%) of "
+        "paths exceed. It can be deeper than the loss at the end, since a path "
+        "can fall and then recover."
+    ),
+    "Mean simulated return": (
+        "The average return over the horizon across every path: the active "
+        "models' forecasts for the two indices, weighted by the portfolio. The "
+        "simulation centres on it, so it shows what base case the tail is around."
     ),
     "Breach rate": (
         "How often a day's loss beat the VaR measured over the year before it. "

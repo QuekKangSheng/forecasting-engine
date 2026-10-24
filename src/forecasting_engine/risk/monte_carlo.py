@@ -3,8 +3,8 @@
 Where ``risk.tail`` reads the worst days the backtest actually had, this asks what
 the next ``horizon`` days could bring from here: it simulates many paths of daily
 equity and bond returns, holds a portfolio through each, and reads the tail off the
-simulated outcomes. The figures are tagged ``MONTE_CARLO`` so a display can tell
-them apart from the historical ones, which answer a different question.
+simulated outcomes. The figures are tagged ``tail.MONTE_CARLO`` so a display can
+tell them apart from the historical ones, which answer a different question.
 
 Each path is built from the base case the active models give:
 
@@ -27,6 +27,10 @@ interpolation between two: with ``n`` paths and confidence ``c`` the tail is the
 ``⌈n·(1−c)⌉`` worst paths, **VaR** is the loss on the last of them and **CVaR** the
 mean loss across them. **Max drawdown** at ``c`` is the drawdown only those paths
 exceed, the path's starting value counting as its first peak.
+
+Each path's first day is also read on its own, as a one-day VaR and CVaR
+(``as_tail_risk``), so the simulation can sit in the tail-risk table beside the
+historical one-day figures on the same footing.
 """
 
 from __future__ import annotations
@@ -39,9 +43,13 @@ import numpy as np
 import pandas as pd
 
 from forecasting_engine.extraction.targets import TargetRole
-from forecasting_engine.risk.tail import VAR_CONFIDENCES, _var_cvar
-
-MONTE_CARLO: str = "Monte Carlo"
+from forecasting_engine.risk.tail import (
+    MONTE_CARLO,
+    VAR_CONFIDENCES,
+    TailLevel,
+    TailRisk,
+    _var_cvar,
+)
 
 PARAMETRIC: str = "parametric"
 BOOTSTRAP: str = "bootstrap"
@@ -86,6 +94,9 @@ class SimulatedTailRisk:
     levels: tuple[SimulatedLevel, ...]
     mean_return: float
     """Mean simulated return over the horizon: the base case the paths centre on."""
+    one_day: tuple[SimulatedLevel, ...]
+    """VaR and CVaR of each path's first day, comparable with the historical
+    one-day figures. Its ``max_drawdown`` is the first day's loss, if any."""
 
 
 @dataclass(frozen=True)
@@ -180,6 +191,7 @@ def simulate(
     draw = _sampler(moves, method)
     rng = np.random.default_rng(seed)
     outcomes = {name: np.empty(paths) for name in weights}
+    first_days = {name: np.empty(paths) for name in weights}
     drawdowns = {name: np.empty(paths) for name in weights}
     for start in range(0, paths, chunk_paths):
         size = min(chunk_paths, paths - start)
@@ -187,19 +199,19 @@ def simulate(
         for name, w in weights.items():
             value = growth @ w
             outcomes[name][start : start + size] = value[:, -1] - 1
+            first_days[name][start : start + size] = value[:, 0] - 1
             drawdowns[name][start : start + size] = path_drawdowns(value)
 
-    risk = {}
-    for name in weights:
-        levels = []
-        for confidence in confidences:
-            var, cvar = _var_cvar(outcomes[name], confidence)
-            # The k-th worst (most negative) drawdown, as VaR is the k-th worst loss.
-            drawdown, _ = _var_cvar(drawdowns[name], confidence)
-            levels.append(SimulatedLevel(confidence, var, cvar, -drawdown))
-        risk[name] = SimulatedTailRisk(
-            levels=tuple(levels), mean_return=float(outcomes[name].mean())
+    risk = {
+        name: SimulatedTailRisk(
+            levels=_levels(outcomes[name], drawdowns[name], confidences),
+            mean_return=float(outcomes[name].mean()),
+            one_day=_levels(
+                first_days[name], np.minimum(first_days[name], 0.0), confidences
+            ),
         )
+        for name in weights
+    }
     return MonteCarloResult(
         risk=risk,
         forecasts=base,
@@ -211,6 +223,38 @@ def simulate(
         history_days=len(moves),
         seed=seed,
     )
+
+
+def as_tail_risk(result: MonteCarloResult, portfolio: str) -> TailRisk:
+    """``portfolio``'s one-day simulated VaR and CVaR in the shape the tail-risk
+    table takes for every method, tagged ``MONTE_CARLO``.
+
+    A simulation has no realised days to test a VaR against or to draw down
+    over, so there are no breaches (``days_tested`` is 0, the breach rate
+    undefined) and the drawdown is ``NaN``; the horizon's drawdown is in
+    ``result.risk`` instead."""
+    return TailRisk(
+        levels=tuple(
+            TailLevel(level.confidence, level.var, level.cvar, breaches=0, days_tested=0)
+            for level in result.risk[portfolio].one_day
+        ),
+        max_drawdown=float("nan"),
+        days=result.paths,
+        window=0,
+        method=MONTE_CARLO,
+    )
+
+
+def _levels(
+    outcomes: np.ndarray, drawdowns: np.ndarray, confidences: Sequence[float]
+) -> tuple[SimulatedLevel, ...]:
+    levels = []
+    for confidence in confidences:
+        var, cvar = _var_cvar(outcomes, confidence)
+        # The k-th worst (most negative) drawdown, as VaR is the k-th worst loss.
+        drawdown, _ = _var_cvar(drawdowns, confidence)
+        levels.append(SimulatedLevel(confidence, var, cvar, -drawdown))
+    return tuple(levels)
 
 
 def path_drawdowns(value: np.ndarray) -> np.ndarray:

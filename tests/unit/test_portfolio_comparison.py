@@ -15,9 +15,11 @@ from forecasting_engine.reporting.portfolio_comparison import (
     NOT_RUN,
     comparison_rows,
     cumulative_paths,
+    monte_carlo_rows,
     significance_summary,
     tail_rows,
 )
+from forecasting_engine.risk.monte_carlo import as_tail_risk, simulate
 from forecasting_engine.risk.tail import (
     HISTORICAL,
     MONTE_CARLO,
@@ -277,3 +279,78 @@ def test_the_summary_reads_the_basis_it_is_asked_for():
 def test_significance_refuses_an_unknown_basis():
     with pytest.raises(ValueError):
         significance_summary(_backtest(), "after tax")
+
+
+# --- FYP-36: the simulated tail ----------------------------------------------------
+
+
+def _monte_carlo():
+    rng = np.random.default_rng(0)
+    history = pd.DataFrame(
+        {EQUITY: rng.normal(0, 0.01, 300), BOND: rng.normal(0, 0.003, 300)},
+        index=pd.bdate_range("2024-01-01", periods=300),
+    )
+    return simulate(
+        history,
+        pd.Series({EQUITY: 0.01, BOND: 0.002}),
+        {
+            "optimised": pd.Series({EQUITY: 0.7, BOND: 0.3}),
+            "baseline": pd.Series({EQUITY: 0.5, BOND: 0.5}),
+        },
+        horizon=20,
+        paths=5_000,
+    )
+
+
+def test_monte_carlo_rows_show_the_mean_then_var_and_cvar_then_drawdown_at_each_level():
+    rows = monte_carlo_rows(_monte_carlo())
+
+    assert [r.metric for r in rows] == [
+        "Mean 20-day return",
+        "20-day VaR 95%",
+        "20-day CVaR 95%",
+        "20-day VaR 99%",
+        "20-day CVaR 99%",
+        "Max drawdown 95%",
+        "Max drawdown 99%",
+    ]
+
+
+def test_monte_carlo_rows_read_each_portfolios_own_simulated_figures():
+    result = _monte_carlo()
+    rows = {r.metric: r for r in monte_carlo_rows(result)}
+    optimised, baseline = result.risk["optimised"], result.risk["baseline"]
+
+    assert rows["Mean 20-day return"].optimised == f"{optimised.mean_return * 100:+.2f}%"
+    assert rows["20-day VaR 99%"].optimised == f"{optimised.levels[1].var * 100:.2f}%"
+    assert rows["20-day CVaR 95%"].baseline == f"{baseline.levels[0].cvar * 100:.2f}%"
+    assert rows["Max drawdown 95%"].baseline == f"{baseline.levels[0].max_drawdown * 100:.2f}%"
+    assert rows["Max drawdown 95%"].baseline.startswith("-")
+
+
+def test_monte_carlo_rows_are_labelled_with_the_monte_carlo_method():
+    assert {r.method for r in monte_carlo_rows(_monte_carlo())} == {MONTE_CARLO}
+
+
+def test_a_real_simulation_fills_the_monte_carlo_rows_of_the_tail_table():
+    result = _monte_carlo()
+    simulated = {
+        MONTE_CARLO: {
+            (name, basis): as_tail_risk(result, name)
+            for name in ("optimised", "baseline")
+            for basis in ("gross", "net")
+        }
+    }
+
+    rows = tail_rows(_backtest(), "net", simulated=simulated)
+    rows = [r for r in rows if r.method == MONTE_CARLO]
+
+    one_day = result.risk["optimised"].one_day
+    assert [r.metric for r in rows] == [
+        "1-day VaR 95%",
+        "1-day CVaR 95%",
+        "1-day VaR 99%",
+        "1-day CVaR 99%",
+    ]
+    assert rows[0].optimised == f"{one_day[0].var * 100:.2f}%"
+    assert rows[3].optimised == f"{one_day[1].cvar * 100:.2f}%"
