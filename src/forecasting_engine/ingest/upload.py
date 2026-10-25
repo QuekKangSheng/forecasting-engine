@@ -148,6 +148,18 @@ def accept_upload(
     return AcceptedUpload(frame=frame, source=SourceFile.of(filename, data, path=path))
 
 
+def frame_csv_bytes(frame: pd.DataFrame) -> bytes:
+    """``frame`` as canonical CSV: no index, ISO dates, ``\n`` line endings, UTF-8.
+    Fixed choices, so the same data gives the same bytes on every machine."""
+    return frame.to_csv(index=False, date_format="%Y-%m-%d", lineterminator="\n").encode("utf-8")
+
+
+def frame_sha256(frame: pd.DataFrame) -> str:
+    """The content hash of ``frame``'s canonical CSV: the hash a committed dataset
+    is stored and logged under, and the one a run records as its data."""
+    return SourceFile.of("", frame_csv_bytes(frame)).sha256
+
+
 def date_range(frame: pd.DataFrame) -> tuple[str, str] | None:
     """First and last date as ISO strings, or None if they cannot be read.
 

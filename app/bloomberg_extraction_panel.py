@@ -38,6 +38,7 @@ from forecasting_engine.ingest.upload import (
     accept_upload,
     check_extension,
     check_size,
+    frame_csv_bytes,
 )
 from forecasting_engine.store.uploads import record_upload
 
@@ -559,11 +560,9 @@ def _keep_and_log(merged: pd.DataFrame, *, file_id: str) -> AcceptedUpload:
     per Streamlit rerun. Dates are written ISO so the stored copy reads back
     unambiguously.
     """
-    # A fixed line ending, so the same merge hashes the same on every machine.
-    csv_bytes = merged.to_csv(index=False, date_format="%Y-%m-%d", lineterminator="\n").encode(
-        "utf-8"
-    )
-    accepted = accept_upload(MERGED_NAME, csv_bytes)
+    # Canonical bytes, so the same merge hashes the same on every machine, and a
+    # model run on it records the same hash (store/runs.py).
+    accepted = accept_upload(MERGED_NAME, frame_csv_bytes(merged))
     if st.session_state.get(_LOGGED_KEY) != file_id:
         record_upload(accepted)
         st.session_state[_LOGGED_KEY] = file_id

@@ -10,6 +10,10 @@ depends on (the dataset, the shared settings, the target, the model and the
 model's own setting). A later session that commits the same data under the
 same settings picks it up, so a Run left going while the window was closed is
 there on return.
+
+That file is a cache: a re-run overwrites it. Each fit is also handed to an
+``on_finish`` callback when it ends, done or failed, which the Models page uses
+to append it to the run history in DuckDB (``store/runs.py``).
 """
 
 from __future__ import annotations
@@ -34,6 +38,19 @@ INLINE = False
 QUEUED, RUNNING, DONE, FAILED = "queued", "running", "done", "failed"
 
 
+@dataclass(frozen=True)
+class Finished:
+    """One model's fit, as it ended: what ``Job.on_finish`` is given."""
+
+    name: str
+    started: float
+    finished: float
+    """Both ``time.time()``."""
+    result: object | None
+    """What the runner returned, or ``None`` if it failed."""
+    error: str | None
+
+
 @dataclass
 class Job:
     """One target's Run: the models it fits and how far it has got."""
@@ -46,6 +63,8 @@ class Job:
     runners: Mapping[str, Callable[[], object]] = field(repr=False)
     expected_errors: tuple[type[BaseException], ...] = ()
     """Errors whose message is written for the reader."""
+    on_finish: Callable[[Finished], None] | None = field(default=None, repr=False)
+    """Called once per model when its fit ends, done or failed, outside the lock."""
     status: dict[str, str] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
     started: dict[str, float] = field(default_factory=dict)
@@ -76,6 +95,7 @@ def submit(
     keys: Mapping[str, str],
     *,
     expected_errors: tuple[type[BaseException], ...],
+    on_finish: Callable[[Finished], None] | None = None,
 ) -> Job:
     """Queue ``runners`` (model name -> a function fitting it) as one Run.
 
@@ -94,6 +114,7 @@ def submit(
             keys=dict(keys),
             runners=dict(runners),
             expected_errors=expected_errors,
+            on_finish=on_finish,
             status=dict.fromkeys(runners, QUEUED),
         )
         _jobs[job_id] = job
@@ -155,6 +176,7 @@ def _fit(job: Job) -> None:
         with _lock:
             job.status[name] = RUNNING
             job.started[name] = time.time()
+        result = None
         try:
             result = job.runners[name]()
         except job.expected_errors as exc:
@@ -170,3 +192,9 @@ def _fit(job: Job) -> None:
             job.finished[name] = time.time()
             if message is not None:
                 job.errors[name] = message
+            ended = Finished(name, job.started[name], job.finished[name], result, message)
+        if job.on_finish is not None:
+            try:
+                job.on_finish(ended)
+            except Exception:  # noqa: BLE001 - a failed log must not fail the fit
+                traceback.print_exc()
