@@ -85,6 +85,8 @@ DOCUMENTED = {
     ("forecasting_engine.portfolio.optimize", "RISK_AVERSION_SCALE"),
     ("forecasting_engine.portfolio.optimize", "DEFAULT_RISK_LEVEL"),
     ("forecasting_engine.portfolio.optimize", "DEFAULT_WEIGHT_BOUNDS"),
+    ("forecasting_engine.scenario.shock", "MAX_RANGE_MULTIPLE"),
+    ("forecasting_engine.scenario.shock", "POSITIVE_TRANSFORMS"),
 }
 
 
