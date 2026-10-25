@@ -23,7 +23,6 @@ from forecasting_engine.risk.monte_carlo import as_tail_risk, simulate
 from forecasting_engine.risk.tail import (
     HISTORICAL,
     MONTE_CARLO,
-    MONTE_CARLO_GARCH,
     TAIL_METHODS,
     VAR_CONFIDENCES,
     TailLevel,
@@ -178,22 +177,21 @@ def test_rows_are_grouped_by_method_with_every_historical_row_first():
     assert methods == sorted(methods, key=TAIL_METHODS.index)
 
 
-def test_monte_carlo_methods_not_computed_show_not_run_rather_than_being_left_out():
+def test_monte_carlo_not_computed_shows_not_run_rather_than_being_left_out():
     rows = tail_rows(_backtest(), "net")
 
-    for method in (MONTE_CARLO, MONTE_CARLO_GARCH):
-        mine = [r for r in rows if r.method == method]
-        assert len(mine) == 2 * len(VAR_CONFIDENCES)
-        assert all(r.optimised == r.baseline == NOT_RUN for r in mine)
+    mine = [r for r in rows if r.method == MONTE_CARLO]
+    assert len(mine) == 2 * len(VAR_CONFIDENCES)
+    assert all(r.optimised == r.baseline == NOT_RUN for r in mine)
 
 
-def test_a_simulated_result_is_shown_in_its_own_rows_while_garch_stays_not_run():
+def test_a_simulated_result_is_shown_in_its_own_rows():
     rows = tail_rows(_backtest(), "net", simulated=_by_simulation(MONTE_CARLO))
     mc = {r.metric: r for r in rows if r.method == MONTE_CARLO}
 
     assert mc["1-day VaR 95%"].optimised == "1.20%"
     assert mc["1-day CVaR 99%"].baseline == "1.80%"
-    assert all(r.optimised == NOT_RUN for r in rows if r.method == MONTE_CARLO_GARCH)
+    assert {r.method for r in rows} == {HISTORICAL, MONTE_CARLO}
 
 
 @pytest.mark.parametrize("basis", ["gross", "net"])
@@ -211,7 +209,7 @@ def test_max_drawdown_matches_the_performance_table_for_both_portfolios(basis):
     [
         _by_simulation("Monte Carlo (Copula)"),
         _by_simulation(HISTORICAL),
-        _by_simulation(MONTE_CARLO, risk_method=MONTE_CARLO_GARCH),
+        _by_simulation(MONTE_CARLO, risk_method=HISTORICAL),
     ],
     ids=["unknown method", "historical", "mismatched method"],
 )

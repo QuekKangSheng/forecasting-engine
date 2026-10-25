@@ -41,7 +41,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     tail_rows,
 )
 from forecasting_engine.risk import monte_carlo
-from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, MONTE_CARLO_GARCH, TAIL_METHODS
+from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, TAIL_METHODS
 from forecasting_engine.store import active_model
 from model_settings import EMBARGO_DAYS, TRAIN_WINDOW
 
@@ -363,7 +363,6 @@ TAIL_TERMS = {
     "Max drawdown": "Max drawdown",
     HISTORICAL: "Historical tail risk",
     MONTE_CARLO: MONTE_CARLO,
-    MONTE_CARLO_GARCH: MONTE_CARLO_GARCH,
 }
 
 # FYP-36: the Monte Carlo rows of this table come from the simulation run below it.

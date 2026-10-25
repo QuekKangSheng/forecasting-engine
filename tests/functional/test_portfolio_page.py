@@ -330,8 +330,9 @@ def test_every_var_method_is_labelled_and_monte_carlo_shows_not_run():
     app = _happy_page()
 
     tail = _tail_table(app)
-    for method in ("Historical", "Monte Carlo (Parametric / Bootstrap)", "Monte Carlo (GARCH)"):
+    for method in ("Historical", "Monte Carlo (Parametric / Bootstrap)"):
         assert method in tail
+    assert "GARCH" not in tail  # optional, and not built: no row (FYP-251)
     assert ">Not run</td>" in tail
     assert "Max drawdown" in tail
 
@@ -537,7 +538,6 @@ def test_running_the_simulation_fills_the_monte_carlo_rows_of_the_tail_table():
     after = _method_rows(table, "Monte Carlo (Parametric / Bootstrap)")
     assert len(after) == 4
     assert not any("Not run" in row for row in after)
-    assert all("Not run" in row for row in _method_rows(table, "Monte Carlo (GARCH)"))
     assert "the first day of each simulated path below" in _captions(app)
 
 

@@ -3,8 +3,8 @@
 No volatility model and no simulation: the figures are the strategy's own worst
 days. They are tagged ``HISTORICAL`` so a display can tell them apart from any
 simulated (Monte Carlo) figures, which answer a different question. The Monte
-Carlo labels exist so a simulated ``TailRisk`` (same dataclass, ``method`` set to
-``MONTE_CARLO`` or ``MONTE_CARLO_GARCH``) can be shown beside the historical one.
+Carlo label exists so a simulated ``TailRisk`` (same dataclass, ``method`` set to
+``MONTE_CARLO``) can be shown beside the historical one.
 
 Definitions, chosen so every figure is a day that actually happened rather than
 an interpolation between two:
@@ -32,11 +32,11 @@ from forecasting_engine.portfolio.performance import max_drawdown
 
 HISTORICAL: str = "Historical"
 MONTE_CARLO: str = "Monte Carlo (Parametric / Bootstrap)"
-MONTE_CARLO_GARCH: str = "Monte Carlo (GARCH)"
 
-TAIL_METHODS: tuple[str, ...] = (HISTORICAL, MONTE_CARLO, MONTE_CARLO_GARCH)
+TAIL_METHODS: tuple[str, ...] = (HISTORICAL, MONTE_CARLO)
 """Every method the tail-risk view reports, in display order. A method with no
-result for a backtest is shown as "Not run", never left out."""
+result for a backtest is shown as "Not run", never left out. GARCH is not
+listed: it is optional (FYP-55) and has no row until it is built (FYP-251)."""
 
 VAR_CONFIDENCES: tuple[float, ...] = (0.95, 0.99)
 

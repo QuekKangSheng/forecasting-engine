@@ -357,11 +357,6 @@ TERMS: Mapping[str, str] = {
         "record of what happened, so it is only as good as the assumptions "
         "behind the simulation."
     ),
-    "Monte Carlo (GARCH)": (
-        "Monte Carlo VaR and CVaR with volatility that changes over time — calm "
-        "spells followed by turbulent ones — so recent turbulence raises the "
-        "risk estimate. Optional, and shown only when enabled."
-    ),
     "Not run": (
         "This method hasn't been computed for this backtest. It is not a zero "
         "and not a pass: the risk is simply unmeasured by this method."

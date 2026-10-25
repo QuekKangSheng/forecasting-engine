@@ -565,11 +565,12 @@ for both portfolios on the chosen basis (before or after costs), with each
 path's maximum drawdown beside them.
 
 The page lists VaR and CVaR at each confidence for every method in
-`risk/tail.TAIL_METHODS` (Historical, Monte Carlo (Parametric / Bootstrap),
-Monte Carlo (GARCH)), beside the historical maximum drawdown. A method without
+`risk/tail.TAIL_METHODS` (Historical, Monte Carlo (Parametric / Bootstrap)),
+beside the historical maximum drawdown. A method without
 results shows "Not run" rather than being left out. Historical is always
 computed; Monte Carlo (Parametric / Bootstrap) once the simulation in §18 is run,
-from each simulated path's first day; Monte Carlo (GARCH) is not built.
+from each simulated path's first day. GARCH, being optional (FYP-55) and not
+built, has no row.
 
 ## 17. Portfolio optimiser
 
@@ -662,6 +663,11 @@ Monte Carlo (Parametric / Bootstrap), `risk/tail.MONTE_CARLO`.
    fixed `SEED` so the same inputs always give the same figures. They are drawn
    `_CHUNK_PATHS` at a time off one random stream, which bounds memory without
    changing the result.
+   Every path is drawn and compounded as whole arrays, with no per-path loop.
+   Measured on 26 Oct 2026 on an Apple M3 with 16 GB, over the Sep 2026 data's
+   504-day window, 20-day horizon, both portfolios, median of five runs:
+   100,000 paths take 0.09 s by bootstrap and 0.11 s parametric; 1,000,000 take
+   0.86 s and 1.10 s (FYP-252).
 5. **Portfolios.** The optimised portfolio at its latest weights and the 50/50
    benchmark, each left to drift through the path as the backtest drifts it
    between rebalances. Nothing is traded, so there are no costs. Both are
