@@ -8,9 +8,15 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from forecasting_engine.extraction.targets import TargetRole
-from forecasting_engine.ingest.upload import accept_upload, frame_csv_bytes, frame_sha256
+from forecasting_engine.ingest.provenance import SourceFile
+from forecasting_engine.ingest.upload import (
+    AcceptedUpload,
+    accept_upload,
+    frame_csv_bytes,
+    frame_sha256,
+)
 from forecasting_engine.reporting.model_metrics import ModelRunResult
-from forecasting_engine.store import runs
+from forecasting_engine.store import active_model, lineage, runs
 from forecasting_engine.store.uploads import record_upload
 from forecasting_engine.validation.crash import CrashDiagnostics
 
@@ -136,3 +142,47 @@ def test_the_same_settings_run_twice_is_counted():
     app = _page()
 
     assert app.metric[3].value == "2"
+
+
+def test_a_run_shows_the_exports_its_dataset_was_merged_from(tmp_path):
+    def kept(name, data):
+        return AcceptedUpload(frame=DATA, source=SourceFile.of(name, data))
+
+    merged = accept_upload("merged.csv", frame_csv_bytes(DATA), uploads_dir=tmp_path / "up")
+    lineage.record_merge(
+        merged, [(kept("spx.xlsx", b"spx"), lineage.TARGET), (kept("vix.xlsx", b"vix"), "signal")]
+    )
+    _record()
+    app = _page()
+
+    sources = app.dataframe[1].value
+    assert list(sources["File"]) == ["spx.xlsx", "vix.xlsx"]
+    assert list(sources["Role"]) == ["Target", "Signal"]
+    assert "Merged from 2 export(s)" in _text(app)
+
+
+def test_a_dataset_committed_before_exports_were_logged_says_so():
+    _record()
+    app = _page()
+
+    assert any("committed before exports were logged" in c.value for c in app.caption)
+
+
+def test_the_run_behind_an_active_model_is_marked_active():
+    used = _record(minutes=0)
+    _record(minutes=5)
+    active_model.set_active_model(
+        TargetRole.EQUITY,
+        "Polynomial (derived)",
+        _result(),
+        high_risk=False,
+        horizon=20,
+        train_window=504,
+        test_window=20,
+        dataset_fingerprint="fp",
+        run_id=used.run_id,
+    )
+    app = _page()
+
+    assert list(app.dataframe[0].value["Active"]) == ["", "Equity"]
+    assert any(o.endswith("· active") for o in app.selectbox[0].options)

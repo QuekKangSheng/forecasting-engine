@@ -13,12 +13,17 @@ every fit, can be queried with SQL, and doesn't depend on Python's pickle format
 
 ```
 uploads (sha256, filename, size_bytes, row_count, uploaded_at)       ← store/uploads.py
-   ▲  sha256 = dataset_sha256
+   ▲  sha256 = source_sha256                ▲  sha256 = dataset_sha256
+dataset_sources (dataset_sha256, source_sha256, role)                ← store/lineage.py
+                 PK (dataset_sha256, source_sha256)
+                         ▲  dataset_sha256
 runs (run_id PK, role, model_name, status, error, started_at, finished_at,
       dataset_sha256, config_key, settings JSON, code_version)
    ├── run_metrics   (run_id → runs, metric, value)        PK (run_id, metric)
-   └── run_forecasts (run_id → runs, date, predicted, baseline, realised)
-                                                            PK (run_id, date)
+   ├── run_forecasts (run_id → runs, date, predicted, baseline, realised)
+   │                                                        PK (run_id, date)
+   ▲  run_id
+active_models (…, run_id)                                            ← store/active_model.py
 ```
 
 | Table | One row per | Why it's shaped this way |
@@ -26,6 +31,7 @@ runs (run_id PK, role, model_name, status, error, started_at, finished_at,
 | `runs` | fit actually executed | An **event log**: append-only, never updated. The same settings run twice are two rows, so a change in results between them (new code, new data) stays visible. Columns that are filtered or sorted on are typed; the remaining settings are one JSON column, so a new setting needs no schema change. |
 | `run_metrics` | run × metric | **Long format**: a new metric is a new row, not a new column. `runs_table` turns the headline metrics into columns with one `FILTER` aggregate each. |
 | `run_forecasts` | run × date | The out-of-sample forecast, its fold's training-mean baseline and the realised return, so a past run can be inspected or rescored without refitting. |
+| `dataset_sources` | dataset × export | A **link table**: one dataset is merged from several exports and one export can go into several datasets, so neither side can hold the other in a column. Re-committing the same files adds nothing (`ON CONFLICT DO NOTHING`). |
 
 ## Guarantees
 
@@ -47,6 +53,29 @@ runs (run_id PK, role, model_name, status, error, started_at, finished_at,
   existed in memory.
 
 ## Lineage
+
+Every figure on the Portfolio page can be traced back to the Bloomberg files behind it:
+
+```
+active model ──run_id──▶ run ──dataset_sha256──▶ dataset ──dataset_sources──▶ exports
+                                                    │                            │
+                                     data/uploads/<sha256>.csv     data/uploads/<sha256>.xlsx
+```
+
+- **Exports.** The Data page keeps every uploaded export's bytes as they arrived,
+  under their hash and extension, and logs it in `uploads`. When the merged dataset
+  is logged, its exports and the links between them are written in the same
+  transaction, once per set of files.
+- **Active model to run.** Setting a model active records the newest successful
+  run of the same settings on the same data (`runs.latest_run`). `run_id` was added
+  to `active_models` as an **additive migration** (`ALTER TABLE … ADD COLUMN IF NOT
+  EXISTS`): existing databases gain the column, and older rows read `NULL`.
+- **No foreign key to `uploads`.** `uploads` is an event log, so a hash appears once
+  per upload, and a foreign key needs a unique parent. The links hold hashes, and a
+  join picks a hash's first upload.
+- **Joins, not recursion.** The chain always has the same four steps, so plain joins
+  follow it. A recursive query (`WITH RECURSIVE`) is for chains of unknown length,
+  such as datasets built from other datasets, which this app doesn't have.
 
 `dataset_sha256` is the SHA-256 of the committed dataset's canonical CSV
 (`ingest.upload.frame_sha256`: no index, ISO dates, `\n` line endings, UTF-8). The
@@ -105,6 +134,30 @@ WHERE m.metric = 'signal_rank_ic'
 ORDER BY r.config_key, r.started_at;
 ```
 
+From each target's current active model back to the exact Bloomberg files. The active
+model log is append-only, so the current model is the newest row per target: a window
+function numbers each target's rows newest first, and `QUALIFY` keeps row 1. Naming
+that step (`WITH current_active AS …`, a CTE) keeps it apart from the joins:
+
+```sql
+WITH current_active AS (
+    SELECT *
+    FROM active_models
+    QUALIFY row_number() OVER (PARTITION BY role ORDER BY set_at DESC) = 1
+)
+SELECT a.role, a.model_name AS active_model, r.run_id, r.finished_at AS fitted_at,
+       r.code_version, s.role AS source_role, u.filename AS source_file, s.source_sha256
+FROM current_active AS a
+JOIN runs AS r ON r.run_id = a.run_id
+JOIN dataset_sources AS s ON s.dataset_sha256 = r.dataset_sha256
+LEFT JOIN (
+    SELECT sha256, arg_min(filename, uploaded_at) AS filename
+    FROM uploads
+    GROUP BY sha256
+) AS u ON u.sha256 = s.source_sha256
+ORDER BY a.role, s.role DESC, u.filename;
+```
+
 How often each model fails, and how long it takes:
 
 ```sql
@@ -138,7 +191,6 @@ ORDER BY direction_hit_rate DESC;
 - **Portfolio runs.** The optimiser and backtest recompute on every page view rather
   than on a button, so recording them needs a deduplication key first, or every
   slider move would be a "run".
-- **Raw exports.** Lineage reaches the merged dataset, which is stored and logged; the
-  individual Bloomberg exports it was merged from are not logged one by one.
-- **Which run an active model came from.** An active model stores its own forecasts
-  and function; linking it to its `run_id` would tie the two logs together.
+- **Older records.** Datasets committed before exports were logged have no
+  `dataset_sources` rows, and models set active before `run_id` existed have none;
+  both stay as they are rather than being guessed at.

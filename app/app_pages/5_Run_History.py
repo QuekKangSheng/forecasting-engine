@@ -18,7 +18,7 @@ import streamlit as st
 import glossary
 import ui
 from forecasting_engine.extraction.targets import TargetRole
-from forecasting_engine.store import runs, uploads
+from forecasting_engine.store import active_model, lineage, runs, uploads
 
 ui.inject()
 
@@ -41,8 +41,15 @@ if table.empty:
 st.markdown(
     ui.eyebrow(f"{len(table):,} runs", glossary.term("Run history")), unsafe_allow_html=True
 )
+# Which runs the active models came from, so the table can say which are in use.
+in_use = {
+    record.run_id: role.value.title()
+    for role in TargetRole
+    if (record := active_model.get_active_model(role)) is not None and record.run_id
+}
 shown = pd.DataFrame(
     {
+        "Active": table["run_id"].map(in_use).fillna(""),
         "Started": table["started_at"],
         "Target": table["role"].str.title(),
         "Model": table["model_name"],
@@ -68,12 +75,15 @@ st.dataframe(
         "OOS Rank IC": st.column_config.NumberColumn(format="%+.3f"),
         "RMSE": st.column_config.NumberColumn(format="%.4f"),
         "Data": st.column_config.TextColumn(help=glossary.term("Dataset hash")),
+        "Active": st.column_config.TextColumn(
+            help="The target whose active model this run produced, if any."
+        ),
     },
 )
 
 labels = {
     row.run_id: f"{row.started_at:%d %b %Y %H:%M} · {row.role.title()} · {row.model_name} "
-    f"· {row.status}"
+    f"· {row.status}" + (" · active" if row.run_id in in_use else "")
     for row in table.itertuples()
 }
 chosen = st.selectbox("Open a run", list(labels), format_func=labels.get)
@@ -103,6 +113,35 @@ st.markdown(
     f'<span style="color: var(--fe-muted)">{source}</span></p>',
     unsafe_allow_html=True,
 )
+
+# One step further back: the Bloomberg exports the dataset was merged from.
+sources = lineage.sources_of(run.dataset_sha256)
+if sources:
+    st.markdown(
+        ui.eyebrow(f"Merged from {len(sources)} export(s)", glossary.term("Lineage")),
+        unsafe_allow_html=True,
+    )
+    st.dataframe(
+        pd.DataFrame(
+            {
+                "Role": [s.role.title() for s in sources],
+                "File": [s.filename or "not in the upload log" for s in sources],
+                "Rows": [s.row_count for s in sources],
+                "Uploaded": [s.uploaded_at for s in sources],
+                "SHA-256": [s.sha256[:12] for s in sources],
+            }
+        ),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Uploaded": st.column_config.DatetimeColumn(format="D MMM YYYY, HH:mm")
+        },
+    )
+else:
+    st.caption(
+        "Which exports this dataset was merged from wasn't recorded: it was committed "
+        "before exports were logged one by one."
+    )
 
 with st.expander("Settings"):
     st.json(dict(run.settings))
