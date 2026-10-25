@@ -108,7 +108,7 @@ selected = st.multiselect(
 shocks, pending = [], []
 for signal in selected:
     date, value = shock.last_observed(frame, signal, as_of)
-    cols = st.columns([3, 2, 3], vertical_alignment="bottom")
+    cols = st.columns([4, 4, 3], vertical_alignment="bottom")
     cols[0].markdown(
         f"**{html.escape(label(signal))}**<br>"
         f'<span style="color: var(--fe-muted)">Last observed {value:,.4g} on '
@@ -190,41 +190,60 @@ def _pct(value: float, signed: bool = True) -> str:
     return "—" if value != value else f"{value * 100:{'+' if signed else ''}.2f}%"
 
 
-def _cell(text: str, term: str | None = None) -> str:
+def _cell(text: str) -> str:
+    return f"<td>{html.escape(text)}</td>"
+
+
+def _heading(text: str, term: str | None = None) -> str:
     if term is None:
-        return f"<td>{html.escape(text)}</td>"
+        return f"<th>{html.escape(text)}</th>"
     hint = html.escape(glossary.term(term), quote=True)
     return (
-        f'<td title="{hint}">{html.escape(text)}'
-        f'<span class="fe-eyebrow-help" title="{hint}">i</span></td>'
+        f'<th title="{hint}">{html.escape(text)}'
+        f'<span class="fe-eyebrow-help" title="{hint}">i</span></th>'
     )
+
+
+def _index_cell(role: TargetRole) -> str:
+    """The index, with the active model behind its figures beneath it."""
+    name = label(target_columns[role]) if role in target_columns else role.value.title()
+    model = (
+        f'<br><span style="color: var(--fe-muted)">{html.escape(records[role].model_name)}'
+        "</span>"
+        if role in records
+        else ""
+    )
+    # Wraps, unlike the table's other cells: an index named after its export file
+    # can be long enough to push the figures off the side.
+    return f'<td style="white-space: normal">{html.escape(name)}{model}</td>'
 
 
 st.markdown(
     ui.eyebrow("Forecast impact", glossary.term("Shocked forecast")), unsafe_allow_html=True
 )
-header = "".join(
-    f"<th>{h}</th>"
-    for h in ("Index", "Active model", "Base case", "Shocked", "Change", "% change")
+header = (
+    _heading("Index")
+    + _heading("Base case", "Base-case forecast")
+    + _heading("Shocked", "Shocked forecast")
+    + _heading("Change")
+    + _heading("% change")
 )
 rows = []
 for role in ROLES:
-    index_name = label(target_columns[role]) if role in target_columns else role.value.title()
     if role in results:
         result = results[role]
         rows.append(
-            _cell(index_name)
-            + _cell(records[role].model_name)
-            + _cell(_pct(result.base, signed=True), "Base-case forecast")
-            + _cell(_pct(result.shocked, signed=True))
+            _index_cell(role)
+            + _cell(_pct(result.base))
+            + _cell(_pct(result.shocked))
             + _cell(f"{result.change * 100:+.2f} pts")
             + _cell(_pct(result.relative_change))
         )
     else:
         reason = failures.get(role) or unavailable.get(role, "")
         rows.append(
-            _cell(index_name)
-            + f'<td colspan="5" style="color: var(--fe-muted)">{html.escape(reason)}</td>'
+            _index_cell(role)
+            + f'<td colspan="4" style="color: var(--fe-muted)">{html.escape(reason)}</td>'
         )
 st.markdown(
     f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{header}</tr></thead>'

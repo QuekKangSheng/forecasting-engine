@@ -139,7 +139,7 @@ def _run(app):
 
 def _table(app) -> str | None:
     return next(
-        (m.value for m in app.markdown if "<th>Shocked</th>" in m.value), None
+        (m.value for m in app.markdown if ">Shocked<span" in m.value), None
     )
 
 
