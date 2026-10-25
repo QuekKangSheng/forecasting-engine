@@ -81,3 +81,15 @@ def recent_uploads(limit: int = 20, *, db_path: Path = DEFAULT_DB_PATH) -> list[
         ).fetchall()
     return [UploadRecord(*row) for row in rows]
 
+
+
+def find_upload(sha256: str, *, db_path: Path = DEFAULT_DB_PATH) -> UploadRecord | None:
+    """The first time content with ``sha256`` was uploaded, or ``None``: how a run's
+    dataset hash is traced back to the file it came from."""
+    with connect(db_path, _CREATE_TABLE) as conn:
+        row = conn.execute(
+            "SELECT sha256, filename, size_bytes, row_count, uploaded_at "
+            "FROM uploads WHERE sha256 = ? ORDER BY uploaded_at LIMIT 1",
+            [sha256],
+        ).fetchone()
+    return None if row is None else UploadRecord(*row)
