@@ -433,6 +433,17 @@ def test_each_export_is_kept_as_uploaded_and_linked_to_the_merged_dataset(page, 
     assert (source.filename, source.sha256) == ("spx.csv", hashlib.sha256(SPX).hexdigest())
 
 
+def test_each_export_is_linked_with_the_role_it_was_uploaded_as(page):
+    upload_targets(page, [("spx.csv", SPX, "text/csv")])
+    upload(page, [("vix.csv", VIX, "text/csv")])
+
+    merged = next(
+        r for r in recent_uploads() if r.filename == "bloomberg_merged.csv" and r.row_count == 2
+    )
+    roles = {s.filename: s.role for s in lineage.sources_of(merged.sha256)}
+    assert roles == {"spx.csv": lineage.TARGET, "vix.csv": lineage.SIGNAL}
+
+
 def test_a_rerun_of_the_page_does_not_log_the_files_again(page):
     upload(page, [("spx.csv", SPX, "text/csv")])
     logged = len(recent_uploads())
