@@ -256,4 +256,6 @@ def test_one_corrected_value_gives_a_different_dataset_hash():
 def test_the_code_version_is_this_checkouts_commit():
     version = code_version()
 
-    assert version is None or (4 <= len(version) <= 12 and version.isalnum())
+    # A short commit (abc1234), or tag-relative once the repo is tagged
+    # (v1.0-3-gabc1234), either with "-dirty" if the checkout had uncommitted changes.
+    assert version is None or (version and " " not in version)

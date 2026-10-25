@@ -95,7 +95,8 @@ class RunRecord:
     the same fit asked for twice."""
     settings: Mapping[str, object]
     code_version: str | None
-    """The git commit the app ran from, or ``None`` where git isn't available."""
+    """The git commit the app ran from, suffixed ``-dirty`` if the checkout had
+    uncommitted changes, or ``None`` where git isn't available."""
 
     @property
     def seconds(self) -> float:
@@ -262,11 +263,12 @@ def runs_table(
 
 @cache
 def code_version() -> str | None:
-    """The short git commit the app is running from, or ``None`` outside a git
-    checkout. Read once per process."""
+    """The short git commit the app is running from, with ``-dirty`` if the checkout
+    has uncommitted changes (the commit alone would then claim code that didn't
+    run), or ``None`` outside a git checkout. Read once per process."""
     try:
         out = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
+            ["git", "describe", "--always", "--dirty", "--abbrev=7"],
             cwd=Path(__file__).resolve().parent,
             capture_output=True,
             text=True,
