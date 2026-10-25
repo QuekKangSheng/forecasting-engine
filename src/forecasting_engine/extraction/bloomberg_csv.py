@@ -23,6 +23,8 @@ from io import StringIO
 import pandas as pd
 import pandas_market_calendars as mcal
 
+from forecasting_engine.ingest.provenance import SourceFile
+
 DATE_COLUMN = "Date"
 
 #: How dates are shown and exported — day/month/year, no time component.
@@ -53,6 +55,9 @@ class BloombergCsvExport:
     """Repairs the reader made and reported, such as a repeated date kept
     last (see ``extraction.bloomberg_xlsx``, which is the only reader that
     populates this today)."""
+    source: SourceFile | None = None
+    """The uploaded file the export was read from, once its bytes are kept
+    (``ingest.upload.keep_source``): how a dataset traces back to its exports."""
 
 
 def read_export(filename: str, data: bytes) -> BloombergCsvExport:
