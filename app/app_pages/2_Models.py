@@ -32,6 +32,7 @@ from forecasting_engine.ingest.align import (
     PRODUCTION_LAG_DAYS,
     UNCLASSIFIED_TRANSFORM,
     FeaturePanel,
+    Transform,
     align_and_lag,
     is_classified,
     select_signals,
@@ -88,6 +89,7 @@ from forecasting_engine.reporting.polynomial_function import (
     term_rows,
     to_latex,
 )
+from forecasting_engine.scenario.shock import function_inputs
 from forecasting_engine.store import active_model
 from forecasting_engine.validation.gates import (
     ValidationOutcome,
@@ -491,6 +493,21 @@ def _research_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None
         return None, str(exc)
 
 
+def _active_function(name: str, run: model_runs.ModelRun) -> active_model.ActiveFunction | None:
+    """The fitted function a scenario evaluates again (FYP-32), for the polynomial
+    models only: their latest fold's fit, with each input's transform. The research
+    model reads its inputs as levels whatever the transform map says."""
+    origin = {DERIVED: Origin.DERIVED, RESEARCH: Origin.DERIVED, USER: Origin.USER_SUPPLIED}
+    if name not in origin:
+        return None
+    inputs = function_inputs(run.description, origin[name], numeric_cols)
+    return active_model.ActiveFunction(
+        origin[name],
+        run.description,
+        {s: Transform.LEVEL if name == RESEARCH else transforms[s] for s in inputs},
+    )
+
+
 def _active_settings(name: str) -> dict[str, int | str | None]:
     """What a model set active was run under. The research model trains on every
     earlier date, so it has no train window."""
@@ -879,6 +896,7 @@ def _confirm_high_risk(
     result: ModelRunResult,
     failed: tuple[str, ...],
     target_name: str,
+    function: active_model.ActiveFunction | None,
 ) -> None:
     failed_text = " and ".join(GATE_NAMES[g] for g in failed)
     pending_key = f"pending_active_{role.value}"
@@ -891,7 +909,12 @@ def _confirm_high_risk(
     cols = st.columns(2)
     if cols[0].button("Set active anyway", type="primary", key=f"confirm_{role.value}"):
         active_model.set_active_model(
-            role, model_name, result, high_risk=True, **_active_settings(model_name)
+            role,
+            model_name,
+            result,
+            high_risk=True,
+            function=function,
+            **_active_settings(model_name),
         )
         st.session_state.pop(pending_key, None)
         st.rerun()
@@ -933,14 +956,26 @@ def _show_active_picker(
         else:
             st.session_state.pop(pending_key, None)
             active_model.set_active_model(
-                role, selected, result, high_risk=False, **_active_settings(selected)
+                role,
+                selected,
+                result,
+                high_risk=False,
+                function=_active_function(selected, runs[selected]),
+                **_active_settings(selected),
             )
             st.rerun()
     pending = st.session_state.get(pending_key)
     if pending in runs:
         result = runs[pending].result
         outcome = _outcome(result)
-        _confirm_high_risk(role, pending, result, outcome.failed_gates, target_name)
+        _confirm_high_risk(
+            role,
+            pending,
+            result,
+            outcome.failed_gates,
+            target_name,
+            _active_function(pending, runs[pending]),
+        )
 
 
 def _directional_default(role: TargetRole, options: list[str], runs) -> int:
