@@ -966,6 +966,24 @@ def test_every_fit_a_run_makes_is_recorded_in_the_run_history_failures_included(
     assert run_history.run_metrics(history[NAIVE].run_id)["rmse"] > 0
 
 
+def test_an_active_model_points_to_the_run_that_fitted_it(stub_ml):
+    app = _run_equity(_untick(_page(), "Fama-French 5"))
+    next(b for b in app.button if b.label == "Set as active").click().run()
+    if active_model.get_active_model(EQUITY) is None:  # failed both gates: confirm
+        next(b for b in app.button if b.label == "Set active anyway").click().run()
+
+    active = active_model.get_active_model(EQUITY)
+    run = run_history.get_run(active.run_id)
+    assert run is not None and run.model_name == active.model_name and run.status == "done"
+
+
+def test_a_result_fitted_before_runs_were_recorded_is_set_active_without_one():
+    app = _page({EQUITY: {POLY: _polynomial_run()}})  # stored, never fitted here
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert active_model.get_active_model(EQUITY).run_id is None
+
+
 def test_loading_a_saved_result_is_not_a_new_run(stub_ml):
     _run_equity(_untick(_page(), "Fama-French 5"))
     recorded = len(run_history.list_runs())

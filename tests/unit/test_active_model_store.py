@@ -288,3 +288,39 @@ def test_a_model_saved_without_baselines_has_no_signal(db):
 
 def test_with_no_active_model_the_signal_is_none(db):
     assert get_active_model_signal(TargetRole.EQUITY, db_path=db) is None
+
+
+def test_the_run_an_active_model_came_from_is_kept(db):
+    set_active_model(
+        TargetRole.EQUITY, "Polynomial", _result(), high_risk=False, run_id="r1", db_path=db,
+        **SETTINGS,
+    )
+
+    assert get_active_model(TargetRole.EQUITY, db_path=db).run_id == "r1"
+
+
+def test_an_active_model_without_a_run_reads_back_none(db):
+    set_active_model(TargetRole.EQUITY, "Polynomial", _result(), high_risk=False, db_path=db,
+                     **SETTINGS)
+
+    assert get_active_model(TargetRole.EQUITY, db_path=db).run_id is None
+
+
+def test_a_database_from_before_run_ids_gains_the_column_and_keeps_its_rows(db):
+    db.parent.mkdir(parents=True)
+    with duckdb.connect(str(db)) as conn:  # the table as it was before run_id existed
+        conn.execute(
+            "CREATE TABLE active_models (role TEXT NOT NULL, model_name TEXT NOT NULL, "
+            "ic DOUBLE NOT NULL, oos_rank_ic DOUBLE NOT NULL, rmse DOUBLE NOT NULL, "
+            "high_risk BOOLEAN NOT NULL, set_at TIMESTAMP NOT NULL, horizon INTEGER, "
+            "train_window INTEGER, test_window INTEGER, dataset_fingerprint TEXT, "
+            "signal_rank_ic DOUBLE)"
+        )
+        conn.execute(
+            "INSERT INTO active_models VALUES ('equity', 'Old', 0.1, 0.1, 0.01, false, "
+            "TIMESTAMP '2026-09-01 10:00:00', 5, 120, 20, 'fp-1', 0.05)"
+        )
+
+    old = get_active_model(TargetRole.EQUITY, db_path=db)
+
+    assert old.model_name == "Old" and old.run_id is None

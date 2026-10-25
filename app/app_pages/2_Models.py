@@ -915,6 +915,7 @@ def _confirm_high_risk(
     result: ModelRunResult,
     failed: tuple[str, ...],
     target_name: str,
+    run_id: str | None,
 ) -> None:
     failed_text = " and ".join(GATE_NAMES[g] for g in failed)
     pending_key = f"pending_active_{role.value}"
@@ -927,7 +928,12 @@ def _confirm_high_risk(
     cols = st.columns(2)
     if cols[0].button("Set active anyway", type="primary", key=f"confirm_{role.value}"):
         active_model.set_active_model(
-            role, model_name, result, high_risk=True, **_active_settings(model_name)
+            role,
+            model_name,
+            result,
+            high_risk=True,
+            run_id=run_id,
+            **_active_settings(model_name),
         )
         st.session_state.pop(pending_key, None)
         st.rerun()
@@ -936,8 +942,19 @@ def _confirm_high_risk(
         st.rerun()
 
 
+def _run_id(role: TargetRole, name: str, settings: Mapping[str, object]) -> str | None:
+    """The recorded run (``store/runs``) a stored result came from: the newest
+    successful fit of the same settings on the same data. ``None`` for a result
+    fitted before the run history existed."""
+    run = run_history.latest_run(_result_key(role, name, settings), frame_sha256(merged))
+    return None if run is None else run.run_id
+
+
 def _show_active_picker(
-    role: TargetRole, runs: dict[str, model_runs.ModelRun], target_name: str
+    role: TargetRole,
+    runs: dict[str, model_runs.ModelRun],
+    target_name: str,
+    settings: Mapping[str, object],
 ) -> None:
     key = role.value
     options = [n for n in ACTIVE_MODEL_CANDIDATES if n in runs]
@@ -969,14 +986,26 @@ def _show_active_picker(
         else:
             st.session_state.pop(pending_key, None)
             active_model.set_active_model(
-                role, selected, result, high_risk=False, **_active_settings(selected)
+                role,
+                selected,
+                result,
+                high_risk=False,
+                run_id=_run_id(role, selected, settings),
+                **_active_settings(selected),
             )
             st.rerun()
     pending = st.session_state.get(pending_key)
     if pending in runs:
         result = runs[pending].result
         outcome = _outcome(result)
-        _confirm_high_risk(role, pending, result, outcome.failed_gates, target_name)
+        _confirm_high_risk(
+            role,
+            pending,
+            result,
+            outcome.failed_gates,
+            target_name,
+            _run_id(role, pending, settings),
+        )
 
 
 def _directional_default(role: TargetRole, options: list[str], runs) -> int:
@@ -1211,7 +1240,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if RESEARCH in runs:
         st.caption(f"{RESEARCH}: {RESEARCH_CAPTION}")
     _show_directional(role, runs, target_name)
-    _show_active_picker(role, runs, target_name)
+    _show_active_picker(role, runs, target_name, settings)
 
     _show_screening(runs, target_name)
     for name in (DERIVED, RESEARCH, USER):

@@ -212,6 +212,21 @@ def get_run(run_id: str, *, db_path: Path = DEFAULT_DB_PATH) -> RunRecord | None
     return None if row is None else _record(row)
 
 
+def latest_run(
+    config_key: str, dataset_sha256: str, *, db_path: Path = DEFAULT_DB_PATH
+) -> RunRecord | None:
+    """The newest successful run of ``config_key``'s settings on ``dataset_sha256``'s
+    data: the fit a result cached under those settings came from. ``None`` if the
+    result predates the run history."""
+    with connect(db_path, _CREATE_TABLES) as conn:
+        row = conn.execute(
+            "SELECT * FROM runs WHERE config_key = ? AND dataset_sha256 = ? "
+            "AND status = 'done' ORDER BY finished_at DESC LIMIT 1",
+            [config_key, dataset_sha256],
+        ).fetchone()
+    return None if row is None else _record(row)
+
+
 def run_metrics(run_id: str, *, db_path: Path = DEFAULT_DB_PATH) -> dict[str, float]:
     with connect(db_path, _CREATE_TABLES) as conn:
         rows = conn.execute(
