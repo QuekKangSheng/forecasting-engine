@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -125,11 +126,33 @@ if not forecasts.empty:
         ),
         unsafe_allow_html=True,
     )
-    st.line_chart(
+    long = (
         forecasts.rename(
             columns={"predicted": "Forecast", "baseline": "Baseline", "realised": "Realised"}
         )
-        * 100,
-        x_label="Date",
-        y_label="Return over the horizon (%)",
+        .rename_axis("date")
+        .reset_index()
+        .melt("date", var_name="Series", value_name="Return")
     )
+    chart = (
+        alt.Chart(long)
+        .mark_line(strokeWidth=1.2)
+        .encode(
+            # One tick a year, labelled with the year: left to itself the axis labels
+            # yearly ticks with the month alone.
+            x=alt.X("date:T", title="Date", axis=alt.Axis(format="%Y", tickCount="year")),
+            y=alt.Y("Return:Q", title="Return over the horizon", axis=alt.Axis(format="%")),
+            color=alt.Color(
+                "Series:N",
+                # Realised muted behind the two lines a model drew.
+                scale=alt.Scale(
+                    domain=["Realised", "Forecast", "Baseline"],
+                    range=["#9198A1", "#4C8DF6", "#E8912D"],
+                ),
+                legend=alt.Legend(title=None, orient="bottom"),
+            ),
+            tooltip=["date:T", "Series:N", alt.Tooltip("Return:Q", format=".2%")],
+        )
+        .properties(height=320)
+    )
+    st.altair_chart(chart, use_container_width=True)
