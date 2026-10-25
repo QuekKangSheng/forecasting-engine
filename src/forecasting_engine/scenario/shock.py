@@ -22,7 +22,7 @@ the model was trained on is allowed, but flagged as an extrapolation.
 from __future__ import annotations
 
 import math
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -138,11 +138,12 @@ def validate(
     *,
     as_of: pd.Timestamp | None = None,
     positive: Collection[str] = (),
+    label: Callable[[str], str] = str,
 ) -> tuple[dict[str, float], dict[str, str]]:
     """``(shocked levels, errors)``, each keyed by signal. A scenario may run only
     when ``errors`` is empty. A % change is from the last observation on or before
     ``as_of``; ``positive`` names the signals that must stay above zero
-    (``POSITIVE_TRANSFORMS``)."""
+    (``POSITIVE_TRANSFORMS``). Each error names its signal by ``label``."""
     levels: dict[str, float] = {}
     errors: dict[str, str] = {}
     for shock in shocks:
@@ -151,7 +152,7 @@ def validate(
         except ValueError:
             entered = float("nan")
         if not math.isfinite(entered):
-            errors[shock.signal] = f"{shock.signal}: {str(shock.value)!r} is not a number."
+            errors[shock.signal] = f"{label(shock.signal)}: {str(shock.value)!r} is not a number."
             continue
         _, last = last_observed(frame, shock.signal, as_of)
         level = entered if shock.kind is ShockKind.ABSOLUTE else last * (1 + entered / 100)
@@ -159,12 +160,12 @@ def validate(
         span = float(observed.max() - observed.min())
         if shock.signal in positive and level <= 0:
             errors[shock.signal] = (
-                f"{shock.signal}: {level:,.4g} is not possible, as this series is always "
+                f"{label(shock.signal)}: {level:,.4g} is not possible, as this series is always "
                 "above zero."
             )
         elif abs(level - last) > MAX_RANGE_MULTIPLE * span:
             errors[shock.signal] = (
-                f"{shock.signal}: moving from {last:,.4g} to {level:,.4g} is more than "
+                f"{label(shock.signal)}: moving from {last:,.4g} to {level:,.4g} is more than "
                 f"{MAX_RANGE_MULTIPLE:g} times the whole range it has covered "
                 f"({observed.min():,.4g} to {observed.max():,.4g})."
             )
