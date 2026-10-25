@@ -243,21 +243,28 @@ st.caption(
 for role, result in results.items():
     index_name = label(target_columns[role])
     for change in result.changes:
-        if not change.extrapolated:
-            continue
         low, high = change.trained_on
+        # A clipped input caps the shock's effect, extrapolation or not: without
+        # saying so, every shock beyond the bound reads as the same forecast.
         clipped = (
-            f" The model clips this input to {change.clipped_to:.4g} before its terms "
-            "apply, so the forecast moves no further than it would at that value."
+            f"The model clips this input to {change.clipped_to:.4g} before its terms "
+            "apply, so any shock beyond that gives the same forecast."
             if change.clipped_to is not None
             else ""
         )
-        st.warning(
-            f"Extrapolation: {label(change.signal)} enters the {index_name} model as "
-            f"{change.shocked:.4g}, outside the {low:.4g} to {high:.4g} it was trained on, so "
-            f"this forecast goes beyond observed data.{clipped}",
-            icon=":material/warning:",
-        )
+        if change.extrapolated:
+            st.warning(
+                f"Extrapolation: {label(change.signal)} enters the {index_name} model as "
+                f"{change.shocked:.4g}, outside the {low:.4g} to {high:.4g} it was trained "
+                f"on, so this forecast goes beyond observed data. {clipped}".rstrip(),
+                icon=":material/warning:",
+            )
+        elif clipped:
+            st.info(
+                f"{label(change.signal)} enters the {index_name} model as "
+                f"{change.shocked:.4g}. {clipped}",
+                icon=":material/info:",
+            )
 
 with st.expander("What each model reads"):
     detail = []

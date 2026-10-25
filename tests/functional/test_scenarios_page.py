@@ -1,5 +1,6 @@
 """The Scenarios page, driven through the real Streamlit page script (FYP-32)."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -264,6 +265,19 @@ def test_a_shock_outside_the_training_range_is_flagged_as_an_extrapolation():
     (warning,) = app.warning
     assert warning.value.startswith("Extrapolation: VIX")
     assert "clips this input to 35" in warning.value
+
+
+def test_a_clipped_input_inside_the_training_range_still_says_it_is_clipped():
+    # The latest fold trained on VIX of about 16 to 24 (rows 30 to 89 of a 12-to-28
+    # ramp), but this model clips it to 5 to 21: 23 is inside the one, beyond the other.
+    narrow = replace(
+        LINEAR, description=replace(LINEAR.description, input_bounds={VIX: (5.0, 21.0)})
+    )
+    _set_active(EQUITY, function=narrow)
+    app = _run(_shock(_page(), VIX, "23"))
+
+    assert not app.warning
+    assert any("clips this input to 21" in i.value for i in app.info)
 
 
 def test_changing_a_shock_after_a_run_hides_the_old_result():
