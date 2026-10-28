@@ -15,6 +15,7 @@ pg = st.navigation(
         st.Page(
             "app_pages/3_Portfolio.py", title="Portfolio Optimizer", icon=":material/pie_chart:"
         ),
+        st.Page("app_pages/4_Scenarios.py", title="Scenarios", icon=":material/bolt:"),
     ]
 )
 pg.run()

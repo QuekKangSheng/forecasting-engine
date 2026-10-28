@@ -298,6 +298,26 @@ TERMS: Mapping[str, str] = {
         "Conditional VaR: the average loss on the days beyond VaR — how bad the "
         "bad days were, not just where they start. Always at least the VaR."
     ),
+    "Signal shock": (
+        "A what-if: replace a signal's last observed value with a stressed one, such "
+        "as VIX at 45, and see what the active models would forecast. Only signals "
+        "the active polynomials read can be shocked, since nothing else moves them."
+    ),
+    "Shock as": (
+        "**New value** sets the signal's level directly. **% change** moves it from "
+        "its last observed value, so +50 takes a VIX of 20 to 30. Either way the "
+        "shocked level is read exactly as a real day would be: transformed and lagged "
+        "as the model was fitted."
+    ),
+    "Base-case forecast": (
+        "The active model's function evaluated on the latest data, with no shock: what "
+        "it forecasts for the next horizon today. A shock is measured against it."
+    ),
+    "Shocked forecast": (
+        "The same function, not refitted, evaluated on the shocked inputs. It shows "
+        "how much the forecast leans on the signals moved, not what the market would "
+        "do: a fitted function is only as reliable as the range it was trained on."
+    ),
     "Breach rate": (
         "How often a day's loss beat the VaR measured over the year before it. "
         "Near the expected rate means the past year was a fair guide to the "

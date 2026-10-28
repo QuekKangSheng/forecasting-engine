@@ -24,6 +24,7 @@ import model_settings
 from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest import fama_french
+from forecasting_engine.ingest.align import Transform
 from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile, ResolvedFactors
 from forecasting_engine.ingest.provenance import SourceFile
 from forecasting_engine.models import boosted
@@ -478,6 +479,34 @@ def test_setting_a_model_active_persists_it_and_shows_it():
     stored = active_model.get_active_model(EQUITY)
     assert stored.model_name == POLY
     assert stored.high_risk is False
+
+
+def test_setting_a_polynomial_active_stores_its_function_for_scenarios():
+    sources = {
+        "VIX_Index_PX_LAST": ColumnSource("VIX Index", "PX_LAST"),
+        "LUACOAS_Index_PX_LAST": ColumnSource("LUACOAS Index", "PX_LAST"),
+    }
+    app = _page({EQUITY: {POLY: _polynomial_run()}}, sources=sources)
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    function = active_model.get_active_function(EQUITY)
+    assert function is not None
+    assert function.description.terms == DERIVED.terms
+    assert function.description.coefficients == DERIVED.coefficients
+    # The two inputs its terms multiply, each with the page's transform for it:
+    # a volatility gauge and a credit spread, both read as levels.
+    assert function.transforms == {
+        "VIX_Index_PX_LAST": Transform.LEVEL,
+        "LUACOAS_Index_PX_LAST": Transform.LEVEL,
+    }
+
+
+def test_setting_machine_learning_active_stores_no_function():
+    app = _page({EQUITY: {"Machine Learning": _ml_run()}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert active_model.get_active_model(EQUITY).model_name == "Machine Learning"
+    assert active_model.get_active_function(EQUITY) is None
 
 
 def test_setting_a_new_active_model_replaces_the_prior_one():
