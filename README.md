@@ -119,6 +119,16 @@ hosting step is needed.
 Tail-risk reporting (VaR and CVaR) and significance checks on the backtest are
 not built yet.
 
+**Scenarios**
+
+- **Signal shocks** — choose signals the active polynomials read and give each a
+  new value or a % change; the shocks are validated (a number, above zero where
+  the series always is, within 10 times its observed range) and then both indices'
+  active functions are evaluated again on the shocked inputs, without refitting,
+  beside the base case. A shocked input outside the model's training range is
+  flagged as an extrapolation. The active polynomial's fitted function is saved in
+  DuckDB with the active model for this.
+
 ## Interface
 
 The dashboard uses a restrained GitHub Primer-style light/dark palette. Semantic

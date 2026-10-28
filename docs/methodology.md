@@ -31,11 +31,13 @@ flowchart TD
     N --> P
     J --> O["15. Directional P&L vs buy-and-hold<br/>portfolio/directional"]
     P["16. Historical VaR and CVaR<br/>risk/tail"]
+    I --> S["18. Signal shock scenarios<br/>scenario/shock"]
 ```
 
 Step 14 consumes the optimiser's weight schedule (step 17), built from the active
 models' signals: it judges an allocation, not a forecast. Step 15 replays one model's out-of-sample
-forecasts for one index.
+forecasts for one index. Step 18 evaluates the active polynomials again on
+shocked inputs, without refitting.
 
 ## 1. Ingestion and parsing
 
@@ -610,6 +612,51 @@ for the latest rebalance, the benchmark weight, the signals and the tilt they
 gave, the drifted weight and band, whether it held, and the share of rebalances
 the band held.
 
+## 18. Signal shock scenarios
+
+`scenario/shock` answers what the active models would forecast if a signal were
+shocked, such as VIX at 45 (FYP-32). Nothing is refitted: each active polynomial's
+stored function is evaluated again on shocked inputs.
+
+1. **The stored function.** Setting a derived, research or user-supplied
+   polynomial active (§11) also stores its most recent fold's fit
+   (`store/active_model.ActiveFunction`): its terms, coefficients and intercept,
+   and per input it reads the transform it was fitted on and its clipping bounds
+   and standardisation. The research model's inputs are stored as levels, as it
+   reads them. It is written in the same DuckDB transaction as the active-model
+   row and its forecasts, so neither is ever visible without the other. Machine
+   learning and FF5 store none, so they can't be shocked.
+2. **Shocks.** A shock replaces a signal's last observed value, on or before the
+   earliest last price of the indices evaluated, either with a new value or with a
+   % change from it. Only signals the active functions read can be chosen.
+3. **Validation** (`validate`), before the scenario may run. The value must be a
+   number. A series of a type that is always above zero (`POSITIVE_TRANSFORMS`:
+   gauges and spreads read as levels, prices and total-return indices read as log
+   returns, by the transform map of §4) may not go to zero or below; rates and
+   curve slopes may. The move from the last observed value may not exceed
+   `MAX_RANGE_MULTIPLE` times the whole range the series has covered. Each error
+   names its signal, and Run is disabled while any remains or a chosen signal has
+   no value.
+4. **Inputs.** The shocked frame goes through `ingest/align.align_and_lag` itself
+   (§2, §4, §5) on a calendar extended by the next trading day, so the next
+   forecast's inputs are the last day's values after alignment, the transform and
+   the one-day lag, exactly as a fold reads a real day (`next_inputs`). A
+   differenced input moves by the shock less the day before's level; a log-return
+   input reads the shock against the day before.
+5. **Evaluation** (`evaluate`). Each input is clipped and standardised with the
+   stored bounds and statistics, then the terms applied: for every stored model
+   this reproduces its own `predict` on the same row. The base case is the same
+   function on the unshocked inputs, so a zero shock reproduces it.
+6. **Extrapolation.** A shocked input outside its range over the latest fold's
+   training rows (rebuilt with the active model's own train and test windows) is
+   flagged. Where the model clips that input, the flag says so: beyond the bound
+   the forecast moves no further.
+
+The Scenarios page shows each index's active model, base case, shocked forecast,
+the change in percentage points and as a % of the base case, the extrapolation
+flags, and what each model reads before and after the shock. An index with no
+stored function is listed with the reason.
+
 ## Parameters
 
 Values are Python literals as the code holds them.
@@ -688,6 +735,8 @@ Values are Python literals as the code holds them.
 | `RISK_AVERSION_SCALE` | `forecasting_engine.portfolio.optimize` | `{1: 1.0, 2: 3.0, 3: 10.0, 4: 30.0, 5: 100.0}` |
 | `DEFAULT_RISK_LEVEL` | `forecasting_engine.portfolio.optimize` | `3` |
 | `DEFAULT_WEIGHT_BOUNDS` | `forecasting_engine.portfolio.optimize` | `(0.2, 0.8)` |
+| `MAX_RANGE_MULTIPLE` | `forecasting_engine.scenario.shock` | `10.0` |
+| `POSITIVE_TRANSFORMS` | `forecasting_engine.scenario.shock` | `frozenset({"level", "log return"})` |
 
 ## Decisions and evidence
 
