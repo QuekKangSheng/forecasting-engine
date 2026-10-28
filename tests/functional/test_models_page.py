@@ -27,6 +27,7 @@ from forecasting_engine.ingest import fama_french
 from forecasting_engine.ingest.align import Transform
 from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile, ResolvedFactors
 from forecasting_engine.ingest.provenance import SourceFile
+from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models import boosted
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import Tune, TuningLog
@@ -42,6 +43,7 @@ from forecasting_engine.reporting.polynomial_function import (
     from_description,
 )
 from forecasting_engine.store import active_model
+from forecasting_engine.store import runs as run_history
 from forecasting_engine.validation import splitters
 from forecasting_engine.validation.crash import CrashDiagnostics
 
@@ -967,6 +969,39 @@ def test_a_broken_function_fails_its_own_row_but_the_rest_still_run(stub_ml):
 
     assert USER_POLY in " ".join(e.value for e in app.error)
     assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
+
+
+def test_every_fit_a_run_makes_is_recorded_in_the_run_history_failures_included(
+    monkeypatch, stub_ml
+):
+    def unavailable():
+        raise FactorFetchError("OSError: no route to host")
+
+    monkeypatch.setattr(fama_french, "resolve", unavailable)
+    app = _run_equity(_page())
+
+    history = {r.model_name: r for r in run_history.list_runs()}
+    assert set(history) == {NAIVE, USER_POLY, "Machine Learning", "FF5 Benchmark"}
+    assert history[NAIVE].status == "done"
+    assert history["FF5 Benchmark"].status == "failed"
+    assert "no route to host" in history["FF5 Benchmark"].error
+    # The exact data and settings each fit saw.
+    committed = app.session_state["extraction_committed"]
+    assert {r.dataset_sha256 for r in history.values()} == {frame_sha256(committed)}
+    assert history[USER_POLY].settings["model_setting"][0] == "2 * VIX_Index_PX_LAST"
+    assert {"target", "horizon", "train_window", "test_window", "embargo"} <= set(
+        history[NAIVE].settings
+    )
+    assert run_history.run_metrics(history[NAIVE].run_id)["rmse"] > 0
+
+
+def test_loading_a_saved_result_is_not_a_new_run(stub_ml):
+    _run_equity(_untick(_page(), "Fama-French 5"))
+    recorded = len(run_history.list_runs())
+
+    _page()  # a new session on the same data picks the saved results up
+
+    assert len(run_history.list_runs()) == recorded
 
 
 def test_ml_results_show_shap(stub_ml):

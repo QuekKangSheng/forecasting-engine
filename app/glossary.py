@@ -318,6 +318,24 @@ TERMS: Mapping[str, str] = {
         "how much the forecast leans on the signals moved, not what the market would "
         "do: a fitted function is only as reliable as the range it was trained on."
     ),
+    "Run history": (
+        "Every model fit the app has made, kept in its database: when it ran, on which "
+        "data, under which settings and code version, how long it took and what it "
+        "scored, failures included. The Models page shows only the latest result for "
+        "the current settings; this keeps the rest, so a result can be traced and "
+        "compared later."
+    ),
+    "Dataset hash": (
+        "A fingerprint of the exact data a run was fitted on: the SHA-256 of the "
+        "committed dataset. Change one value anywhere and it changes, so two runs "
+        "with the same hash saw identical data. The same hash names the stored copy "
+        "of that data, which is how a result is traced back to its file."
+    ),
+    "Config key": (
+        "Runs with the same settings on the same data share a key. More than one means "
+        "the same fit was asked for again, for example after the code changed: compare "
+        "their code versions and results to see whether anything moved."
+    ),
     "Breach rate": (
         "How often a day's loss beat the VaR measured over the year before it. "
         "Near the expected rate means the past year was a fair guide to the "

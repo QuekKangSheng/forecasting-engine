@@ -15,6 +15,7 @@ import functools
 import html
 import time
 from collections.abc import Mapping
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -39,6 +40,7 @@ from forecasting_engine.ingest.align import (
     transform_for,
 )
 from forecasting_engine.ingest.fama_french import FactorFetchError
+from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import BoostedConfigError, fits_tuning_period, run_boosted
 from forecasting_engine.models.famafrench import (
@@ -91,6 +93,7 @@ from forecasting_engine.reporting.polynomial_function import (
 )
 from forecasting_engine.scenario.shock import function_inputs
 from forecasting_engine.store import active_model
+from forecasting_engine.store import runs as run_history
 from forecasting_engine.validation.gates import (
     ValidationOutcome,
     evaluate_candidate,
@@ -506,6 +509,39 @@ def _active_function(name: str, run: model_runs.ModelRun) -> active_model.Active
         run.description,
         {s: Transform.LEVEL if name == RESEARCH else transforms[s] for s in inputs},
     )
+
+
+def _recorder(
+    role: TargetRole, price_col: str, settings: Mapping[str, object], keys: Mapping[str, str]
+):
+    """What appends each finished fit to the run history (``store/runs``). Built
+    when Run is clicked, so the worker thread that calls it never reads the page's
+    session: everything it records is fixed here."""
+    dataset_sha256 = frame_sha256(merged)
+    shared = {
+        "target": price_col,
+        "horizon": horizon,
+        "train_window": int(train),
+        "test_window": int(test),
+        "embargo": EMBARGO_DAYS,
+        "tuning_rows": TUNING_ROWS,
+    }
+
+    def record(ended: model_jobs.Finished) -> None:
+        run_history.record_run(
+            role=role,
+            model_name=ended.name,
+            started_at=datetime.fromtimestamp(ended.started),
+            finished_at=datetime.fromtimestamp(ended.finished),
+            dataset_sha256=dataset_sha256,
+            config_key=keys[ended.name],
+            settings={**shared, "model_setting": settings.get(ended.name)},
+            result=None if ended.result is None else ended.result.result,
+            error=ended.error,
+            code_version=run_history.code_version(),
+        )
+
+    return record
 
 
 def _active_settings(name: str) -> dict[str, int | str | None]:
@@ -1173,12 +1209,14 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
             ML: functools.partial(_run_ml, panel, splitter),
         }
+        keys = {name: _result_key(role, name, settings) for name in models}
         model_jobs.submit(
             _job_id(role),
             target_name,
             {name: runners[name] for name in models},
-            {name: _result_key(role, name, settings) for name in models},
+            keys,
             expected_errors=MODEL_ERRORS,
+            on_finish=_recorder(role, price_col, settings, keys),
         )
         submitted.append(role)
     _show_job(role, target_name)
