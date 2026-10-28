@@ -229,6 +229,16 @@ class _Rebind(ast.NodeTransformer):
         return ast.copy_location(ast.Name(self.bindings.get(node.id, node.id), node.ctx), node)
 
 
+def evaluate_formula(formula: str, values: Mapping[str, float]) -> float:
+    """``formula`` at one point, each name it uses read from ``values``: what
+    ``UserPolynomial`` computes as ``f`` on one row. NaN where it divides by zero,
+    as a row of the fitted series would be."""
+    try:
+        return float(_safe_eval(_parse(formula), values))
+    except ZeroDivisionError:
+        return float("nan")
+
+
 def placeholders(formula: str) -> tuple[str, ...]:
     """The names ``formula`` uses, in the order they first appear."""
     names = sorted(

@@ -33,6 +33,7 @@ from forecasting_engine.ingest.align import (
     PRODUCTION_LAG_DAYS,
     UNCLASSIFIED_TRANSFORM,
     FeaturePanel,
+    Transform,
     align_and_lag,
     is_classified,
     select_signals,
@@ -90,6 +91,7 @@ from forecasting_engine.reporting.polynomial_function import (
     term_rows,
     to_latex,
 )
+from forecasting_engine.scenario.shock import function_inputs
 from forecasting_engine.store import active_model
 from forecasting_engine.store import runs as run_history
 from forecasting_engine.validation.gates import (
@@ -492,6 +494,21 @@ def _research_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None
         return economic_signs(signal_cols, sources, role), None
     except SignRuledInputsError as exc:
         return None, str(exc)
+
+
+def _active_function(name: str, run: model_runs.ModelRun) -> active_model.ActiveFunction | None:
+    """The fitted function a scenario evaluates again (FYP-32), for the polynomial
+    models only: their latest fold's fit, with each input's transform. The research
+    model reads its inputs as levels whatever the transform map says."""
+    origin = {DERIVED: Origin.DERIVED, RESEARCH: Origin.DERIVED, USER: Origin.USER_SUPPLIED}
+    if name not in origin:
+        return None
+    inputs = function_inputs(run.description, origin[name], numeric_cols)
+    return active_model.ActiveFunction(
+        origin[name],
+        run.description,
+        {s: Transform.LEVEL if name == RESEARCH else transforms[s] for s in inputs},
+    )
 
 
 def _recorder(
@@ -915,6 +932,7 @@ def _confirm_high_risk(
     result: ModelRunResult,
     failed: tuple[str, ...],
     target_name: str,
+    function: active_model.ActiveFunction | None,
     run_id: str | None,
 ) -> None:
     failed_text = " and ".join(GATE_NAMES[g] for g in failed)
@@ -932,6 +950,7 @@ def _confirm_high_risk(
             model_name,
             result,
             high_risk=True,
+            function=function,
             run_id=run_id,
             **_active_settings(model_name),
         )
@@ -990,6 +1009,7 @@ def _show_active_picker(
                 selected,
                 result,
                 high_risk=False,
+                function=_active_function(selected, runs[selected]),
                 run_id=_run_id(role, selected, settings),
                 **_active_settings(selected),
             )
@@ -1004,6 +1024,7 @@ def _show_active_picker(
             result,
             outcome.failed_gates,
             target_name,
+            _active_function(pending, runs[pending]),
             _run_id(role, pending, settings),
         )
 

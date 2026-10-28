@@ -8,8 +8,13 @@ import pandas as pd
 import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest.align import Transform
+from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult
+from forecasting_engine.reporting.polynomial_function import Origin
 from forecasting_engine.store.active_model import (
+    ActiveFunction,
+    get_active_function,
     get_active_model,
     get_active_model_forecast,
     get_active_model_signal,
@@ -324,3 +329,72 @@ def test_a_database_from_before_run_ids_gains_the_column_and_keeps_its_rows(db):
     old = get_active_model(TargetRole.EQUITY, db_path=db)
 
     assert old.model_name == "Old" and old.run_id is None
+
+
+# --- FYP-32: an active polynomial's fitted function -----------------------------------
+
+DERIVED = ActiveFunction(
+    Origin.DERIVED,
+    ModelDescription(
+        name="DerivedPolynomial",
+        terms=("VIX^2", "USGG10YR VIX"),
+        coefficients=(-0.0012, 0.0004),
+        intercept=0.008,
+        input_bounds={"VIX": (5.0, 41.5), "USGG10YR": (-0.2, 0.2)},
+        standardisation={"VIX": (19.0, 6.0), "USGG10YR": (0.0, 0.05)},
+    ),
+    {"VIX": Transform.LEVEL, "USGG10YR": Transform.DIFFERENCE},
+)
+USER = ActiveFunction(
+    Origin.USER_SUPPLIED,
+    ModelDescription(
+        name="UserPolynomial", terms=("VIX / LUACOAS",), coefficients=(0.3,), intercept=-0.01
+    ),
+    {"VIX": Transform.LEVEL, "LUACOAS": Transform.LEVEL},
+)
+
+
+@pytest.mark.parametrize("function", [DERIVED, USER], ids=["derived", "user"])
+def test_a_function_set_with_the_model_reads_back_as_it_was_stored(db, function):
+    set_active_model(
+        TargetRole.EQUITY, "Polynomial", _result(), high_risk=False, function=function,
+        db_path=db, **SETTINGS,
+    )
+
+    assert get_active_function(TargetRole.EQUITY, db_path=db) == function
+
+
+def test_a_model_set_without_a_function_has_none_even_after_one_that_had(db):
+    common = {"high_risk": False, "db_path": db, **SETTINGS}
+    set_active_model(TargetRole.EQUITY, "Polynomial", _result(), function=DERIVED,
+                     set_at=datetime(2026, 10, 1), **common)
+    set_active_model(TargetRole.EQUITY, "Machine Learning", _result(),
+                     set_at=datetime(2026, 10, 2), **common)
+
+    assert get_active_function(TargetRole.EQUITY, db_path=db) is None
+
+
+def test_each_role_reads_its_own_function(db):
+    common = {"high_risk": False, "db_path": db, **SETTINGS}
+    set_active_model(TargetRole.EQUITY, "Polynomial", _result(), function=DERIVED, **common)
+    set_active_model(TargetRole.BOND, "Polynomial", _result(), function=USER, **common)
+
+    assert get_active_function(TargetRole.EQUITY, db_path=db) == DERIVED
+    assert get_active_function(TargetRole.BOND, db_path=db) == USER
+
+
+def test_no_active_model_has_no_function(db):
+    assert get_active_function(TargetRole.BOND, db_path=db) is None
+
+
+def test_a_setting_that_fails_part_way_leaves_nothing_behind(db):
+    broken = ActiveFunction(Origin.DERIVED, DERIVED.description, {"VIX": "not a transform"})
+
+    with pytest.raises(AttributeError):
+        set_active_model(
+            TargetRole.EQUITY, "Polynomial", _result(), high_risk=False, function=broken,
+            db_path=db, **SETTINGS,
+        )
+
+    # The model row was written first, in the same transaction, and rolled back too.
+    assert get_active_model(TargetRole.EQUITY, db_path=db) is None
