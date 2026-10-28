@@ -17,6 +17,7 @@ from forecasting_engine.store.runs import (
     HEADLINE_METRICS,
     code_version,
     get_run,
+    latest_run,
     list_runs,
     metrics_of,
     record_run,
@@ -259,3 +260,18 @@ def test_the_code_version_is_this_checkouts_commit():
     # A short commit (abc1234), or tag-relative once the repo is tagged
     # (v1.0-3-gabc1234), either with "-dirty" if the checkout had uncommitted changes.
     assert version is None or (version and " " not in version)
+
+
+def test_the_latest_successful_run_of_a_setting_on_its_data_is_found(db):
+    _record(db, run_id="old", started=T0)
+    _record(db, run_id="new", started=T0 + timedelta(hours=1))
+    _record(db, run_id="failed", started=T0 + timedelta(hours=2), error="boom")
+    _record(db, run_id="other data", started=T0 + timedelta(hours=3), dataset_sha256="b" * 64)
+
+    assert latest_run("k" * 32, "a" * 64, db_path=db).run_id == "new"
+
+
+def test_a_setting_never_run_has_no_latest_run(db):
+    _record(db)
+
+    assert latest_run("never", "a" * 64, db_path=db) is None

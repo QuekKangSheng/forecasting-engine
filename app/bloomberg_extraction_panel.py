@@ -18,7 +18,7 @@ from __future__ import annotations
 import pickle
 from collections import Counter
 from collections.abc import Collection
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pandas as pd
@@ -39,8 +39,9 @@ from forecasting_engine.ingest.upload import (
     check_extension,
     check_size,
     frame_csv_bytes,
+    keep_source,
 )
-from forecasting_engine.store.uploads import record_upload
+from forecasting_engine.store import lineage
 
 #: The two uploaders' own working copies — refreshed on every new upload,
 #: regardless of any commit below.
@@ -130,7 +131,9 @@ def _parse_and_merge(files) -> _UploadResult:
                 if file.name.lower().endswith(".xlsx")
                 else bloomberg_csv.read_export
             )
-            export = reader(file.name, data)
+            # The bytes are kept as they arrived, under their hash, so a dataset
+            # merged from this export traces back to the exact file (store/lineage).
+            export = replace(reader(file.name, data), source=keep_source(file.name, data))
         except (
             UploadError,
             bloomberg_csv.BloombergCsvError,
@@ -564,7 +567,16 @@ def _keep_and_log(merged: pd.DataFrame, *, file_id: str) -> AcceptedUpload:
     # model run on it records the same hash (store/runs.py).
     accepted = accept_upload(MERGED_NAME, frame_csv_bytes(merged))
     if st.session_state.get(_LOGGED_KEY) != file_id:
-        record_upload(accepted)
+        # The merged file, each export it was merged from, and the links between
+        # them, in one transaction.
+        roles = ((_TARGET_EXPORTS_KEY, lineage.TARGET), (_SIGNAL_EXPORTS_KEY, lineage.SIGNAL))
+        sources = [
+            (AcceptedUpload(frame=e.frame, source=e.source), role)
+            for key, role in roles
+            for e in st.session_state.get(key, [])
+            if e.source is not None
+        ]
+        lineage.record_merge(accepted, sources)
         st.session_state[_LOGGED_KEY] = file_id
     st.caption(f"Stored as {MERGED_NAME}, content hash {accepted.source.short_hash}.")
     return accepted

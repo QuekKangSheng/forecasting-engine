@@ -148,6 +148,21 @@ def accept_upload(
     return AcceptedUpload(frame=frame, source=SourceFile.of(filename, data, path=path))
 
 
+def keep_source(
+    filename: str, data: bytes, *, uploads_dir: Path = DEFAULT_UPLOADS_DIR
+) -> SourceFile:
+    """Keep an uploaded file's bytes as they arrived, under their content hash and
+    the file's own extension (``<sha256>.xlsx``), and return where they are. The
+    same bytes resolve to the same path and are not rewritten, so keeping a file on
+    every rerun of a page costs one existence check."""
+    source = SourceFile.of(filename, data)
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    path = uploads_dir / f"{source.sha256}{Path(filename).suffix.lower()}"
+    if not path.exists():
+        path.write_bytes(data)
+    return SourceFile.of(filename, data, path=path)
+
+
 def frame_csv_bytes(frame: pd.DataFrame) -> bytes:
     """``frame`` as canonical CSV: no index, ISO dates, ``\n`` line endings, UTF-8.
     Fixed choices, so the same data gives the same bytes on every machine."""

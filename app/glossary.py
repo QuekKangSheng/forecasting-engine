@@ -331,6 +331,11 @@ TERMS: Mapping[str, str] = {
         "with the same hash saw identical data. The same hash names the stored copy "
         "of that data, which is how a result is traced back to its file."
     ),
+    "Lineage": (
+        "Where a result came from, step by step: the active model, the run that fitted "
+        "it, the dataset that run saw, and the Bloomberg exports that dataset was merged "
+        "from, each identified by the hash of its exact contents."
+    ),
     "Config key": (
         "Runs with the same settings on the same data share a key. More than one means "
         "the same fit was asked for again, for example after the code changed: compare "

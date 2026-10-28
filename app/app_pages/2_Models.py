@@ -933,6 +933,7 @@ def _confirm_high_risk(
     failed: tuple[str, ...],
     target_name: str,
     function: active_model.ActiveFunction | None,
+    run_id: str | None,
 ) -> None:
     failed_text = " and ".join(GATE_NAMES[g] for g in failed)
     pending_key = f"pending_active_{role.value}"
@@ -950,6 +951,7 @@ def _confirm_high_risk(
             result,
             high_risk=True,
             function=function,
+            run_id=run_id,
             **_active_settings(model_name),
         )
         st.session_state.pop(pending_key, None)
@@ -959,8 +961,19 @@ def _confirm_high_risk(
         st.rerun()
 
 
+def _run_id(role: TargetRole, name: str, settings: Mapping[str, object]) -> str | None:
+    """The recorded run (``store/runs``) a stored result came from: the newest
+    successful fit of the same settings on the same data. ``None`` for a result
+    fitted before the run history existed."""
+    run = run_history.latest_run(_result_key(role, name, settings), frame_sha256(merged))
+    return None if run is None else run.run_id
+
+
 def _show_active_picker(
-    role: TargetRole, runs: dict[str, model_runs.ModelRun], target_name: str
+    role: TargetRole,
+    runs: dict[str, model_runs.ModelRun],
+    target_name: str,
+    settings: Mapping[str, object],
 ) -> None:
     key = role.value
     options = [n for n in ACTIVE_MODEL_CANDIDATES if n in runs]
@@ -997,6 +1010,7 @@ def _show_active_picker(
                 result,
                 high_risk=False,
                 function=_active_function(selected, runs[selected]),
+                run_id=_run_id(role, selected, settings),
                 **_active_settings(selected),
             )
             st.rerun()
@@ -1011,6 +1025,7 @@ def _show_active_picker(
             outcome.failed_gates,
             target_name,
             _active_function(pending, runs[pending]),
+            _run_id(role, pending, settings),
         )
 
 
@@ -1246,7 +1261,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if RESEARCH in runs:
         st.caption(f"{RESEARCH}: {RESEARCH_CAPTION}")
     _show_directional(role, runs, target_name)
-    _show_active_picker(role, runs, target_name)
+    _show_active_picker(role, runs, target_name, settings)
 
     _show_screening(runs, target_name)
     for name in (DERIVED, RESEARCH, USER):
