@@ -92,6 +92,8 @@ DOCUMENTED = {
     ("forecasting_engine.risk.monte_carlo", "MAX_PATHS"),
     ("forecasting_engine.risk.monte_carlo", "SEED"),
     ("forecasting_engine.risk.monte_carlo", "_CHUNK_PATHS"),
+    ("forecasting_engine.scenario.shock", "MAX_RANGE_MULTIPLE"),
+    ("forecasting_engine.scenario.shock", "POSITIVE_TRANSFORMS"),
 }
 
 

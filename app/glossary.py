@@ -345,6 +345,49 @@ TERMS: Mapping[str, str] = {
         "models' forecasts for the two indices, weighted by the portfolio. The "
         "simulation centres on it, so it shows what base case the tail is around."
     ),
+    "Signal shock": (
+        "A what-if: replace a signal's last observed value with a stressed one, such "
+        "as VIX at 45, and see what the active models would forecast. Only signals "
+        "the active polynomials read can be shocked, since nothing else moves them."
+    ),
+    "Shock as": (
+        "**New value** sets the signal's level directly. **% change** moves it from "
+        "its last observed value, so +50 takes a VIX of 20 to 30. Either way the "
+        "shocked level is read exactly as a real day would be: transformed and lagged "
+        "as the model was fitted."
+    ),
+    "Base-case forecast": (
+        "The active model's function evaluated on the latest data, with no shock: what "
+        "it forecasts for the next horizon today. A shock is measured against it."
+    ),
+    "Shocked forecast": (
+        "The same function, not refitted, evaluated on the shocked inputs. It shows "
+        "how much the forecast leans on the signals moved, not what the market would "
+        "do: a fitted function is only as reliable as the range it was trained on."
+    ),
+    "Run history": (
+        "Every model fit the app has made, kept in its database: when it ran, on which "
+        "data, under which settings and code version, how long it took and what it "
+        "scored, failures included. The Models page shows only the latest result for "
+        "the current settings; this keeps the rest, so a result can be traced and "
+        "compared later."
+    ),
+    "Dataset hash": (
+        "A fingerprint of the exact data a run was fitted on: the SHA-256 of the "
+        "committed dataset. Change one value anywhere and it changes, so two runs "
+        "with the same hash saw identical data. The same hash names the stored copy "
+        "of that data, which is how a result is traced back to its file."
+    ),
+    "Lineage": (
+        "Where a result came from, step by step: the active model, the run that fitted "
+        "it, the dataset that run saw, and the Bloomberg exports that dataset was merged "
+        "from, each identified by the hash of its exact contents."
+    ),
+    "Config key": (
+        "Runs with the same settings on the same data share a key. More than one means "
+        "the same fit was asked for again, for example after the code changed: compare "
+        "their code versions and results to see whether anything moved."
+    ),
     "Breach rate": (
         "How often a day's loss beat the VaR measured over the year before it. "
         "Near the expected rate means the past year was a fair guide to the "

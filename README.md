@@ -96,6 +96,11 @@ hosting step is needed.
   promotion gate on both: Signal Rank IC above 0.02 and t above 2.
 - **Active model** — the model chosen to carry forward for each index, saved in
   DuckDB, with a confirmation step for a model that failed both gates.
+- **Run history** — every model fit recorded in DuckDB, failures included: when it
+  ran, the SHA-256 of the exact data, its settings and code version, how long it
+  took, and its metrics and forecasts. A page lists the runs and traces each one to
+  the uploaded file it was fitted on. See [docs/run-history.md](docs/run-history.md)
+  for the tables, guarantees and example queries.
 - **Directional P&L** — for one model and one index, what holding the index only
   when the forecast says it will rise would have earned against holding it
   throughout, over the whole out-of-sample period, with hit rate and share of
@@ -120,6 +125,16 @@ hosting step is needed.
   weights, centred on the active models' forecasts, by historical bootstrap or a
   fitted normal. It fills the Monte Carlo rows of the tail-risk table and adds VaR,
   CVaR and maximum drawdown over the whole horizon. GARCH is not built yet.
+
+**Scenarios**
+
+- **Signal shocks** — choose signals the active polynomials read and give each a
+  new value or a % change; the shocks are validated (a number, above zero where
+  the series always is, within 10 times its observed range) and then both indices'
+  active functions are evaluated again on the shocked inputs, without refitting,
+  beside the base case. A shocked input outside the model's training range is
+  flagged as an extrapolation. The active polynomial's fitted function is saved in
+  DuckDB with the active model for this.
 
 ## Interface
 

@@ -24,8 +24,10 @@ import model_settings
 from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest import fama_french
+from forecasting_engine.ingest.align import Transform
 from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile, ResolvedFactors
 from forecasting_engine.ingest.provenance import SourceFile
+from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models import boosted
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import Tune, TuningLog
@@ -41,6 +43,7 @@ from forecasting_engine.reporting.polynomial_function import (
     from_description,
 )
 from forecasting_engine.store import active_model
+from forecasting_engine.store import runs as run_history
 from forecasting_engine.validation import splitters
 from forecasting_engine.validation.crash import CrashDiagnostics
 
@@ -478,6 +481,34 @@ def test_setting_a_model_active_persists_it_and_shows_it():
     stored = active_model.get_active_model(EQUITY)
     assert stored.model_name == POLY
     assert stored.high_risk is False
+
+
+def test_setting_a_polynomial_active_stores_its_function_for_scenarios():
+    sources = {
+        "VIX_Index_PX_LAST": ColumnSource("VIX Index", "PX_LAST"),
+        "LUACOAS_Index_PX_LAST": ColumnSource("LUACOAS Index", "PX_LAST"),
+    }
+    app = _page({EQUITY: {POLY: _polynomial_run()}}, sources=sources)
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    function = active_model.get_active_function(EQUITY)
+    assert function is not None
+    assert function.description.terms == DERIVED.terms
+    assert function.description.coefficients == DERIVED.coefficients
+    # The two inputs its terms multiply, each with the page's transform for it:
+    # a volatility gauge and a credit spread, both read as levels.
+    assert function.transforms == {
+        "VIX_Index_PX_LAST": Transform.LEVEL,
+        "LUACOAS_Index_PX_LAST": Transform.LEVEL,
+    }
+
+
+def test_setting_machine_learning_active_stores_no_function():
+    app = _page({EQUITY: {"Machine Learning": _ml_run()}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert active_model.get_active_model(EQUITY).model_name == "Machine Learning"
+    assert active_model.get_active_function(EQUITY) is None
 
 
 def test_setting_a_new_active_model_replaces_the_prior_one():
@@ -938,6 +969,57 @@ def test_a_broken_function_fails_its_own_row_but_the_rest_still_run(stub_ml):
 
     assert USER_POLY in " ".join(e.value for e in app.error)
     assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
+
+
+def test_every_fit_a_run_makes_is_recorded_in_the_run_history_failures_included(
+    monkeypatch, stub_ml
+):
+    def unavailable():
+        raise FactorFetchError("OSError: no route to host")
+
+    monkeypatch.setattr(fama_french, "resolve", unavailable)
+    app = _run_equity(_page())
+
+    history = {r.model_name: r for r in run_history.list_runs()}
+    assert set(history) == {NAIVE, USER_POLY, "Machine Learning", "FF5 Benchmark"}
+    assert history[NAIVE].status == "done"
+    assert history["FF5 Benchmark"].status == "failed"
+    assert "no route to host" in history["FF5 Benchmark"].error
+    # The exact data and settings each fit saw.
+    committed = app.session_state["extraction_committed"]
+    assert {r.dataset_sha256 for r in history.values()} == {frame_sha256(committed)}
+    assert history[USER_POLY].settings["model_setting"][0] == "2 * VIX_Index_PX_LAST"
+    assert {"target", "horizon", "train_window", "test_window", "embargo"} <= set(
+        history[NAIVE].settings
+    )
+    assert run_history.run_metrics(history[NAIVE].run_id)["rmse"] > 0
+
+
+def test_an_active_model_points_to_the_run_that_fitted_it(stub_ml):
+    app = _run_equity(_untick(_page(), "Fama-French 5"))
+    next(b for b in app.button if b.label == "Set as active").click().run()
+    if active_model.get_active_model(EQUITY) is None:  # failed both gates: confirm
+        next(b for b in app.button if b.label == "Set active anyway").click().run()
+
+    active = active_model.get_active_model(EQUITY)
+    run = run_history.get_run(active.run_id)
+    assert run is not None and run.model_name == active.model_name and run.status == "done"
+
+
+def test_a_result_fitted_before_runs_were_recorded_is_set_active_without_one():
+    app = _page({EQUITY: {POLY: _polynomial_run()}})  # stored, never fitted here
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert active_model.get_active_model(EQUITY).run_id is None
+
+
+def test_loading_a_saved_result_is_not_a_new_run(stub_ml):
+    _run_equity(_untick(_page(), "Fama-French 5"))
+    recorded = len(run_history.list_runs())
+
+    _page()  # a new session on the same data picks the saved results up
+
+    assert len(run_history.list_runs()) == recorded
 
 
 def test_ml_results_show_shap(stub_ml):

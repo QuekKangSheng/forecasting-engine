@@ -1,5 +1,6 @@
 """The Bloomberg extraction page, driven through the real Streamlit page."""
 
+import hashlib
 import sys
 from datetime import date
 from io import BytesIO
@@ -12,6 +13,7 @@ from streamlit.testing.v1 import AppTest
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.upload import MAX_UPLOAD_BYTES
+from forecasting_engine.store import lineage
 from forecasting_engine.store.uploads import recent_uploads
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -416,17 +418,52 @@ def test_the_merge_is_logged_to_duckdb_once(page, tmp_path):
     result = upload(page, [("spx.csv", SPX, "text/csv"), ("vix.csv", VIX, "text/csv")])
     result.run()  # a rerun must not log it again
 
-    (row,) = recent_uploads(db_path=tmp_path / "data" / "forecasting.duckdb")
-    assert row.filename == "bloomberg_merged.csv"
-    assert row.row_count == 2
+    # The merge and the two exports it was merged from, each logged once.
+    rows = recent_uploads(db_path=tmp_path / "data" / "forecasting.duckdb")
+    assert sorted(r.filename for r in rows) == ["bloomberg_merged.csv", "spx.csv", "vix.csv"]
+    (merged,) = [r for r in rows if r.filename == "bloomberg_merged.csv"]
+    assert merged.row_count == 2
     assert "content hash" in " ".join(c.value for c in result.caption)
 
 
 def test_the_merged_bytes_are_stored_under_their_hash(page, tmp_path):
     upload(page, [("spx.csv", SPX, "text/csv")])
 
-    (stored,) = (tmp_path / "data" / "uploads").glob("*.csv")
-    assert stored.read_bytes().startswith(b"Date,SPX_Index_PX_LAST\n2020-01-02,")
+    stored = {p.read_bytes() for p in (tmp_path / "data" / "uploads").glob("*.csv")}
+    (merged,) = [b for b in stored if b.startswith(b"Date,SPX_Index_PX_LAST\n2020-01-02,")]
+    assert hashlib.sha256(merged).hexdigest() in {
+        p.stem for p in (tmp_path / "data" / "uploads").glob("*.csv")
+    }
+
+
+def test_each_export_is_kept_as_uploaded_and_linked_to_the_merged_dataset(page, tmp_path):
+    upload(page, [("spx.csv", SPX, "text/csv")])
+
+    raw = tmp_path / "data" / "uploads" / f"{hashlib.sha256(SPX).hexdigest()}.csv"
+    assert raw.read_bytes() == SPX
+    merged = next(r for r in recent_uploads() if r.filename != "spx.csv")
+    (source,) = lineage.sources_of(merged.sha256)
+    assert (source.filename, source.sha256) == ("spx.csv", hashlib.sha256(SPX).hexdigest())
+
+
+def test_each_export_is_linked_with_the_role_it_was_uploaded_as(page):
+    upload_targets(page, [("spx.csv", SPX, "text/csv")])
+    upload(page, [("vix.csv", VIX, "text/csv")])
+
+    merged = next(
+        r for r in recent_uploads() if r.filename == "bloomberg_merged.csv" and r.row_count == 2
+    )
+    roles = {s.filename: s.role for s in lineage.sources_of(merged.sha256)}
+    assert roles == {"spx.csv": lineage.TARGET, "vix.csv": lineage.SIGNAL}
+
+
+def test_a_rerun_of_the_page_does_not_log_the_files_again(page):
+    upload(page, [("spx.csv", SPX, "text/csv")])
+    logged = len(recent_uploads())
+
+    page.run()
+
+    assert len(recent_uploads()) == logged
 
 
 # --- target vs. signal split (Phase 4.1) ------------------------------------

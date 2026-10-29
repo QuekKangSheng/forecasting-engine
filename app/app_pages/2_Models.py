@@ -15,6 +15,7 @@ import functools
 import html
 import time
 from collections.abc import Mapping
+from datetime import datetime
 
 import pandas as pd
 import streamlit as st
@@ -32,12 +33,14 @@ from forecasting_engine.ingest.align import (
     PRODUCTION_LAG_DAYS,
     UNCLASSIFIED_TRANSFORM,
     FeaturePanel,
+    Transform,
     align_and_lag,
     is_classified,
     select_signals,
     transform_for,
 )
 from forecasting_engine.ingest.fama_french import FactorFetchError
+from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import BoostedConfigError, fits_tuning_period, run_boosted
 from forecasting_engine.models.famafrench import (
@@ -88,7 +91,9 @@ from forecasting_engine.reporting.polynomial_function import (
     term_rows,
     to_latex,
 )
+from forecasting_engine.scenario.shock import function_inputs
 from forecasting_engine.store import active_model
+from forecasting_engine.store import runs as run_history
 from forecasting_engine.validation.gates import (
     ValidationOutcome,
     evaluate_candidate,
@@ -491,6 +496,54 @@ def _research_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None
         return None, str(exc)
 
 
+def _active_function(name: str, run: model_runs.ModelRun) -> active_model.ActiveFunction | None:
+    """The fitted function a scenario evaluates again (FYP-32), for the polynomial
+    models only: their latest fold's fit, with each input's transform. The research
+    model reads its inputs as levels whatever the transform map says."""
+    origin = {DERIVED: Origin.DERIVED, RESEARCH: Origin.DERIVED, USER: Origin.USER_SUPPLIED}
+    if name not in origin:
+        return None
+    inputs = function_inputs(run.description, origin[name], numeric_cols)
+    return active_model.ActiveFunction(
+        origin[name],
+        run.description,
+        {s: Transform.LEVEL if name == RESEARCH else transforms[s] for s in inputs},
+    )
+
+
+def _recorder(
+    role: TargetRole, price_col: str, settings: Mapping[str, object], keys: Mapping[str, str]
+):
+    """What appends each finished fit to the run history (``store/runs``). Built
+    when Run is clicked, so the worker thread that calls it never reads the page's
+    session: everything it records is fixed here."""
+    dataset_sha256 = frame_sha256(merged)
+    shared = {
+        "target": price_col,
+        "horizon": horizon,
+        "train_window": int(train),
+        "test_window": int(test),
+        "embargo": EMBARGO_DAYS,
+        "tuning_rows": TUNING_ROWS,
+    }
+
+    def record(ended: model_jobs.Finished) -> None:
+        run_history.record_run(
+            role=role,
+            model_name=ended.name,
+            started_at=datetime.fromtimestamp(ended.started),
+            finished_at=datetime.fromtimestamp(ended.finished),
+            dataset_sha256=dataset_sha256,
+            config_key=keys[ended.name],
+            settings={**shared, "model_setting": settings.get(ended.name)},
+            result=None if ended.result is None else ended.result.result,
+            error=ended.error,
+            code_version=run_history.code_version(),
+        )
+
+    return record
+
+
 def _active_settings(name: str) -> dict[str, int | str | None]:
     """What a model set active was run under. The research model trains on every
     earlier date, so it has no train window."""
@@ -879,6 +932,8 @@ def _confirm_high_risk(
     result: ModelRunResult,
     failed: tuple[str, ...],
     target_name: str,
+    function: active_model.ActiveFunction | None,
+    run_id: str | None,
 ) -> None:
     failed_text = " and ".join(GATE_NAMES[g] for g in failed)
     pending_key = f"pending_active_{role.value}"
@@ -891,7 +946,13 @@ def _confirm_high_risk(
     cols = st.columns(2)
     if cols[0].button("Set active anyway", type="primary", key=f"confirm_{role.value}"):
         active_model.set_active_model(
-            role, model_name, result, high_risk=True, **_active_settings(model_name)
+            role,
+            model_name,
+            result,
+            high_risk=True,
+            function=function,
+            run_id=run_id,
+            **_active_settings(model_name),
         )
         st.session_state.pop(pending_key, None)
         st.rerun()
@@ -900,8 +961,19 @@ def _confirm_high_risk(
         st.rerun()
 
 
+def _run_id(role: TargetRole, name: str, settings: Mapping[str, object]) -> str | None:
+    """The recorded run (``store/runs``) a stored result came from: the newest
+    successful fit of the same settings on the same data. ``None`` for a result
+    fitted before the run history existed."""
+    run = run_history.latest_run(_result_key(role, name, settings), frame_sha256(merged))
+    return None if run is None else run.run_id
+
+
 def _show_active_picker(
-    role: TargetRole, runs: dict[str, model_runs.ModelRun], target_name: str
+    role: TargetRole,
+    runs: dict[str, model_runs.ModelRun],
+    target_name: str,
+    settings: Mapping[str, object],
 ) -> None:
     key = role.value
     options = [n for n in ACTIVE_MODEL_CANDIDATES if n in runs]
@@ -933,14 +1005,28 @@ def _show_active_picker(
         else:
             st.session_state.pop(pending_key, None)
             active_model.set_active_model(
-                role, selected, result, high_risk=False, **_active_settings(selected)
+                role,
+                selected,
+                result,
+                high_risk=False,
+                function=_active_function(selected, runs[selected]),
+                run_id=_run_id(role, selected, settings),
+                **_active_settings(selected),
             )
             st.rerun()
     pending = st.session_state.get(pending_key)
     if pending in runs:
         result = runs[pending].result
         outcome = _outcome(result)
-        _confirm_high_risk(role, pending, result, outcome.failed_gates, target_name)
+        _confirm_high_risk(
+            role,
+            pending,
+            result,
+            outcome.failed_gates,
+            target_name,
+            _active_function(pending, runs[pending]),
+            _run_id(role, pending, settings),
+        )
 
 
 def _directional_default(role: TargetRole, options: list[str], runs) -> int:
@@ -1138,12 +1224,14 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
             ML: functools.partial(_run_ml, panel, splitter),
         }
+        keys = {name: _result_key(role, name, settings) for name in models}
         model_jobs.submit(
             _job_id(role),
             target_name,
             {name: runners[name] for name in models},
-            {name: _result_key(role, name, settings) for name in models},
+            keys,
             expected_errors=MODEL_ERRORS,
+            on_finish=_recorder(role, price_col, settings, keys),
         )
         submitted.append(role)
     _show_job(role, target_name)
@@ -1173,7 +1261,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if RESEARCH in runs:
         st.caption(f"{RESEARCH}: {RESEARCH_CAPTION}")
     _show_directional(role, runs, target_name)
-    _show_active_picker(role, runs, target_name)
+    _show_active_picker(role, runs, target_name, settings)
 
     _show_screening(runs, target_name)
     for name in (DERIVED, RESEARCH, USER):

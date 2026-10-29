@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from forecasting_engine.ingest.upload import accept_upload
-from forecasting_engine.store.uploads import recent_uploads, record_upload
+from forecasting_engine.store.uploads import find_upload, recent_uploads, record_upload
 
 CSV = b"date,spx_close\n2026-01-02,4750.5\n2026-01-03,4762.1\n"
 OTHER_CSV = b"date,spx_close\n2026-02-02,4800.0\n"
@@ -69,3 +69,19 @@ def test_the_limit_caps_how_many_rows_come_back(db, accepted):
         record_upload(accepted, db_path=db)
 
     assert len(recent_uploads(limit=3, db_path=db)) == 3
+
+
+def test_a_content_hash_finds_the_first_upload_of_that_content(db, accepted):
+    record_upload(accepted, db_path=db, uploaded_at=datetime(2026, 8, 31, 12, 0))
+    record_upload(accepted, db_path=db, uploaded_at=datetime(2026, 8, 30, 12, 0))
+
+    found = find_upload(accepted.source.sha256, db_path=db)
+
+    assert found.filename == "signals.csv"
+    assert found.uploaded_at == datetime(2026, 8, 30, 12, 0)
+
+
+def test_an_unknown_hash_finds_nothing(db, accepted):
+    record_upload(accepted, db_path=db)
+
+    assert find_upload("0" * 64, db_path=db) is None
