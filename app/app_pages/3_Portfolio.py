@@ -128,6 +128,29 @@ if signals[EQUITY] is None or signals[BOND] is None:
     )
     st.stop()
 
+equity_name = label(target_columns[EQUITY])
+bond_name = label(target_columns[BOND])
+
+# --- FYP-53: the models every result below comes from ------------------------------
+# Both active models are read afresh on every run, so one set active on the Models
+# page re-solves the whole page on its next run. Naming them first says which.
+st.markdown(
+    ui.eyebrow(
+        "Active models",
+        "Every figure on this page comes from these two models' forecasts. Set "
+        "another active on the Models page and the page re-solves with it.",
+    )
+    + "".join(
+        ui.status_row(
+            html.escape(name),
+            ui.lozenge(html.escape(record.model_name), "info"),
+            f"set active {record.set_at:%d %b %Y %H:%M}",
+        )
+        for name, record in ((equity_name, equity_active), (bond_name, bond_active))
+    ),
+    unsafe_allow_html=True,
+)
+
 with st.expander("Settings"):
     risk_level = st.select_slider(
         "Risk aversion",
@@ -176,9 +199,6 @@ schedule = optimize.schedule_weights(breakdowns)
 if schedule.empty:
     st.info("No rebalance date has both a forecast and enough price history yet.")
     st.stop()
-
-equity_name = label(target_columns[EQUITY])
-bond_name = label(target_columns[BOND])
 
 latest_date = schedule.index[-1]
 latest = schedule.loc[latest_date]

@@ -89,10 +89,10 @@ def _result(forecast=None, *, with_baseline=True) -> ModelRunResult:
     )
 
 
-def _set_active(role, forecast=None, *, with_baseline=True, **overrides):
+def _set_active(role, forecast=None, *, name="Polynomial", with_baseline=True, **overrides):
     active_model.set_active_model(
         role,
-        "Polynomial",
+        name,
         _result(forecast=forecast, with_baseline=with_baseline),
         high_risk=False,
         **{**SETTINGS, **overrides},
@@ -426,3 +426,76 @@ def test_without_performance_data_the_page_guides_instead_of_testing():
     assert not app.exception
     assert any("statistically significant appear here" in t for t in _infos(app))
     assert "Spread t-statistic" not in _markdown(app)
+
+
+# --- FYP-53: switching an active model re-solves the page -------------------------
+
+
+def _leaning(committed, signal: float) -> pd.Series:
+    """A forecast whose signal is ``signal`` on every date: ``_result``'s baseline
+    is 0.001 throughout."""
+    return _forecast(committed) * 0 + 0.001 + signal
+
+
+def _outputs(app: AppTest) -> dict:
+    """Everything the page derives from the active models."""
+    return {
+        "weights": [m.value for m in app.metric],
+        "comparison": _comparison_table(app),
+        "charts": [c.proto.SerializeToString() for c in app.get("vega_lite_chart")],
+        "t": next(m.value for m in app.markdown if "Spread t-statistic" in m.value),
+    }
+
+
+def _models_line(app: AppTest) -> str:
+    return next(m.value for m in app.markdown if "Active models" in m.value)
+
+
+def test_switching_the_active_model_updates_the_weights_and_t_statistic():
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0))
+    app = _page(committed)
+    assert not app.exception
+    before = _outputs(app)
+
+    # Set on the Models page while this session stays open: the next rerun, not a
+    # restart, picks it up.
+    _set_active(EQUITY, forecast=_leaning(committed, -0.05), name="Machine Learning")
+    app.run()
+
+    assert not app.exception
+    after = _outputs(app)
+    for output in before:
+        assert after[output] != before[output], output
+    assert float(after["weights"][0].strip("%")) < float(before["weights"][0].strip("%"))
+
+
+def test_the_page_names_both_models_before_any_result():
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0), name="FF5 Benchmark")
+    app = _page(committed)
+
+    line = _models_line(app)
+    assert "S&amp;P 500" in line and "Polynomial" in line
+    assert "FF5 Benchmark" in line
+    # Above the weights, so it heads every result on the page.
+    texts = [m.value for m in app.markdown]
+    first_result = next(i for i, t in enumerate(texts) if "Latest weights" in t)
+    assert texts.index(line) < first_result
+
+
+def test_the_named_models_follow_a_switch():
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0), name="FF5 Benchmark")
+    app = _page(committed)
+
+    _set_active(EQUITY, forecast=_leaning(committed, -0.05), name="Machine Learning")
+    app.run()
+
+    line = _models_line(app)
+    assert "Machine Learning" in line
+    assert "Polynomial" not in line
+    assert "S&P 500: Machine Learning" in _captions(app)
