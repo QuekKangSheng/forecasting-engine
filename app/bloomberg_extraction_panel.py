@@ -299,6 +299,21 @@ def render() -> None:
     # just uploaded) is what keeps this page showing the last merge instead
     # of going blank when the user navigates here from another tab.
     if target_merged is None and signal_merged is None:
+        # "Use the data committed last time" brings back only the committed
+        # dataset, not the uploads it came from, so show that instead of an
+        # empty page.
+        committed = st.session_state.get(COMMITTED_KEY)
+        if committed is not None:
+            st.success(
+                "Using the data committed last time. Upload files above to replace it.",
+                icon=":material/history:",
+            )
+            _render_report(
+                st.session_state.get(COMMITTED_REPORT_KEY) or validation.validate(committed),
+                committed,
+                st.session_state.get(COMMITTED_DROPPED_KEY, []),
+            )
+            return
         st.info(
             "Upload target index files and/or signal files above to get started.",
             icon=":material/upload_file:",

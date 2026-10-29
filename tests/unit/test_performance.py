@@ -7,11 +7,17 @@ import pandas as pd
 import pytest
 
 from forecasting_engine.portfolio.performance import (
+    SIGNIFICANCE_CONFIDENCE,
     TRADING_DAYS_PER_YEAR,
+    Significance,
     max_drawdown,
+    newey_west_lags,
     performance,
     relative,
+    significance,
+    spread_t_stat,
 )
+from forecasting_engine.validation.gates import SIGNIFICANCE_T_GATE
 
 ROOT_YEAR = math.sqrt(TRADING_DAYS_PER_YEAR)
 
@@ -129,3 +135,99 @@ def test_a_portfolio_identical_to_the_baseline_has_no_information_ratio():
 def test_comparing_series_over_different_days_is_refused():
     with pytest.raises(ValueError, match="same days"):
         relative(_series([0.01, 0.02]), _series([0.01, 0.02, 0.03]))
+
+
+# --- FYP-52: is the outperformance more than luck? ----------------------------------
+
+
+def test_with_no_lags_the_spread_t_is_the_paired_t_statistic():
+    # statsmodels' HAC estimate divides by n, not n - 1, as the codebase's other
+    # Newey-West error (validation.metrics.rank_ic_se) also does.
+    d = np.array([0.002, -0.001, 0.003, 0.0, 0.004, -0.002])
+    paired = d.mean() / (d.std(ddof=0) / math.sqrt(len(d)))
+
+    assert spread_t_stat(d, lags=0) == pytest.approx(paired)
+
+
+def test_the_newey_west_error_matches_a_hand_worked_one_lag_example():
+    d = np.array([0.002, -0.001, 0.003, 0.0, 0.004, -0.002])
+    n = len(d)
+    e = d - d.mean()
+    gamma0 = (e @ e) / n
+    gamma1 = (e[1:] @ e[:-1]) / n
+    long_run = gamma0 + 2 * (1 - 1 / 2) * gamma1  # Bartlett weight for lag 1 of 1
+    se = math.sqrt(long_run / n)
+
+    assert spread_t_stat(d, lags=1) == pytest.approx(d.mean() / se)
+
+
+def test_days_that_move_together_make_the_test_less_sure_of_itself():
+    # Runs of the same sign: each day says little the day before didn't.
+    d = np.repeat([0.003, -0.001, 0.002, 0.004, -0.002, 0.003, 0.001, -0.001], 5)
+
+    assert abs(spread_t_stat(d, lags=6)) < abs(spread_t_stat(d, lags=0))
+
+
+def test_identical_portfolios_have_no_t_statistic():
+    assert math.isnan(spread_t_stat(np.zeros(50), lags=4))
+
+
+def test_fewer_than_three_days_have_no_t_statistic():
+    assert math.isnan(spread_t_stat(np.array([0.01, 0.02]), lags=0))
+
+
+@pytest.mark.parametrize(("days", "lags"), [(0, 0), (100, 4), (1_000, 6), (2_500, 8)])
+def test_the_lag_count_grows_slowly_with_the_length_of_the_backtest(days, lags):
+    assert newey_west_lags(days) == lags
+
+
+def test_significance_uses_the_sponsors_t_above_2_bar_like_the_model_gate():
+    assert SIGNIFICANCE_T_GATE == 2.0
+    assert SIGNIFICANCE_CONFIDENCE == 0.95  # what the verdict says; t > 2 is ~95.4%
+    assert significance(1.98) == Significance.NOT_SIGNIFICANT
+    assert significance(2.0) == Significance.NOT_SIGNIFICANT  # strictly above, as the gate
+    assert significance(2.01) == Significance.OUTPERFORMS
+    assert significance(-2.01) == Significance.UNDERPERFORMS
+    assert significance(float("nan")) == Significance.UNDEFINED
+
+
+def test_a_portfolio_that_beats_the_baseline_most_days_is_significant():
+    rng = np.random.default_rng(0)
+    baseline = _series(rng.normal(0, 0.01, 500))
+    portfolio = baseline + rng.normal(0.002, 0.002, 500)
+
+    result = relative(portfolio, baseline)
+
+    assert result.spread_t > 5
+    assert result.significance == Significance.OUTPERFORMS
+
+
+def test_a_portfolio_that_trails_the_baseline_is_flagged_as_worse():
+    rng = np.random.default_rng(1)
+    baseline = _series(rng.normal(0, 0.01, 500))
+    portfolio = baseline - rng.normal(0.002, 0.002, 500)
+
+    assert relative(portfolio, baseline).significance == Significance.UNDERPERFORMS
+
+
+def test_a_difference_that_averages_zero_is_not_significant():
+    baseline = _series([0.01, -0.02, 0.005, 0.0] * 25)
+    portfolio = baseline + np.tile([0.001, -0.001], 50)  # mean difference exactly 0
+
+    result = relative(portfolio, baseline)
+
+    assert result.spread_t == pytest.approx(0.0, abs=1e-9)
+    assert result.significance == Significance.NOT_SIGNIFICANT
+
+
+def test_relative_records_the_lags_and_days_behind_the_t_statistic():
+    baseline = _series(np.zeros(1_000))
+    portfolio = baseline + np.tile([0.002, -0.001], 500)
+
+    result = relative(portfolio, baseline)
+
+    assert result.days == 1_000
+    assert result.spread_t_lags == 6
+    assert result.spread_t == pytest.approx(
+        spread_t_stat((portfolio - baseline).to_numpy(), lags=6)
+    )

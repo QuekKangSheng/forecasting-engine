@@ -1,5 +1,6 @@
 """The Portfolio Optimizer page, driven through the real Streamlit page script."""
 
+import html
 import re
 from pathlib import Path
 
@@ -305,16 +306,48 @@ def test_a_minimum_in_each_index_bounds_both_weights():
     assert "Each index stays between 40% and 60%." in _captions(app)
 
 
+def _tail_table(app: AppTest) -> str:
+    """Found by content, not position, so another table on the page can't shift it."""
+    (tail,) = [
+        m.value
+        for m in app.markdown
+        if '<table class="fe-table"' in m.value and "1-day CVaR" in m.value
+    ]
+    return tail
+
+
 def test_historical_var_and_cvar_are_shown_beside_max_drawdown():
     app = _happy_page()
 
-    tables = [m.value for m in app.markdown if '<table class="fe-table"' in m.value]
-    assert len(tables) == 2
-    tail = tables[1]
+    tail = _tail_table(app)
     for metric in ("1-day VaR 95%", "1-day CVaR 99%", "Max drawdown", "breach rate"):
         assert metric in tail
     assert any("Historical" in m.value and "Tail risk" in m.value for m in app.markdown)
     assert "one-day losses read from the realised returns" in _captions(app)
+
+
+def test_every_var_method_is_labelled_and_monte_carlo_shows_not_run():
+    app = _happy_page()
+
+    tail = _tail_table(app)
+    for method in ("Historical", "Monte Carlo (Parametric / Bootstrap)", "Monte Carlo (GARCH)"):
+        assert method in tail
+    assert ">Not run</td>" in tail
+    assert "Max drawdown" in tail
+
+
+def test_the_tail_table_follows_the_before_costs_toggle():
+    app = _happy_page()
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+
+    basis.set_value("Before costs").run()
+
+    assert not app.exception
+    assert "Not run" in _tail_table(app)
+
+
+def test_the_caption_explains_that_not_run_is_not_zero_risk():
+    assert "not a zero risk" in _captions(_happy_page())
 
 
 def test_the_cumulative_return_chart_is_drawn_beside_the_weights_chart():
@@ -327,7 +360,7 @@ def test_the_cumulative_return_chart_is_drawn_beside_the_weights_chart():
 def test_without_active_models_the_page_explains_what_will_appear():
     app = _page(_committed())
 
-    assert any("against the equal-weight benchmark appear here" in t for t in _infos(app))
+    assert any("performance against the equal-weight benchmark" in t for t in _infos(app))
     assert not [m for m in app.markdown if '<table class="fe-table"' in m.value]
 
 
@@ -338,3 +371,58 @@ def test_the_no_trade_band_is_explained_with_the_share_of_rebalances_it_held():
     captions = _captions(app)
     assert "were held by the no-trade band." in captions
     assert "Held: within the no-trade band." in captions or "no-trade band of ±" in captions
+
+
+# --- FYP-20 / FYP-52: is the outperformance statistically significant? --------------
+
+_VERDICTS = (
+    "Statistically significant at 95% confidence",
+    "Significantly worse than the benchmark at 95% confidence",
+    "Not statistically significant",
+    "Cannot be tested",
+)
+
+
+def _markdown(app: AppTest) -> str:
+    return " ".join(m.value for m in app.markdown)
+
+
+def test_the_spread_t_statistic_is_shown_with_a_plain_language_verdict():
+    app = _happy_page()
+
+    assert not app.exception
+    text = _markdown(app)
+    assert "Is the outperformance genuine?" in text
+    assert re.search(r"Spread t-statistic.*t = (-?\d+\.\d\d|—)", text)
+    assert sum(verdict in text for verdict in _VERDICTS) == 1
+
+
+def test_the_significance_caption_says_how_the_test_was_run():
+    captions = _captions(_happy_page())
+
+    assert "Paired test on" in captions or "no difference to test" in captions
+    assert "After costs, the same basis as the table above" in captions
+
+
+def test_the_t_statistic_follows_the_before_costs_toggle():
+    app = _happy_page()
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+    basis.set_value("Before costs").run()
+
+    assert not app.exception
+    assert "Before costs, the same basis as the table above" in _captions(app)
+
+
+def test_the_t_statistic_explains_itself_on_hover():
+    import glossary
+
+    hint = html.escape(glossary.term("Spread t-statistic"), quote=True)
+    assert hint in _markdown(_happy_page())
+
+
+def test_without_performance_data_the_page_guides_instead_of_testing():
+    app = _page(_committed())
+
+    assert not app.exception
+    assert any("statistically significant appear here" in t for t in _infos(app))
+    assert "Spread t-statistic" not in _markdown(app)

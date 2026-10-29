@@ -9,12 +9,21 @@ import pytest
 from forecasting_engine.portfolio.performance import max_drawdown
 from forecasting_engine.risk.tail import (
     HISTORICAL,
+    TAIL_METHODS,
     VAR_CONFIDENCES,
     VAR_WINDOW,
     breaches,
     historical_tail_risk,
     historical_var,
 )
+
+
+def test_every_method_the_view_reports_is_listed_historical_first():
+    assert TAIL_METHODS == (
+        HISTORICAL,
+        "Monte Carlo (Parametric / Bootstrap)",
+        "Monte Carlo (GARCH)",
+    )
 
 
 def _series(values) -> pd.Series:

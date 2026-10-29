@@ -9,20 +9,47 @@ backtest's numbers most often go quietly wrong, so each is a deliberate choice:
 - downside deviation is the root mean squared shortfall below the risk-free rate
   over *every* day, gains counting as zero, not over the losing days alone;
 - drawdown is measured from the starting value, so a loss on the first day counts.
+
+Whether one portfolio's outperformance of another is more than luck (FYP-52) is a
+paired test on their daily difference, with a Newey-West standard error: a day's
+difference is often related to the days around it, and treating each day as an
+independent draw would overstate how sure the test can be.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from enum import StrEnum
 
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
+
+from forecasting_engine.validation.gates import SIGNIFICANCE_T_GATE
 
 TRADING_DAYS_PER_YEAR: int = 252
 
 RISK_FREE_RATE: float = 0.0
 """Annual. A working default: the app holds no cash-rate series to take it from."""
+
+SIGNIFICANCE_CONFIDENCE: float = 0.95
+"""The confidence a significant verdict states. The cut-off itself is the sponsor's
+t-statistic bar, ``validation.gates.SIGNIFICANCE_T_GATE`` (2), the one every model
+is gated on: beyond ±2 is about 95.4% two-sided, which the verdict rounds to 95%."""
+
+
+class Significance(StrEnum):
+    """The spread t-statistic's verdict, read against ``SIGNIFICANCE_T_GATE``."""
+
+    OUTPERFORMS = "outperforms"
+    """Significantly better than the baseline."""
+    UNDERPERFORMS = "underperforms"
+    """Significantly worse than the baseline."""
+    NOT_SIGNIFICANT = "not significant"
+    """The difference could be noise."""
+    UNDEFINED = "undefined"
+    """Too few days, or a difference that never varies, so no test is possible."""
 
 
 @dataclass(frozen=True)
@@ -45,6 +72,17 @@ class RelativeMetrics:
     """Annualised standard deviation of the daily difference in returns."""
     information_ratio: float
     """Annualised mean daily difference over the tracking error."""
+    spread_t: float = float("nan")
+    """Paired t-statistic of the mean daily difference, on a Newey-West standard
+    error. NaN when it can't be computed."""
+    spread_t_lags: int = 0
+    """Days of neighbouring correlation the Newey-West standard error allows for."""
+    days: int = 0
+    """Daily differences the test was run on."""
+
+    @property
+    def significance(self) -> Significance:
+        return significance(self.spread_t)
 
 
 def performance(
@@ -100,10 +138,51 @@ def relative(
         raise ValueError("a portfolio and its baseline must cover the same days")
     active = (portfolio - baseline).to_numpy(dtype=float)
     tracking_error = float(np.std(active, ddof=1)) * math.sqrt(periods_per_year)
+    lags = newey_west_lags(len(active))
     return RelativeMetrics(
         tracking_error=tracking_error,
         information_ratio=_ratio(float(np.mean(active)) * periods_per_year, tracking_error),
+        spread_t=spread_t_stat(active, lags=lags),
+        spread_t_lags=lags,
+        days=len(active),
     )
+
+
+def newey_west_lags(days: int) -> int:
+    """Newey and West's (1994) rule of thumb, ``⌊4 · (days / 100)^(2/9)⌋``: more lags
+    for a longer series, growing slowly. 1,000 days gives 6."""
+    if days < 1:
+        return 0
+    return math.floor(4 * (days / 100) ** (2 / 9))
+
+
+def spread_t_stat(active: np.ndarray, *, lags: int) -> float:
+    """t-statistic of the mean of ``active``, the daily difference between two
+    portfolios, against zero: the mean over its Newey-West standard error with
+    ``lags`` lags. Regressing the difference on a constant alone gives exactly
+    that, so the test is statsmodels' HAC estimate of the constant.
+
+    NaN with fewer than three days, or when the difference never varies (two
+    identical portfolios), where a standard error of zero would make t meaningless.
+    """
+    d = np.asarray(active, dtype=float)
+    d = d[np.isfinite(d)]
+    if len(d) < 3 or np.ptp(d) == 0:
+        return float("nan")
+    fit = sm.OLS(d, np.ones((len(d), 1))).fit(cov_type="HAC", cov_kwds={"maxlags": lags})
+    return float(fit.tvalues[0])
+
+
+def significance(t: float, threshold: float = SIGNIFICANCE_T_GATE) -> Significance:
+    """Whether ``t`` is strictly beyond ``±threshold``, and which way — the same
+    strict "t > 2" the model gate applies."""
+    if t != t:  # NaN
+        return Significance.UNDEFINED
+    if t > threshold:
+        return Significance.OUTPERFORMS
+    if t < -threshold:
+        return Significance.UNDERPERFORMS
+    return Significance.NOT_SIGNIFICANT
 
 
 def _ratio(numerator: float, denominator: float) -> float:
