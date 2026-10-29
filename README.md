@@ -121,6 +121,10 @@ hosting step is needed.
 - **Tail risk** — historical one-day VaR and CVaR at 95% and 99% beside maximum
   drawdown, for both portfolios; the Monte Carlo methods are listed as "Not run"
   until computed.
+- **Monte Carlo simulation** — simulates the next forecast horizon from the latest
+  weights, centred on the active models' forecasts, by historical bootstrap or a
+  fitted normal. It fills the Monte Carlo rows of the tail-risk table and adds VaR,
+  CVaR and maximum drawdown over the whole horizon. GARCH is not built yet.
 
 **Scenarios**
 

@@ -86,6 +86,12 @@ DOCUMENTED = {
     ("forecasting_engine.portfolio.optimize", "RISK_AVERSION_SCALE"),
     ("forecasting_engine.portfolio.optimize", "DEFAULT_RISK_LEVEL"),
     ("forecasting_engine.portfolio.optimize", "DEFAULT_WEIGHT_BOUNDS"),
+    ("forecasting_engine.risk.monte_carlo", "SAMPLING_METHODS"),
+    ("forecasting_engine.risk.monte_carlo", "DEFAULT_PATHS"),
+    ("forecasting_engine.risk.monte_carlo", "MIN_PATHS"),
+    ("forecasting_engine.risk.monte_carlo", "MAX_PATHS"),
+    ("forecasting_engine.risk.monte_carlo", "SEED"),
+    ("forecasting_engine.risk.monte_carlo", "_CHUNK_PATHS"),
     ("forecasting_engine.scenario.shock", "MAX_RANGE_MULTIPLE"),
     ("forecasting_engine.scenario.shock", "POSITIVE_TRANSFORMS"),
 }

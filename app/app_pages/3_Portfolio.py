@@ -24,6 +24,7 @@ from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio import optimize
 from forecasting_engine.portfolio.backtest import (
+    BASELINE_WEIGHTS,
     REBALANCE_FREQUENCY,
     BacktestDataError,
     run_backtest,
@@ -35,10 +36,12 @@ from forecasting_engine.reporting.portfolio_comparison import (
     PORTFOLIO_LABELS,
     comparison_rows,
     cumulative_paths,
+    monte_carlo_rows,
     significance_summary,
     tail_rows,
 )
-from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, MONTE_CARLO_GARCH, TAIL_METHODS
+from forecasting_engine.risk import monte_carlo
+from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, TAIL_METHODS
 from forecasting_engine.store import active_model
 from model_settings import EMBARGO_DAYS, TRAIN_WINDOW
 
@@ -360,10 +363,76 @@ TAIL_TERMS = {
     "Max drawdown": "Max drawdown",
     HISTORICAL: "Historical tail risk",
     MONTE_CARLO: MONTE_CARLO,
-    MONTE_CARLO_GARCH: MONTE_CARLO_GARCH,
 }
 
-rows_by_method = tail_rows(backtest, basis)
+# FYP-36: the Monte Carlo rows of this table come from the simulation run below it.
+# Its button runs the simulation in a callback, before this script, so the table
+# shows a new result on the same click that asked for it.
+SIMULATION_KEY = "monte_carlo_result"
+SIMULATION_ERROR_KEY = "monte_carlo_error"
+METHOD_KEY = "monte_carlo_method"
+PATHS_KEY = "monte_carlo_paths"
+
+# Everything the figures depend on: a result simulated from any other inputs is
+# not shown as if it were this one's.
+allocation = (
+    str(dataset_fingerprint(merged)),
+    equity_active.set_at,
+    bond_active.set_at,
+    latest_date,
+    float(latest[EQUITY]),
+)
+
+
+def _simulation_inputs() -> tuple:
+    return (
+        *allocation,
+        st.session_state.get(METHOD_KEY, monte_carlo.BOOTSTRAP),
+        int(st.session_state.get(PATHS_KEY, monte_carlo.DEFAULT_PATHS)),
+    )
+
+
+def _simulate() -> None:
+    st.session_state.pop(SIMULATION_ERROR_KEY, None)
+    inputs = _simulation_inputs()
+    forecasts = {role: active_model.get_active_model_forecast(role) for role in (EQUITY, BOND)}
+    try:
+        base_case = optimize.expected_returns(pd.DatetimeIndex([latest_date]), forecasts).iloc[0]
+        result = monte_carlo.simulate(
+            monte_carlo.history_window(prices, latest_date, window=TRAIN_WINDOW),
+            base_case,
+            {"optimised": latest, "baseline": pd.Series(BASELINE_WEIGHTS)},
+            horizon=equity_active.horizon,
+            method=inputs[-2],
+            paths=inputs[-1],
+        )
+    except monte_carlo.MonteCarloDataError as exc:
+        st.session_state[SIMULATION_ERROR_KEY] = str(exc)
+        return
+    st.session_state[SIMULATION_KEY] = (inputs, result)
+
+
+stored_simulation = st.session_state.get(SIMULATION_KEY)
+simulated = (
+    stored_simulation[1]
+    if stored_simulation is not None and stored_simulation[0] == _simulation_inputs()
+    else None
+)
+
+rows_by_method = tail_rows(
+    backtest,
+    basis,
+    # No trading inside a simulated path, so before and after costs are the same.
+    simulated=None
+    if simulated is None
+    else {
+        MONTE_CARLO: {
+            (portfolio, b): monte_carlo.as_tail_risk(simulated, portfolio)
+            for portfolio in PORTFOLIO_LABELS
+            for b in BASES.values()
+        }
+    },
+)
 ran = {row.method for row in rows_by_method if row.optimised != NOT_RUN}
 lozenges = " ".join(
     ui.lozenge(html.escape(m), "success")
@@ -420,5 +489,111 @@ st.caption(
     )
     + ' Methods marked "Not run" have not been computed for this backtest, so a missing '
     "figure is not a zero risk. Monte Carlo figures, once run, are simulated and answer a "
-    "different question from the historical ones."
+    "different question from the historical ones"
+    + (
+        ": they are the first day of each simulated path below, which trades nothing, so "
+        "they are the same before and after costs."
+        if simulated is not None
+        else "."
+    )
 )
+
+
+# --- FYP-36: Monte Carlo VaR, CVaR and drawdown over the next horizon ---------------
+
+SAMPLING_LABELS = {
+    monte_carlo.BOOTSTRAP: "Bootstrap (historical days)",
+    monte_carlo.PARAMETRIC: "Parametric (fitted normal)",
+}
+SIMULATED_TERMS = {
+    "Mean": "Mean simulated return",
+    f"{equity_active.horizon}-day VaR": "Simulated VaR",
+    f"{equity_active.horizon}-day CVaR": "Simulated CVaR",
+    "Max drawdown": "Simulated max drawdown",
+}
+
+st.markdown(
+    ui.eyebrow(
+        f"Monte Carlo over the next {equity_active.horizon} days",
+        glossary.term("Simulated tail risk"),
+    ),
+    unsafe_allow_html=True,
+)
+st.segmented_control(
+    "Sampling method",
+    list(SAMPLING_LABELS),
+    default=monte_carlo.BOOTSTRAP,
+    format_func=SAMPLING_LABELS.get,
+    required=True,
+    key=METHOD_KEY,
+    help=glossary.term("Sampling method"),
+)
+with st.expander("Advanced settings"):
+    st.number_input(
+        "Simulated paths",
+        min_value=monte_carlo.MIN_PATHS,
+        max_value=monte_carlo.MAX_PATHS,
+        value=monte_carlo.DEFAULT_PATHS,
+        step=10_000,
+        key=PATHS_KEY,
+        help=glossary.term("Simulated paths"),
+    )
+st.button("Run simulation", type="primary", on_click=_simulate)
+
+if SIMULATION_ERROR_KEY in st.session_state:
+    st.warning(
+        f"The simulation could not run: {st.session_state[SIMULATION_ERROR_KEY]}",
+        icon=":material/warning:",
+    )
+elif stored_simulation is None:
+    st.caption(
+        f"Simulates the next {equity_active.horizon} trading days from the latest weights, "
+        "for both portfolios, and fills in the Monte Carlo rows above. Choose a sampling "
+        "method, then run it."
+    )
+elif simulated is None:
+    st.info(
+        "The settings or the allocation have changed since the last simulation. Run it "
+        "again to see figures for these.",
+        icon=":material/info:",
+    )
+else:
+
+    def _simulated_cell(metric: str) -> str:
+        term = next(t for prefix, t in SIMULATED_TERMS.items() if metric.startswith(prefix))
+        hint = html.escape(glossary.term(term), quote=True)
+        return (
+            f'<td title="{hint}">{html.escape(metric)}'
+            f'<span class="fe-eyebrow-help" title="{hint}">i</span></td>'
+        )
+
+    simulated_header = "".join(
+        f"<th>{html.escape(h)}</th>"
+        for h in ("Measure", PORTFOLIO_LABELS["optimised"], PORTFOLIO_LABELS["baseline"])
+    )
+    simulated_body = "".join(
+        f"<tr>{_simulated_cell(row.metric)}<td>{row.optimised}</td><td>{row.baseline}</td></tr>"
+        for row in monte_carlo_rows(simulated)
+    )
+    st.markdown(
+        f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{simulated_header}'
+        f"</tr></thead><tbody>{simulated_body}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
+    base = simulated.forecasts
+    st.caption(
+        f"{simulated.paths:,} paths of the next {simulated.horizon} trading days from "
+        f"{simulated.as_of:%d %b %Y}, each portfolio held at its weights then and left to "
+        f"drift, with no trading costs. The paths centre on the active models' forecasts "
+        f"({equity_name} {base[EQUITY]:+.2%}, {bond_name} {base[BOND]:+.2%} over "
+        f"{simulated.horizon} days) and draw their daily moves "
+        + (
+            "by resampling whole days"
+            if simulated.method == monte_carlo.BOOTSTRAP
+            else "from a normal distribution fitted to the days"
+        )
+        + f" from {simulated.history_start:%d %b %Y} to {simulated.as_of:%d %b %Y} "
+        f"({simulated.history_days} trading days). VaR and CVaR here are losses over the "
+        f"whole {simulated.horizon} days; the one-day Monte Carlo rows above are the first "
+        "day of these same paths. Both portfolios are simulated on the same paths."
+    )

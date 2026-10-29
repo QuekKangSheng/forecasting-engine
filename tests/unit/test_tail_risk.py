@@ -19,11 +19,7 @@ from forecasting_engine.risk.tail import (
 
 
 def test_every_method_the_view_reports_is_listed_historical_first():
-    assert TAIL_METHODS == (
-        HISTORICAL,
-        "Monte Carlo (Parametric / Bootstrap)",
-        "Monte Carlo (GARCH)",
-    )
+    assert TAIL_METHODS == (HISTORICAL, "Monte Carlo (Parametric / Bootstrap)")
 
 
 def _series(values) -> pd.Series:
