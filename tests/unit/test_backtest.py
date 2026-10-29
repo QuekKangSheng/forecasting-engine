@@ -301,3 +301,32 @@ def test_each_path_carries_its_historical_tail_risk_beside_its_drawdown():
         assert [level.var for level in risk.levels] == [
             historical_var(path, level.confidence)[0] for level in risk.levels
         ]
+
+
+# --- FYP-52: the spread t-statistic comes out of the same backtest --------------------
+
+
+def _long_prices(n: int = 300) -> dict[TargetRole, pd.Series]:
+    rng = np.random.default_rng(3)
+    return _prices(rng.normal(0.0008, 0.01, n), rng.normal(0.0001, 0.003, n))
+
+
+def test_the_spread_t_statistic_is_produced_with_the_other_metrics_on_both_bases():
+    prices = _long_prices()
+    result = run_backtest(prices, _schedule([prices[EQUITY].index[0]], [0.8]))
+
+    for basis in ("gross", "net"):
+        assert ("optimised", basis) in result.metrics
+        relative = result.relative[basis]
+        assert math.isfinite(relative.spread_t)
+        assert relative.days == len(result.optimised.gross)
+
+
+def test_new_weights_from_a_new_optimisation_give_a_new_t_statistic():
+    prices = _long_prices()
+    start = prices[EQUITY].index[0]
+
+    tilted = run_backtest(prices, _schedule([start], [0.8]))
+    retuned = run_backtest(prices, _schedule([start], [0.3]))
+
+    assert tilted.relative["net"].spread_t != retuned.relative["net"].spread_t

@@ -10,7 +10,12 @@ import pytest
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.backtest import BacktestDataError, run_backtest
 from forecasting_engine.portfolio.optimize import weight_schedule
-from forecasting_engine.reporting.portfolio_comparison import comparison_rows, tail_rows
+from forecasting_engine.reporting.portfolio_comparison import (
+    NOT_RUN,
+    comparison_rows,
+    tail_rows,
+)
+from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, MONTE_CARLO_GARCH
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 
@@ -64,6 +69,12 @@ def test_optimised_weights_flow_from_signals_through_the_backtest_to_the_compari
     assert any(row.metric.startswith("1-day VaR") for row in tail)
     assert any(row.metric.startswith("1-day CVaR") for row in tail)
     assert any("breach rate" in row.metric for row in tail)
+    historical = [row for row in tail if row.method == HISTORICAL]
+    assert all(row.optimised.endswith("%") for row in historical if row.metric.startswith("1-day"))
+    for method in (MONTE_CARLO, MONTE_CARLO_GARCH):
+        assert {(row.optimised, row.baseline) for row in tail if row.method == method} == {
+            (NOT_RUN, NOT_RUN)
+        }
 
 
 def test_a_real_schedule_fed_a_price_series_missing_an_index_raises_before_the_comparison_table():
