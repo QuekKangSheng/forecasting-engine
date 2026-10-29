@@ -345,6 +345,12 @@ TERMS: Mapping[str, str] = {
         "it, the dataset that run saw, and the Bloomberg exports that dataset was merged "
         "from, each identified by the hash of its exact contents."
     ),
+    "Portfolio run": (
+        "One optimiser-and-backtest result, recorded the first time the Portfolio page "
+        "showed it. Its key is a fingerprint of everything the result depends on, so "
+        "viewing the same settings again records nothing new, and any change (a "
+        "slider, an active model, the data, the code) is a new row."
+    ),
     "Config key": (
         "Runs with the same settings on the same data share a key. More than one means "
         "the same fit was asked for again, for example after the code changed: compare "

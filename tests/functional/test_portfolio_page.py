@@ -12,9 +12,10 @@ from streamlit.testing.v1 import AppTest
 import bloomberg_extraction_panel
 import model_settings
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
-from forecasting_engine.store import active_model
+from forecasting_engine.store import active_model, portfolio_runs
 from forecasting_engine.validation.crash import CrashDiagnostics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -426,3 +427,39 @@ def test_without_performance_data_the_page_guides_instead_of_testing():
     assert not app.exception
     assert any("statistically significant appear here" in t for t in _infos(app))
     assert "Spread t-statistic" not in _markdown(app)
+
+
+# --- every distinct result recorded once (store/portfolio_runs) ------------------------
+
+
+def _recorded() -> int:
+    return len(portfolio_runs.list_portfolio_runs())
+
+
+def test_viewing_the_page_records_its_result_once_however_often_it_reruns():
+    app = _happy_page()
+    assert _recorded() == 1
+
+    app.run()
+    app.run()
+
+    assert _recorded() == 1
+
+
+def test_a_new_setting_is_a_new_run_and_going_back_to_one_seen_adds_nothing():
+    app = _happy_page()
+    (scale,) = [s for s in app.select_slider if s.label == "Risk aversion"]
+
+    scale.set_value(5).run()
+    assert _recorded() == 2
+
+    scale.set_value(3).run()
+    assert _recorded() == 2
+
+
+def test_a_recorded_run_names_the_data_and_settings_it_came_from():
+    _happy_page()
+
+    (run,) = portfolio_runs.list_portfolio_runs()
+    assert run.dataset_sha256 == frame_sha256(_committed())
+    assert run.inputs["risk_aversion"] == 10.0 and run.inputs["bounds"] == [0.2, 0.8]

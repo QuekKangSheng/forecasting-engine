@@ -1,6 +1,6 @@
 # Run history
 
-Every model fit the app makes is recorded in DuckDB (`data/forecasting.duckdb`) by
+Every model fit the app makes, and every distinct portfolio result, is recorded in DuckDB (`data/forecasting.duckdb`) by
 `src/forecasting_engine/store/runs.py`: what was fitted, on which data, under which
 settings and code version, how long it took, and what came out. Failures are recorded
 too. The **Run history** page lists the runs and opens any one of them.
@@ -51,6 +51,36 @@ active_models (…, run_id)                                            ← store
 - **Settings round-trip.** Settings are stored as JSON, so tuples come back as lists.
   `record_run` returns the record as it will read back, never a version that only
   existed in memory.
+
+## Portfolio runs
+
+The Portfolio page recomputes the optimiser and the backtest on every view, so a
+"run" there isn't a click: logging each computation would log the same result many
+times. `store/portfolio_runs.py` records each **distinct** result once.
+
+- **A deterministic key.** `run_key` is the SHA-256 of everything the result depends
+  on, as canonical JSON (sorted keys, no spaces, datetimes as ISO text): the data's
+  content hash, both active models (their run ids and when they were set), the
+  windows, the risk aversion and limits, the trading costs and the code version.
+  The same inputs give the same key on any machine. Leave out the code version, and a
+  change in how results are computed would hide behind the first row stored for
+  those inputs.
+- **Idempotent writes.** The run is inserted with `ON CONFLICT DO NOTHING RETURNING
+  run_key`. A new key comes back and its metrics and weight schedule are written in
+  the same transaction; a repeat comes back empty and writes nothing. So recording on
+  every page view is safe: a hundred views of the same settings are one row, a slider
+  moved and moved back adds one.
+- **Insert, not upsert.** `DO UPDATE SET last_seen = now()` would record when a result
+  was last viewed, but by rewriting rows; `DO NOTHING` keeps the log append-only.
+- **Store what can't be recomputed.** Metrics and the weight schedule are kept; the
+  daily return paths (about 8,000 rows a run) follow from the inputs and the stored
+  data, so they aren't.
+
+| Table | One row per | Key |
+|---|---|---|
+| `portfolio_runs` | distinct set of inputs | `run_key` |
+| `portfolio_run_metrics` | run × portfolio × basis × metric | `(run_key, portfolio, basis, metric)` |
+| `portfolio_run_weights` | run × rebalance | `(run_key, date)` |
 
 ## Lineage
 
@@ -158,6 +188,21 @@ LEFT JOIN (
 ORDER BY a.role, s.role DESC, u.filename;
 ```
 
+Which portfolio settings beat the 50/50 benchmark after costs, best first:
+
+```sql
+SELECT p.inputs ->> 'risk_aversion' AS risk_aversion,
+       p.inputs -> 'bounds' ->> 0 AS min_weight,
+       max(m.value) FILTER (WHERE m.portfolio = 'optimised') AS net_sharpe,
+       max(m.value) FILTER (WHERE m.portfolio = 'baseline') AS baseline_net_sharpe
+FROM portfolio_runs AS p
+JOIN portfolio_run_metrics AS m USING (run_key)
+WHERE m.basis = 'net' AND m.metric = 'sharpe'
+GROUP BY ALL
+HAVING net_sharpe > baseline_net_sharpe
+ORDER BY net_sharpe DESC;
+```
+
 How often each model fails, and how long it takes:
 
 ```sql
@@ -188,9 +233,9 @@ ORDER BY direction_hit_rate DESC;
 
 ## Not covered yet
 
-- **Portfolio runs.** The optimiser and backtest recompute on every page view rather
-  than on a button, so recording them needs a deduplication key first, or every
-  slider move would be a "run".
+- **Schema versions.** Tables change with `CREATE … IF NOT EXISTS` and `ALTER TABLE …
+  ADD COLUMN IF NOT EXISTS`, which is enough for added columns but can't rename or
+  reshape one. A migrations table, applying numbered changes in order, would.
 - **Older records.** Datasets committed before exports were logged have no
   `dataset_sources` rows, and models set active before `run_id` existed have none;
   both stay as they are rather than being guessed at.
