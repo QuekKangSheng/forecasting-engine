@@ -280,6 +280,19 @@ TERMS: Mapping[str, str] = {
         "It is the loss an investor who bought at the worst moment would have "
         "sat through, so a smaller (less negative) figure is better."
     ),
+    "Drawdown": (
+        "How far below its highest value so far a portfolio stands on each day, "
+        "back to zero whenever it reaches a new high. The lowest point of the line "
+        "is the max drawdown; how long the line stays below zero shows how long a "
+        "loss took to win back."
+    ),
+    "Rolling volatility": (
+        "How widely daily returns swung over the previous three months or so, "
+        "scaled to a year and recalculated every day. Drawn over the whole backtest "
+        "it shows when risk rose or fell, not just its average: a portfolio whose "
+        "line stays below the equity index's through a sell-off really was less "
+        "exposed when it mattered."
+    ),
     "Equal-weight benchmark": (
         "Half in the equity index and half in the bond index, reset to 50/50 on "
         "the last trading day of each month. The optimised portfolio has to beat "

@@ -482,8 +482,20 @@ same weights at every rebalance is the fixed-weight case.
      shortfall below the risk-free rate across *every* day (a gain counts as no
      shortfall), not across losing days alone;
    - maximum drawdown: the worst fall from a running peak of the compounded
-     path, with the starting value as the first peak;
+     path, with the starting value as the first peak. It is the deepest point of
+     the drawdown series (FYP-258), each day's fall below that running peak. The
+     Portfolio page charts it for each index, which carries no costs, and for the
+     optimised portfolio on the gross/net basis shown, recomputed whenever the
+     weight schedule changes (FYP-259, FYP-260);
    - Calmar: annual return over the size of the maximum drawdown;
+   - rolling volatility (FYP-254): at each day, the sample standard deviation of
+     the previous `ROLLING_VOL_WINDOW` days' returns times √`TRADING_DAYS_PER_YEAR`,
+     the annual volatility of that window alone, for each index and the optimised
+     portfolio. 63 days is about three months: long enough that one large day
+     doesn't swing it, short enough that a change of regime shows within weeks. A
+     window whose returns never vary is exactly zero. The indices carry no costs,
+     so only the portfolio's line follows the gross/net basis. The Portfolio page
+     charts it, recomputed whenever the weight schedule changes (FYP-255, FYP-256);
    - tracking error and information ratio of the optimised portfolio against the
      baseline, from the daily difference in their returns;
    - the spread t-statistic (FYP-52): a paired test of whether the mean daily
@@ -503,8 +515,9 @@ same weights at every rebalance is the fixed-weight case.
    is undefined rather than infinite.
 
 The result is one `BacktestResult`: both daily return paths, gross and net, each
-rebalance's weights, turnover and cost, every metric, the historical tail risk
-of §16, the period, the rebalance frequency and the active models. It is the
+index's own daily returns over the same days, each rebalance's weights, turnover
+and cost, every metric, the historical tail risk of §16, the period, the
+rebalance frequency and the active models. It is the
 input for display (FYP-19) and for the risk and significance checks (FYP-56,
 FYP-52).
 
@@ -746,6 +759,7 @@ Values are Python literals as the code holds them.
 | `TRADING_DAYS_PER_YEAR` | `forecasting_engine.portfolio.performance` | `252` |
 | `RISK_FREE_RATE` | `forecasting_engine.portfolio.performance` | `0.0` |
 | `SIGNIFICANCE_CONFIDENCE` | `forecasting_engine.portfolio.performance` | `0.95` |
+| `ROLLING_VOL_WINDOW` | `forecasting_engine.portfolio.performance` | `63` |
 | `BASELINE_WEIGHTS` | `forecasting_engine.portfolio.backtest` | `{"equity": 0.5, "bond": 0.5}` |
 | `DEFAULT_COSTS_BPS` | `forecasting_engine.portfolio.backtest` | `{"equity": 3.0, "bond": 5.0}` |
 | `REBALANCE_FREQUENCY` | `forecasting_engine.portfolio.backtest` | `"monthly"` |

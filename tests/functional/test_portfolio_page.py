@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from streamlit.dataframe_util import convert_arrow_bytes_to_pandas_df
 from streamlit.testing.v1 import AppTest
 
 import bloomberg_extraction_panel
@@ -44,6 +45,13 @@ def short_train_window(monkeypatch):
     """The covariance is estimated over the models' fixed train window (252 days),
     longer than this 60-day fixture."""
     monkeypatch.setattr(model_settings, "TRAIN_WINDOW", 15)
+
+
+@pytest.fixture(autouse=True)
+def short_volatility_window(monkeypatch):
+    """Rolling volatility needs a quarter's returns (63 days) before its first point,
+    longer than this fixture's backtest."""
+    monkeypatch.setattr("forecasting_engine.portfolio.performance.ROLLING_VOL_WINDOW", 5)
 
 
 def _committed() -> pd.DataFrame:
@@ -353,8 +361,89 @@ def test_the_caption_explains_that_not_run_is_not_zero_risk():
 def test_the_cumulative_return_chart_is_drawn_beside_the_weights_chart():
     app = _happy_page()
 
-    # The weights bar chart and the cumulative-return line chart.
-    assert len(app.get("vega_lite_chart")) == 2
+    # The weights bar chart, the cumulative-return, rolling volatility and drawdown
+    # line charts.
+    assert len(app.get("vega_lite_chart")) == 4
+
+
+# --- FYP-255 / FYP-256: the rolling volatility chart ---------------------------------
+
+
+def _line_chart(app: AppTest, value: str):
+    """The line chart whose values are named ``value``."""
+    (chart,) = [c for c in app.get("vega_lite_chart") if value in c.proto.spec]
+    return chart
+
+
+def _line_data(app: AppTest, value: str) -> pd.DataFrame:
+    (dataset,) = _line_chart(app, value).proto.datasets
+    long = convert_arrow_bytes_to_pandas_df(dataset.data.data)
+    return long.pivot(index="date", columns="Series", values=value)
+
+
+def test_rolling_volatility_is_charted_for_both_indices_and_the_optimised_portfolio():
+    app = _happy_page()
+
+    assert not app.exception
+    data = _line_data(app, "Rolling volatility")
+    assert len(data.columns) == 3 and "Optimised" in data.columns
+    assert "S&P 500" in data.columns
+    assert (data > 0).all().all()
+    spec = _line_chart(app, "Rolling volatility").proto.spec
+    assert "%d %b %Y" in spec, "the tooltip gives the exact date"
+    assert "previous 5 trading days' returns" in _captions(app)
+    assert any("Rolling volatility" in m.value for m in app.markdown)
+
+
+@pytest.mark.parametrize("value", ["Rolling volatility", "Drawdown"])
+def test_the_risk_charts_are_recomputed_when_the_risk_aversion_changes(value):
+    app = _happy_page()
+    before = _line_data(app, value)
+    (scale,) = [s for s in app.select_slider if s.label == "Risk aversion"]
+
+    # 5, not 1: in this fixture both 1 and the default 3 push every rebalance to the
+    # 80% cap, the same schedule.
+    scale.set_value(5).run()
+
+    assert not app.exception
+    after = _line_data(app, value)
+    assert not np.allclose(after["Optimised"], before["Optimised"])
+    indices = [c for c in before.columns if c != "Optimised"]
+    pd.testing.assert_frame_equal(after[indices], before[indices])
+
+
+def test_a_backtest_no_longer_than_the_window_explains_why_there_is_no_volatility_chart(
+    monkeypatch,
+):
+    window = "forecasting_engine.portfolio.performance.ROLLING_VOL_WINDOW"
+    monkeypatch.setattr(window, 1000)
+    app = _happy_page()
+    (info,) = [t for t in _infos(app) if "Rolling volatility needs more than 1000" in t]
+    days = int(re.search(r"this backtest has (\d+)", info).group(1))
+
+    # A window of exactly the backtest's length leaves a single point, not a line.
+    monkeypatch.setattr(window, days)
+    app.run()
+
+    assert not app.exception
+    assert any(f"Rolling volatility needs more than {days}" in t for t in _infos(app))
+    assert not [c for c in app.get("vega_lite_chart") if "Rolling volatility" in c.proto.spec]
+
+
+# --- FYP-259 / FYP-260: the drawdown chart -------------------------------------------
+
+
+def test_drawdown_is_charted_for_both_indices_and_the_optimised_portfolio():
+    app = _happy_page()
+
+    assert not app.exception
+    data = _line_data(app, "Drawdown")
+    assert len(data.columns) == 3 and "Optimised" in data.columns
+    assert "S&P 500" in data.columns
+    assert (data <= 0).all().all() and (data < 0).any().all()
+    assert "%d %b %Y" in _line_chart(app, "Drawdown").proto.spec, "the tooltip gives the date"
+    assert "highest value reached so far" in _captions(app)
+    assert any("Drawdown" in m.value for m in app.markdown)
 
 
 def test_without_active_models_the_page_explains_what_will_appear():

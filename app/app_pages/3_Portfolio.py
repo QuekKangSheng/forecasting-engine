@@ -28,6 +28,7 @@ from forecasting_engine.portfolio.backtest import (
     BacktestDataError,
     run_backtest,
 )
+from forecasting_engine.portfolio.performance import ROLLING_VOL_WINDOW
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
 from forecasting_engine.reporting.portfolio_comparison import (
@@ -35,6 +36,8 @@ from forecasting_engine.reporting.portfolio_comparison import (
     PORTFOLIO_LABELS,
     comparison_rows,
     cumulative_paths,
+    drawdown_paths,
+    rolling_volatility_paths,
     significance_summary,
     tail_rows,
 )
@@ -250,7 +253,7 @@ chart = (
     )
     .properties(height=600)
 )
-st.altair_chart(chart, use_container_width=True)
+st.altair_chart(chart, width="stretch")
 
 
 # --- FYP-19: the optimised allocation against the equal-weight benchmark -----------
@@ -331,8 +334,72 @@ st.caption(
     "on every row, drawdown included."
 )
 
-paths = cumulative_paths(backtest, basis) * 100
-st.line_chart(paths, x_label="Date", y_label="Cumulative return (%)")
+def _line_chart(paths: pd.DataFrame, value: str) -> alt.LayerChart:
+    """A line per column of ``paths`` on one time axis, in percent. Hovering or
+    tapping anywhere marks the nearest day on a line and shows its date and value."""
+    long = paths.rename_axis("date").reset_index().melt("date", var_name="Series", value_name=value)
+    nearest = alt.selection_point(nearest=True, on="pointerover", clear="pointerout", empty=False)
+    lines = alt.Chart(long).encode(
+        x=alt.X("date:T", title="Date", axis=alt.Axis(tickCount="year")),
+        y=alt.Y(f"{value}:Q", axis=alt.Axis(format="%")),
+        color=alt.Color("Series:N", legend=alt.Legend(title=None, orient="bottom", labelLimit=0)),
+    )
+    # Vega only shows a line's tooltip within a pixel or two of one of its days,
+    # too fine to tap; invisible points with a nearest-day selection catch any hover.
+    points = (
+        lines.mark_point(filled=True)
+        .encode(
+            opacity=alt.condition(nearest, alt.value(1), alt.value(0)),
+            tooltip=[
+                alt.Tooltip("date:T", title="Date", format="%d %b %Y"),
+                "Series:N",
+                alt.Tooltip(f"{value}:Q", format=".2%"),
+            ],
+        )
+        .add_params(nearest)
+    )
+    # Canvas, not Streamlit's default SVG: SVG makes every day's point a page element,
+    # thousands per chart, which stalls scrolling and every redraw.
+    canvas = {"embedOptions": {"renderer": "canvas"}}
+    return (lines.mark_line() + points).properties(usermeta=canvas)
+
+
+cumulative = cumulative_paths(backtest, basis)
+st.altair_chart(_line_chart(cumulative, "Cumulative return"), width="stretch")
+
+# --- FYP-254 / FYP-255: how risk has moved over the backtest ------------------------
+
+st.markdown(
+    ui.eyebrow("Rolling volatility", glossary.term("Rolling volatility")),
+    unsafe_allow_html=True,
+)
+index_names = {EQUITY: equity_name, BOND: bond_name}
+volatility = rolling_volatility_paths(backtest, basis, index_names, window=ROLLING_VOL_WINDOW)
+if len(volatility) < 2:  # a line needs two points
+    st.info(
+        f"Rolling volatility needs more than {ROLLING_VOL_WINDOW} trading days of returns, "
+        f"and this backtest has {len(backtest.optimised.gross)}, so there is no chart yet.",
+        icon=":material/info:",
+    )
+else:
+    st.altair_chart(_line_chart(volatility, "Rolling volatility"), width="stretch")
+    st.caption(
+        f"Annualised standard deviation of the previous {ROLLING_VOL_WINDOW} trading days' "
+        f"returns, at each day. Each index is held alone, with no trading costs; the "
+        f"optimised portfolio is {basis_label.lower()}, the same basis as the table above."
+    )
+
+# --- FYP-258 / FYP-259: how far below its peak each line has stood -------------------
+
+st.markdown(ui.eyebrow("Drawdown", glossary.term("Drawdown")), unsafe_allow_html=True)
+drawdowns = drawdown_paths(backtest, basis, index_names)
+st.altair_chart(_line_chart(drawdowns, "Drawdown"), width="stretch")
+st.caption(
+    "Fall from the highest value reached so far, at each day, counting the start of the "
+    "backtest as the first high. Each index is held alone, with no trading costs; the "
+    f"optimised portfolio is {basis_label.lower()}, and its lowest point is the max "
+    "drawdown in the table above."
+)
 
 # --- FYP-20 / FYP-52: is the outperformance more than noise? ------------------------
 
