@@ -312,10 +312,10 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   - SHAP (mean |SHAP value| per signal) is computed once, for the winning
     library's last fold, refitted with that fold's tune.
 
-### 9.1 Research model (fixed inputs)
+### 9.1 Polynomial – fixed economic inputs
 
-`models/sign_ruled.run_sign_ruled_polynomial`, the row "Research model (fixed
-inputs)", Equity tab only, with its own checkbox. It is the model the October 2026
+`models/sign_ruled.run_sign_ruled_polynomial`, the row "Polynomial – fixed
+economic inputs", Equity tab only, with its own checkbox. It is the model the October 2026
 model research chose from about 300 trials, run exactly as origin/main ran it as
 its derived polynomial (`cbd1a64`): a shrinkage fit
 (`SignRuledPolynomial`) on four fixed inputs, `ECONOMIC_INPUTS` (HY OAS, IG OAS,
@@ -361,6 +361,26 @@ any model, so the optimiser can use either it or the derived polynomial. The
 active-model store saves its forecast and each date's baseline, its fold's
 training-mean target, so its signal is `forecast − baseline`
 (`harness.signal_forecasts`), as for every model.
+
+### 9.2 Feature attribution (SHAP) for polynomial models
+
+`reporting.shap_attribution.polynomial_shap`. Every polynomial-shaped row
+(derived, fixed-economic-inputs, user-supplied, and Fama-French) gets a mean
+|SHAP value| per signal, shown beside its fitted terms in the same table
+format the boosted models already use (§9's last bullet). Unlike a boosted
+model's sampled SHAP, a polynomial's is computed exactly, since its equation
+is known: each term's value decomposes across its distinct signals by the
+closed-form Shapley value for a product, relative to each factor's mean over
+the displayed fold's own training rows (`validation.splitters.
+last_fold_train_window`, so nothing is refitted). A plain linear term reduces
+to coefficient × (value − training mean); a power of one signal (`x²`)
+attributes wholly to that signal; an interaction splits between its signals so
+their shares always sum back to the term's own contribution. Terms sharing a
+signal (e.g. `x` and `x²`) are summed into one row. `None` where the function
+has no terms to attribute to a signal (a user formula that divides by a
+signal, or expands past 50 terms). `tests/unit/test_shap_attribution.py`
+checks the degree-1 case against the closed form directly and the interaction
+case's conservation property (the two signals' shares sum to the term's own).
 
 ## 10. Metrics
 
@@ -591,26 +611,32 @@ signals into the weight schedule step 14 backtests.
 3. **Covariance.** Daily equity/bond return covariance over the
    `TRAIN_WINDOW` (504) dates ending `EMBARGO_DAYS` before the rebalance and purged like a
    training window, scaled to `h` days (`covariance_at_rebalance`).
-4. **Weights.** The benchmark-relative mean-variance problem: maximise
-   `a·s − λ/2 · a'Σa`, where `a` is the tilt from `BASELINE_WEIGHTS`, `s` the
-   two signals and `Σ` the covariance. With two assets,
-   `w_equity = 0.5 + (s_equity − s_bond) / (λ · D)`, with
-   `D = σ_e² − 2σ_eb + σ_b²`, then clipped to the bounds (default
-   `DEFAULT_WEIGHT_BOUNDS`, set on the page as a minimum in each index). Risk
-   is how far the portfolio strays from 50/50, so with no signal the portfolio is
-   the benchmark, and when `D` is zero the benchmark is kept.
-5. **Risk aversion.** Chosen on the sponsor's 1-5 scale, 1 most risk-loving and
-   5 most risk-averse, and mapped to `λ` by `RISK_AVERSION_SCALE` (default
-   `DEFAULT_RISK_LEVEL`). Each step roughly triples `λ`. A working calibration:
-   at a 10-day horizon and a 252-day window on the Sep 2026 data, level 1 sits at
-   a bound on most rebalances where a signal is present, and level 5 keeps nine
-   rebalances in ten within about 12 points of 50/50.
+4. **Weights.** The starting-weight-relative mean-variance problem: maximise
+   `a·s − k/2 · a'Σa`, where `a` is the tilt from the risk level's starting
+   weight, `s` the two signals, `Σ` the covariance, and `k` (`TILT_STRENGTH`)
+   one fixed tilt strength shared by every level. With two assets,
+   `w_equity = start + (s_equity − s_bond) / (k · D)`, with
+   `D = σ_e² − 2σ_eb + σ_b²`, then clipped to the bounds (`DEFAULT_WEIGHT_BOUNDS`,
+   set on the page as a minimum in each index). With no signal the portfolio
+   sits at `start`; when `D` is zero `start` is kept. `BASELINE_WEIGHTS` — the
+   fixed 50/50 the benchmark comparison uses — is separate and never changes.
+5. **Risk level.** 1-5 (`RISK_LEVELS`), 1 risk-loving to 5 risk-averse, mapped
+   to `start` by `starting_weight_for(level, bounds)`: level 1 at the upper
+   bound, 5 at the lower, 3 at the exact midpoint, 2 and 4 spaced evenly
+   between — so `start` scales with the page's minimum-per-index slider,
+   reproducing the sponsor's `{1: 80%, 2: 65%, 3: 50%, 4: 35%, 5: 20%}` at the
+   default (0.2, 0.8) bounds. `TILT_STRENGTH = 40` (provisional, pending PO
+   sign-off), raised from 10 after level 3 moved too far from 50/50. Working
+   calibration: `docs/evidence/2026-10-29-risk-level-calibration.md`.
+   `bounds_for_level` then narrows `bounds` so the tilt can never cross 50%
+   the wrong way: levels 1-2 get a 50% floor, levels 4-5 a 50% ceiling, level
+   3 is unconstrained.
 
 6. **No-trade band** (FYP-49). Between rebalances the portfolio drifts with the
    two indices' returns, exactly as the backtest drifts it (§14). At each
    rebalance after the first, with `c` the cost of moving the equity weight by 1
    (equity's plus bond's `DEFAULT_COSTS_BPS`, over 10,000) and `D` as in step 4,
-   the band is `c / (λ · D)`. If the bounded target is within the band of the
+   the band is `c / (k · D)`. If the bounded target is within the band of the
    drifted equity weight, the portfolio holds and trades nothing; otherwise it
    moves to the band's near edge, `target − sign(target − drifted) × band`,
    clipped to the bounds. If `D ≤ 0` it holds. Before any of that, if drift has
@@ -751,7 +777,8 @@ Values are Python literals as the code holds them.
 | `REBALANCE_FREQUENCY` | `forecasting_engine.portfolio.backtest` | `"monthly"` |
 | `VAR_CONFIDENCES` | `forecasting_engine.risk.tail` | `(0.95, 0.99)` |
 | `VAR_WINDOW` | `forecasting_engine.risk.tail` | `252` |
-| `RISK_AVERSION_SCALE` | `forecasting_engine.portfolio.optimize` | `{1: 1.0, 2: 3.0, 3: 10.0, 4: 30.0, 5: 100.0}` |
+| `RISK_LEVELS` | `forecasting_engine.portfolio.optimize` | `(1, 2, 3, 4, 5)` |
+| `TILT_STRENGTH` | `forecasting_engine.portfolio.optimize` | `40.0` |
 | `DEFAULT_RISK_LEVEL` | `forecasting_engine.portfolio.optimize` | `3` |
 | `DEFAULT_WEIGHT_BOUNDS` | `forecasting_engine.portfolio.optimize` | `(0.2, 0.8)` |
 | `MAX_RANGE_MULTIPLE` | `forecasting_engine.scenario.shock` | `10.0` |

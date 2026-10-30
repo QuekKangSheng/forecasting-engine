@@ -251,6 +251,23 @@ def test_the_backtest_date_range_rebalancing_and_costs_are_stated():
     assert "S&P 500: Polynomial" in captions
 
 
+def test_an_active_model_saved_under_its_old_name_shows_the_new_one():
+    committed = _committed()
+    active_model.set_active_model(
+        EQUITY,
+        "Research model (fixed inputs)",
+        _result(forecast=_forecast(committed, seed=1)),
+        high_risk=False,
+        **SETTINGS,
+    )
+    _set_active(BOND, forecast=_forecast(committed, seed=2))
+
+    captions = _captions(_page(committed))
+
+    assert "S&P 500: Polynomial – fixed economic inputs" in captions
+    assert "Research model (fixed inputs)" not in captions
+
+
 def test_after_costs_is_the_default_and_before_costs_can_be_chosen():
     app = _happy_page()
     (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
@@ -266,24 +283,25 @@ def test_after_costs_is_the_default_and_before_costs_can_be_chosen():
 def test_the_latest_weights_say_how_they_were_set():
     captions = _captions(_happy_page())
 
-    assert "How this was set: the benchmark holds 50%" in captions
-    assert "at risk aversion 3" in captions
+    assert "How this was set: level 3 starts at 50% S&P 500" in captions
 
 
-def test_risk_aversion_is_a_1_to_5_scale_defaulting_to_the_middle():
+def test_risk_level_is_a_1_to_5_scale_defaulting_to_the_middle_and_sets_the_starting_weight():
     app = _happy_page()
-    (scale,) = [s for s in app.select_slider if s.label == "Risk aversion"]
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
     assert list(scale.options) == ["1 · risk-loving", "2", "3", "4", "5 · risk-averse"]
     assert scale.value == 3
-    tilt = _solved_weight(app) - 0.5
+    assert "Level 3 starts the allocation at 50% equity / 50% bonds." in _captions(app)
+    solved3 = _solved_weight(app)
+    tilt = solved3 - 0.5  # level 3 starts at 50%
 
     scale.set_value(5).run()
 
     assert not app.exception
-    # The solved weight, before the no-trade band: a held rebalance's weight is
-    # wherever the portfolio drifted to, whatever the risk aversion.
-    assert abs(_solved_weight(app) - 0.5) <= abs(tilt)
-    assert "Level 5 is λ = 100." in _captions(app)
+    # Level 5 starts at 20%, not 50%; the tilt itself is unchanged, since the
+    # tilt strength no longer varies by risk level (FYP-221).
+    assert _solved_weight(app) == pytest.approx(0.20 + tilt, abs=1e-6)
+    assert "Level 5 starts the allocation at 20% equity / 80% bonds." in _captions(app)
 
 
 def _solved_weight(app) -> float:
@@ -303,7 +321,6 @@ def test_a_minimum_in_each_index_bounds_both_weights():
     assert not app.exception
     values = [float(m.value.strip("%")) / 100 for m in app.metric]
     assert all(0.4 - 1e-9 <= v <= 0.6 + 1e-9 for v in values)
-    assert "Each index stays between 40% and 60%." in _captions(app)
 
 
 def _tail_table(app: AppTest) -> str:

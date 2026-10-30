@@ -31,6 +31,8 @@ class ModelRun:
     description: ModelDescription
     function: PolynomialFunction | None = None
     """The fitted polynomial, for the Polynomial runs only."""
+    shap: ModelDescription | None = None
+    """Mean |SHAP value| per signal, for every polynomial-shaped run."""
     coverage: FactorCoverage | None = None
     """What the factor file covered, for the FF5 run only."""
     warning: str | None = None

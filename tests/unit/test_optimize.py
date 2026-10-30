@@ -1,5 +1,6 @@
 """Turning each target's saved signal into rebalance dates, expected signals, the
-covariance each rebalance is sized against, and a tilt from the 50/50 benchmark."""
+covariance each rebalance is sized against, and a tilt from the risk level's
+starting weight."""
 
 import numpy as np
 import pandas as pd
@@ -10,14 +11,16 @@ from forecasting_engine.portfolio.backtest import run_backtest
 from forecasting_engine.portfolio.optimize import (
     DEFAULT_RISK_LEVEL,
     DEFAULT_WEIGHT_BOUNDS,
-    RISK_AVERSION_SCALE,
+    RISK_LEVELS,
+    TILT_STRENGTH,
     OptimizeDataError,
+    bounds_for_level,
     common_rebalance_dates,
     covariance_at_rebalance,
     expected_returns,
-    risk_aversion_for,
     schedule_breakdowns,
     solve_weights,
+    starting_weight_for,
     weight_breakdown,
     weight_schedule,
 )
@@ -242,28 +245,29 @@ def _covariance(var_equity, var_bond, cov_eb) -> pd.DataFrame:
 
 def test_solve_weights_matches_the_analytic_equal_variance_formula():
     """For equal-variance, uncorrelated assets the closed form reduces to
-    w_equity = 1/2 + (mu_equity - mu_bond) / (2 * risk_aversion * variance) —
+    w_equity = 1/2 + (mu_equity - mu_bond) / (2 * tilt_strength * variance) —
     the two-asset tangency solution FYP-202 checks against."""
     mu = pd.Series({EQUITY: 0.03, BOND: 0.01})
     variance = 0.04
     covariance = _covariance(variance, variance, 0.0)
 
-    weights = solve_weights(mu, covariance, risk_aversion=4.0, bounds=(0.0, 1.0))
+    weights = solve_weights(mu, covariance, tilt_strength=4.0, bounds=(0.0, 1.0))
 
     expected_equity = 0.5 + (mu[EQUITY] - mu[BOND]) / (2 * 4.0 * variance)
     assert weights[EQUITY] == pytest.approx(expected_equity)
     assert weights[BOND] == pytest.approx(1 - expected_equity)
 
 
-def test_the_breakdown_is_the_benchmark_plus_the_signals_tilt():
+def test_the_breakdown_is_the_starting_weight_plus_the_signals_tilt():
     covariance = _covariance(0.0005, 0.00002, 0.000001)
     equal = pd.Series({EQUITY: 0.001, BOND: 0.001})
     apart = pd.Series({EQUITY: 0.003, BOND: 0.001})
 
-    flat = weight_breakdown(equal, covariance, risk_aversion=4.0, bounds=(0.0, 1.0))
-    tilted = weight_breakdown(apart, covariance, risk_aversion=4.0, bounds=(0.0, 1.0))
+    flat = weight_breakdown(equal, covariance, tilt_strength=4.0, bounds=(0.0, 1.0))
+    tilted = weight_breakdown(apart, covariance, tilt_strength=4.0, bounds=(0.0, 1.0))
 
-    # Agreeing signals leave the 50/50 benchmark, however much calmer bond is.
+    # Agreeing signals leave the starting weight (50/50 by default), however
+    # much calmer bond is.
     assert flat.forecast_tilt == 0.0
     assert flat.anchor == 0.5 and flat.equity == 0.5
     var_diff = 0.0005 - 2 * 0.000001 + 0.00002
@@ -271,45 +275,111 @@ def test_the_breakdown_is_the_benchmark_plus_the_signals_tilt():
     assert tilted.unconstrained == pytest.approx(0.5 + tilted.forecast_tilt)
 
 
-def test_no_signal_means_the_benchmark_at_every_risk_level():
+# --- starting weight by risk level, fixed tilt strength --------------------------
+
+
+def test_no_signal_means_the_starting_weight_at_every_risk_level():
     covariance = _covariance(0.0005, 0.00002, 0.000001)
     none = pd.Series({EQUITY: 0.0, BOND: 0.0})
 
-    for level in RISK_AVERSION_SCALE:
-        weights = solve_weights(none, covariance, risk_aversion=risk_aversion_for(level))
-        assert weights[EQUITY] == 0.5 and weights[BOND] == 0.5
+    for level in RISK_LEVELS:
+        start = starting_weight_for(level)
+        weights = solve_weights(none, covariance, starting_weight=start, bounds=(0.0, 1.0))
+        assert weights[EQUITY] == start and weights[BOND] == pytest.approx(1 - start)
 
 
 def test_the_risk_scale_runs_from_1_risk_loving_to_5_risk_averse():
-    assert list(RISK_AVERSION_SCALE) == [1, 2, 3, 4, 5]
-    lambdas = [risk_aversion_for(level) for level in RISK_AVERSION_SCALE]
-    assert lambdas == sorted(lambdas) and len(set(lambdas)) == 5
+    assert list(RISK_LEVELS) == [1, 2, 3, 4, 5]
+    starts = [starting_weight_for(level) for level in RISK_LEVELS]
+    assert starts == sorted(starts, reverse=True) and len(set(starts)) == 5
     assert DEFAULT_RISK_LEVEL == 3
+    assert starting_weight_for(DEFAULT_RISK_LEVEL) == 0.5
 
+
+def test_a_higher_level_never_holds_more_equity_for_the_same_signal():
+    """A more risk-averse level never ends up with more equity than a less
+    risk-averse one, for the same signal and covariance."""
     covariance = _covariance(0.0005, 0.00002, 0.000001)
     signal = pd.Series({EQUITY: 0.0005, BOND: 0.0})
-    tilts = [
-        abs(solve_weights(signal, covariance, risk_aversion=lam, bounds=(0.0, 1.0))[EQUITY] - 0.5)
-        for lam in lambdas
+
+    equities = [
+        weight_breakdown(
+            signal, covariance, starting_weight=starting_weight_for(level), bounds=(0.0, 1.0)
+        ).equity
+        for level in RISK_LEVELS
     ]
-    assert tilts == sorted(tilts, reverse=True)
+    assert equities == sorted(equities, reverse=True)
 
 
 @pytest.mark.parametrize("level", [0, 6])
 def test_a_risk_level_off_the_scale_is_refused(level):
     with pytest.raises(ValueError, match="1 to 5"):
-        risk_aversion_for(level)
+        starting_weight_for(level)
+
+
+# --- bounds_for_level: risk-loving never ends bond-heavy, risk-averse never equity-heavy ---
+
+
+@pytest.mark.parametrize("level", [1, 2])
+def test_risk_loving_levels_get_a_50_percent_floor(level):
+    assert bounds_for_level(level, (0.2, 0.8)) == (0.5, 0.8)
+
+
+@pytest.mark.parametrize("level", [4, 5])
+def test_risk_averse_levels_get_a_50_percent_ceiling(level):
+    assert bounds_for_level(level, (0.2, 0.8)) == (0.2, 0.5)
+
+
+def test_level_3_keeps_the_bounds_as_given():
+    assert bounds_for_level(3, (0.2, 0.8)) == (0.2, 0.8)
+
+
+@pytest.mark.parametrize("level", [1, 2, 4, 5])
+def test_an_extreme_signal_never_crosses_50_percent_the_wrong_way(level):
+    """A signal strong enough to want to cross 50% the wrong way still stops
+    at it."""
+    covariance = _covariance(0.0005, 0.00002, 0.000001)
+    adversarial = pd.Series({EQUITY: -10.0, BOND: 10.0}) if level < 3 else pd.Series(
+        {EQUITY: 10.0, BOND: -10.0}
+    )
+
+    weights = solve_weights(
+        adversarial,
+        covariance,
+        starting_weight=starting_weight_for(level),
+        bounds=bounds_for_level(level, (0.2, 0.8)),
+    )
+
+    if level < 3:
+        assert weights[EQUITY] >= 0.5
+    else:
+        assert weights[EQUITY] <= 0.5
 
 
 def test_the_breakdown_says_when_a_bound_capped_the_weight():
     covariance = _covariance(0.0005, 0.00002, 0.000001)
     mu = pd.Series({EQUITY: 0.003, BOND: 0.001})
 
-    capped = weight_breakdown(mu, covariance, risk_aversion=4.0, bounds=(0.2, 0.8))
+    capped = weight_breakdown(mu, covariance, tilt_strength=4.0, bounds=(0.2, 0.8))
 
     assert capped.unconstrained > 0.8
     assert capped.capped and capped.equity == 0.8
-    assert solve_weights(mu, covariance, risk_aversion=4.0, bounds=(0.2, 0.8))[EQUITY] == 0.8
+    assert solve_weights(mu, covariance, tilt_strength=4.0, bounds=(0.2, 0.8))[EQUITY] == 0.8
+
+
+@pytest.mark.parametrize("level", list(RISK_LEVELS))
+def test_bounds_hold_whatever_the_starting_weight_and_signal(level):
+    """An extreme signal at any level's starting weight still clips to the
+    configured bounds, never beyond them."""
+    covariance = _covariance(0.01, 0.01, 0.0)
+    extreme = pd.Series({EQUITY: 10.0, BOND: -10.0})
+
+    weights = solve_weights(
+        extreme, covariance, starting_weight=starting_weight_for(level), bounds=(0.2, 0.8)
+    )
+
+    assert weights[EQUITY] == pytest.approx(0.8)
+    assert weights[BOND] == pytest.approx(0.2)
 
 
 def test_solve_weights_sums_to_one():
@@ -325,13 +395,13 @@ def test_solve_weights_is_clipped_to_bounds():
     mu = pd.Series({EQUITY: 10.0, BOND: -10.0})  # an extreme, unrealistic spread
     covariance = _covariance(0.01, 0.01, 0.0)
 
-    weights = solve_weights(mu, covariance, risk_aversion=0.1, bounds=(0.2, 0.8))
+    weights = solve_weights(mu, covariance, tilt_strength=0.1, bounds=(0.2, 0.8))
 
     assert weights[EQUITY] == pytest.approx(0.8)
     assert weights[BOND] == pytest.approx(0.2)
 
 
-def test_solve_weights_keeps_the_benchmark_when_assets_are_indistinguishable():
+def test_solve_weights_keeps_the_starting_weight_when_assets_are_indistinguishable():
     mu = pd.Series({EQUITY: 0.05, BOND: 0.01})
     identical = _covariance(0.04, 0.04, 0.04)  # perfectly correlated, equal variance
 
@@ -340,12 +410,12 @@ def test_solve_weights_keeps_the_benchmark_when_assets_are_indistinguishable():
     assert weights[EQUITY] == pytest.approx(0.5)
 
 
-def test_higher_risk_aversion_tilts_less_far_from_the_midpoint():
+def test_higher_tilt_strength_tilts_less_far_from_the_starting_weight():
     mu = pd.Series({EQUITY: 0.05, BOND: 0.01})
     covariance = _covariance(0.04, 0.03, 0.01)
 
-    cautious = solve_weights(mu, covariance, risk_aversion=20.0, bounds=(0.0, 1.0))
-    bold = solve_weights(mu, covariance, risk_aversion=1.0, bounds=(0.0, 1.0))
+    cautious = solve_weights(mu, covariance, tilt_strength=20.0, bounds=(0.0, 1.0))
+    bold = solve_weights(mu, covariance, tilt_strength=1.0, bounds=(0.0, 1.0))
 
     assert abs(cautious[EQUITY] - 0.5) < abs(bold[EQUITY] - 0.5)
 
@@ -404,7 +474,7 @@ def _unbanded(forecasts, prices) -> pd.Series:
             date: weight_breakdown(
                 expected.loc[date],
                 covariance_at_rebalance(date, prices, horizon=3, train_window=15, embargo=2),
-                risk_aversion=RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
+                tilt_strength=TILT_STRENGTH,
             ).equity
             for date in dates
         }
@@ -436,7 +506,6 @@ def _band_inputs():
 
 def test_a_small_signal_change_is_held_and_a_large_one_moves_to_the_band_edge():
     dates, prices, forecasts = _band_inputs()
-    lam = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL]
 
     breakdowns = schedule_breakdowns(forecasts, prices, **_SCHEDULE_KWARGS)
     first, small, large = (breakdowns[dates[i]] for i in (17, 20, 23))
@@ -445,7 +514,7 @@ def test_a_small_signal_change_is_held_and_a_large_one_moves_to_the_band_edge():
 
     cov = covariance_at_rebalance(dates[20], prices, horizon=3, train_window=15, embargo=2)
     d = cov.loc[EQUITY, EQUITY] - 2 * cov.loc[EQUITY, BOND] + cov.loc[BOND, BOND]
-    assert small.band == pytest.approx((3.0 + 5.0) / 1e4 / (lam * d))
+    assert small.band == pytest.approx((3.0 + 5.0) / 1e4 / (TILT_STRENGTH * d))
     assert abs(small.bounded - small.drifted) <= small.band
     assert small.held and small.equity == small.drifted
 
@@ -465,12 +534,12 @@ def test_a_held_rebalance_trades_nothing_in_the_backtest():
 
 
 def test_drift_past_a_bound_is_traded_back_to_exactly_that_bound():
-    # Equity doubles while bond is flat, so 80/20 drifts to about 89% equity. The
-    # signals still ask for 80%, well within the band, but the bound wins.
+    # Equity rises while bond is flat, so 80/20 drifts to about 82% equity. The
+    # signals still ask for 80%, within the band, but the bound wins.
     dates = pd.bdate_range("2024-01-02", periods=60)
     rng = np.random.default_rng(3)
     equity = 100 * np.cumprod(1 + rng.normal(0, 0.01, 60))
-    equity[18:21] = equity[17] * np.array([1.4, 1.7, 2.0])
+    equity[18:21] = equity[17] * np.array([1.05, 1.08, 1.1])
     prices = {
         EQUITY: pd.Series(equity, index=dates),
         BOND: pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.01, 60)), index=dates),

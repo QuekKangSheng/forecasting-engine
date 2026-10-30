@@ -6,6 +6,7 @@ from forecasting_engine.reporting.model_metrics import (
     ConstantForecasts,
     ModelRunResult,
     build_metrics_rows,
+    display_model_name,
 )
 from forecasting_engine.validation.crash import CrashDiagnostics
 
@@ -187,3 +188,13 @@ def test_the_table_has_no_pbo_or_within_fold_columns():
         "Rows scored",
         "Constant folds",
     }
+
+
+def test_display_model_name_translates_the_old_research_model_name():
+    new_name = "Polynomial – fixed economic inputs"
+    assert display_model_name("Research model (fixed inputs)") == new_name
+
+
+def test_display_model_name_leaves_every_other_name_as_is():
+    for name in ("Polynomial (derived)", "Polynomial – fixed economic inputs"):
+        assert display_model_name(name) == name

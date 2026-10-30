@@ -18,11 +18,23 @@ MODEL_ORDER: tuple[str, ...] = (
     "Naive (training mean)",
     "FF5 Benchmark",
     "Polynomial (derived)",
-    "Research model (fixed inputs)",
+    "Polynomial – fixed economic inputs",
     "Polynomial (user-supplied)",
     "Machine Learning",
 )
 """The order rows appear in; only models that ran get one."""
+
+_LEGACY_MODEL_NAMES: Mapping[str, str] = {
+    "Research model (fixed inputs)": "Polynomial – fixed economic inputs",
+}
+"""Old row names, mapped to their current one, for a ``model_name`` already
+saved to the database under a name since renamed."""
+
+
+def display_model_name(model_name: str) -> str:
+    """``model_name`` as it should be shown now, translating an old saved name
+    to its current one."""
+    return _LEGACY_MODEL_NAMES.get(model_name, model_name)
 
 _COLUMNS: tuple[str, ...] = (
     "IC",

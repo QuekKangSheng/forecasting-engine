@@ -1,11 +1,12 @@
 """Portfolio Optimizer page: combine the active equity and bond models' saved
-signals into a 50/50-anchored weight schedule, then backtest that schedule
-against the equal-weight benchmark (FYP-19).
+signals into a weight schedule anchored at the chosen risk level's starting
+mix, then backtest it against the equal-weight benchmark (FYP-19) and that
+starting mix held with no signal.
 
 Reads whichever settings (horizon, walk-forward windows) produced the active
 models on the Models page — it never lets the two be re-chosen here, since
 the forecasts were already fixed under those settings. Only the optimiser's
-own parameters (risk aversion, weight bounds) are configurable on this page.
+own parameters (risk level, weight bounds) are configurable on this page.
 """
 
 from __future__ import annotations
@@ -26,9 +27,11 @@ from forecasting_engine.portfolio import optimize
 from forecasting_engine.portfolio.backtest import (
     REBALANCE_FREQUENCY,
     BacktestDataError,
+    month_end_rebalance_dates,
     run_backtest,
 )
 from forecasting_engine.reporting.factor_labels import labeller
+from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
 from forecasting_engine.reporting.portfolio_comparison import (
     NOT_RUN,
@@ -130,18 +133,13 @@ if signals[EQUITY] is None or signals[BOND] is None:
 
 with st.expander("Settings"):
     risk_level = st.select_slider(
-        "Risk aversion",
-        options=list(optimize.RISK_AVERSION_SCALE),
+        "Risk level",
+        options=list(optimize.RISK_LEVELS),
         value=optimize.DEFAULT_RISK_LEVEL,
         format_func=lambda level: {1: "1 · risk-loving", 5: "5 · risk-averse"}.get(
             level, str(level)
         ),
-        help=glossary.term("Risk aversion"),
-    )
-    risk_aversion = optimize.risk_aversion_for(risk_level)
-    st.caption(
-        "1 follows the signals as far as the limits below allow; 5 stays close to "
-        f"50/50 whatever they say. Level {risk_level} is λ = {risk_aversion:g}."
+        help=glossary.term("Risk level"),
     )
     # Equity and bond always sum to 100%, so one floor bounds both: at least this
     # much in each means at most 100% minus it in the other.
@@ -155,7 +153,16 @@ with st.expander("Settings"):
         help=glossary.term("Weight bounds"),
     )
     upper = 1 - lower
-    st.caption(f"Each index stays between {lower:.0%} and {upper:.0%}.")
+    # The starting weight is spaced across these same bounds (level 1 at the
+    # upper bound, 5 at the lower), so it moves with this slider too.
+    starting_weight = optimize.starting_weight_for(risk_level, (lower, upper))
+    bound_lower, bound_upper = optimize.bounds_for_level(risk_level, (lower, upper))
+    starting_weight = min(max(starting_weight, bound_lower), bound_upper)
+    st.caption(
+        f"Level {risk_level} starts the allocation at {starting_weight:.0%} equity / "
+        f"{1 - starting_weight:.0%} bonds. The signals then tilt it from there at a "
+        "fixed strength, the same at every level."
+    )
 
 try:
     breakdowns = optimize.schedule_breakdowns(
@@ -165,8 +172,8 @@ try:
         train_window=TRAIN_WINDOW,
         test_window=equity_active.test_window,
         embargo=EMBARGO_DAYS,
-        risk_aversion=risk_aversion,
-        bounds=(lower, upper),
+        starting_weight=starting_weight,
+        bounds=(bound_lower, bound_upper),
     )
 except BacktestDataError as exc:
     st.warning(f"The allocation could not be set: {exc}", icon=":material/warning:")
@@ -193,16 +200,16 @@ latest_signal = optimize.expected_returns(pd.DatetimeIndex([latest_date]), signa
 breakdown = breakdowns[latest_date]
 direction = "adds" if breakdown.forecast_tilt >= 0 else "takes"
 cap = (
-    f", which the {lower:.0%}–{upper:.0%} limits cap at {breakdown.bounded:.0%}"
+    f", which the {bound_lower:.0%}–{bound_upper:.0%} limits cap at {breakdown.bounded:.0%}"
     if breakdown.capped
     else ""
 )
 st.caption(
-    f"How this was set: the benchmark holds {breakdown.anchor:.0%} {equity_name}. The "
-    f"signals — what each model adds to its training-mean return — ({equity_name} "
+    f"How this was set: level {risk_level} starts at {breakdown.anchor:.0%} {equity_name}. "
+    f"The signals — what each model adds to its training-mean return — ({equity_name} "
     f"{latest_signal[EQUITY]:+.2%}, {bond_name} {latest_signal[BOND]:+.2%} over "
-    f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%} at risk "
-    f"aversion {risk_level}, giving {breakdown.unconstrained:.0%}{cap}."
+    f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%}, giving "
+    f"{breakdown.unconstrained:.0%}{cap}."
 )
 if breakdown.held:
     st.caption(
@@ -268,13 +275,26 @@ try:
         prices,
         schedule,
         active_models=(
-            f"{equity_name}: {equity_active.model_name}",
-            f"{bond_name}: {bond_active.model_name}",
+            f"{equity_name}: {display_model_name(equity_active.model_name)}",
+            f"{bond_name}: {display_model_name(bond_active.model_name)}",
         ),
     )
 except BacktestDataError as exc:
     st.warning(f"The allocation could not be backtested: {exc}", icon=":material/warning:")
     st.stop()
+
+# The level's starting mix held with no signal, reset to it monthly like the
+# benchmark — so the signals' own contribution can be read separately.
+full_calendar = pd.DatetimeIndex([backtest.start]).append(backtest.optimised.gross.index)
+month_ends = month_end_rebalance_dates(full_calendar)
+starting_mix_dates = pd.DatetimeIndex([backtest.start]).append(
+    month_ends[(month_ends > backtest.start) & (month_ends < backtest.end)]
+)
+starting_mix_schedule = pd.DataFrame(
+    [{EQUITY: starting_weight, BOND: 1 - starting_weight}] * len(starting_mix_dates),
+    index=starting_mix_dates,
+)
+starting_mix_backtest = run_backtest(prices, starting_mix_schedule)
 
 st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
     dataset_fingerprint=str(dataset_fingerprint(merged)),
@@ -312,14 +332,24 @@ def _metric_cell(metric: str) -> str:
     )
 
 
+STARTING_MIX_COL = (
+    f"Starting mix ({starting_weight:.0%}/{1 - starting_weight:.0%})"
+)
 header = "".join(
     f"<th>{html.escape(h)}</th>"
-    for h in ("Metric", PORTFOLIO_LABELS["optimised"], PORTFOLIO_LABELS["baseline"], "Difference")
+    for h in (
+        "Metric",
+        PORTFOLIO_LABELS["optimised"],
+        PORTFOLIO_LABELS["baseline"],
+        STARTING_MIX_COL,
+        "Difference",
+    )
 )
+starting_mix_rows = comparison_rows(starting_mix_backtest, basis)
 body = "".join(
     f"<tr>{_metric_cell(row.metric)}<td>{row.optimised}</td><td>{row.baseline}</td>"
-    f"<td>{row.difference}</td></tr>"
-    for row in comparison_rows(backtest, basis)
+    f"<td>{mix_row.optimised}</td><td>{row.difference}</td></tr>"
+    for row, mix_row in zip(comparison_rows(backtest, basis), starting_mix_rows, strict=True)
 )
 st.markdown(
     f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{header}</tr></thead>'
@@ -327,7 +357,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption(
-    "Difference is optimised minus benchmark: positive favours the optimised portfolio "
+    f"{STARTING_MIX_COL} is level {risk_level}'s fixed starting mix held with no signal, "
+    f"reset to it {REBALANCE_FREQUENCY} like the benchmark — so it shows what picking this "
+    "starting mix alone would have earned, separate from what the signals added on top of "
+    "it. Difference is optimised minus benchmark: positive favours the optimised portfolio "
     "on every row, drawdown included."
 )
 

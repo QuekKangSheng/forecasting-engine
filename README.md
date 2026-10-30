@@ -108,10 +108,12 @@ hosting step is needed.
 
 **Portfolio**
 
-- **Optimiser** — starts from 50/50 and tilts towards whichever index the active
-  models' signals favour, sized by recent risk and a 1–5 risk-aversion scale,
-  rebalanced every forecast horizon, and trading only when a move is worth its
-  cost (a no-trade band around the weight the portfolio has drifted to).
+- **Optimiser** — starts from a 1–5 risk level's own starting mix (80/20 down
+  to 20/80, level 3 at 50/50) and tilts towards whichever index the active
+  models' signals favour, sized by recent risk at a fixed strength shared by
+  every level, rebalanced every forecast horizon, and trading only when a move
+  is worth its cost (a no-trade band around the weight the portfolio has
+  drifted to).
 - **Backtest against 50/50** — runs the optimised weights and a monthly-reset
   50/50 benchmark through the same days, before and after trading costs, and
   compares Sharpe, Sortino, Calmar and maximum drawdown side by side.

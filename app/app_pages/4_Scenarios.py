@@ -22,6 +22,7 @@ from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import transform_for
 from forecasting_engine.reporting.factor_labels import labeller
+from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
 from forecasting_engine.scenario import shock
 from forecasting_engine.store import active_model
@@ -74,9 +75,10 @@ for role in ROLES:
         function = active_model.get_active_function(role)
         if function is None:
             unavailable[role] = (
-                f"The active {name} model, {record.model_name}, has no stored polynomial "
-                "function: a scenario can re-evaluate a polynomial only. Set a polynomial "
-                "active on the Models page (setting one again stores its function)."
+                f"The active {name} model, {display_model_name(record.model_name)}, has no "
+                "stored polynomial function: a scenario can re-evaluate a polynomial only. "
+                "Set a polynomial active on the Models page (setting one again stores its "
+                "function)."
             )
         else:
             records[role], functions[role] = record, function
@@ -208,8 +210,8 @@ def _index_cell(role: TargetRole) -> str:
     """The index, with the active model behind its figures beneath it."""
     name = label(target_columns[role]) if role in target_columns else role.value.title()
     model = (
-        f'<br><span style="color: var(--fe-muted)">{html.escape(records[role].model_name)}'
-        "</span>"
+        f'<br><span style="color: var(--fe-muted)">'
+        f"{html.escape(display_model_name(records[role].model_name))}</span>"
         if role in records
         else ""
     )

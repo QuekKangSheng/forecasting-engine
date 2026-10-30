@@ -227,3 +227,23 @@ def test_an_up_to_date_pipeline_says_there_is_nothing_left_to_do():
     assert not app.warning
     assert "nothing" in _next_step(app)
     assert "Latest weights (01 Mar 2024): 60% equity, 40% bond." in _captions(app)
+
+
+def test_an_active_model_saved_under_its_old_name_shows_the_new_one():
+    committed = _committed()
+    active_model.set_active_model(
+        EQUITY,
+        "Research model (fixed inputs)",
+        _result(0.04),
+        high_risk=False,
+        horizon=20,
+        train_window=504,
+        test_window=20,
+        dataset_fingerprint=str(dataset_fingerprint(committed)),
+    )
+    app = _page(committed, runs=_stored_runs(committed))
+
+    assert not app.exception
+    captions = _captions(app)
+    assert "Polynomial – fixed economic inputs" in captions
+    assert "Research model (fixed inputs)" not in captions
