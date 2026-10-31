@@ -414,10 +414,10 @@ def test_rolling_volatility_is_charted_for_both_indices_and_the_optimised_portfo
 
 
 @pytest.mark.parametrize("value", ["Rolling volatility", "Drawdown"])
-def test_the_risk_charts_are_recomputed_when_the_risk_aversion_changes(value):
+def test_the_risk_charts_are_recomputed_when_the_risk_level_changes(value):
     app = _happy_page()
     before = _line_data(app, value)
-    (scale,) = [s for s in app.select_slider if s.label == "Risk aversion"]
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
 
     # 5, not 1: in this fixture both 1 and the default 3 push every rebalance to the
     # 80% cap, the same schedule.
