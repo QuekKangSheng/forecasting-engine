@@ -91,6 +91,7 @@ from forecasting_engine.reporting.polynomial_function import (
     term_rows,
     to_latex,
 )
+from forecasting_engine.reporting.shap_attribution import polynomial_shap
 from forecasting_engine.scenario.shock import function_inputs
 from forecasting_engine.store import active_model
 from forecasting_engine.store import runs as run_history
@@ -99,7 +100,12 @@ from forecasting_engine.validation.gates import (
     evaluate_candidate,
     is_high_risk,
 )
-from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
+from forecasting_engine.validation.splitters import (
+    TUNING_ROWS,
+    PurgedWalkForward,
+    expanding,
+    last_fold_train_window,
+)
 from model_settings import (
     DEFAULT_HORIZON,
     DEFAULT_MAX_TERMS,
@@ -463,7 +469,9 @@ def _run_derived(
         horizon=panel.horizon,
         columns=panel.signals,
     )
-    return model_runs.ModelRun(result, description, function=fn)
+    training = panel.frame.loc[last_fold_train_window(panel, splitter)]
+    shap = polynomial_shap(fn, training, description.input_bounds)
+    return model_runs.ModelRun(result, description, function=fn, shap=shap)
 
 
 def _run_research(
@@ -485,7 +493,9 @@ def _run_research(
         horizon=horizon,
         columns=panel.signals,
     )
-    return model_runs.ModelRun(result, description, function=fn)
+    training = panel.frame.loc[last_fold_train_window(panel, expanding(splitter))]
+    shap = polynomial_shap(fn, training, description.input_bounds)
+    return model_runs.ModelRun(result, description, function=fn, shap=shap)
 
 
 def _research_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None]:
@@ -567,7 +577,9 @@ def _run_user(
         horizon=panel.horizon,
         columns=panel.signals,
     )
-    return model_runs.ModelRun(result, description, function=fn)
+    training = panel.frame.loc[last_fold_train_window(panel, splitter)]
+    shap = polynomial_shap(fn, training, description.input_bounds)
+    return model_runs.ModelRun(result, description, function=fn, shap=shap)
 
 
 def _run_famafrench(
@@ -585,11 +597,21 @@ def _run_famafrench(
         indexed, list(FACTOR_COLUMNS), price_col, horizon=horizon, exact=FACTOR_COLUMNS
     )
     result, description = run_famafrench(panel, splitter)
+    fn = from_description(
+        description,
+        origin=Origin.DERIVED,
+        target=price_col,
+        horizon=horizon,
+        columns=FACTOR_COLUMNS,
+    )
+    training = panel.frame.loc[last_fold_train_window(panel, splitter)]
+    shap = polynomial_shap(fn, training, description.input_bounds)
     return model_runs.ModelRun(
         result,
         description,
         coverage=factor_coverage(resolved.file.frame, panel),
         warning=resolved.warning,
+        shap=shap,
     )
 
 
@@ -846,11 +868,13 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
             ),
         },
     )
+    if run.shap is not None:
+        _show_fitted_terms(run.shap, is_shap=True)
 
 
-def _show_fitted_terms(description: ModelDescription, *, is_ml: bool) -> None:
-    value_col = "Mean |SHAP value|" if is_ml else "Coefficient"
-    heading = "Feature attribution (SHAP)" if is_ml else "Fitted terms"
+def _show_fitted_terms(description: ModelDescription, *, is_shap: bool) -> None:
+    value_col = "Mean |SHAP value|" if is_shap else "Coefficient"
+    heading = "Feature attribution (SHAP)" if is_shap else "Fitted terms"
     st.markdown(ui.eyebrow(heading, glossary.term(heading)), unsafe_allow_html=True)
     rows = [
         {"Term": term, value_col: coefficient}
@@ -870,11 +894,13 @@ def _show_famafrench(run: model_runs.ModelRun) -> None:
         f"{coverage.rows_used:,} rows used. {coverage.missing_dates:,} target dates "
         "have no factor row — Ken French publishes one to two months late."
     )
-    _show_fitted_terms(run.description, is_ml=False)
+    _show_fitted_terms(run.description, is_shap=False)
+    if run.shap is not None:
+        _show_fitted_terms(run.shap, is_shap=True)
 
 
 def _show_ml(run: model_runs.ModelRun) -> None:
-    _show_fitted_terms(run.description, is_ml=True)
+    _show_fitted_terms(run.description, is_shap=True)
     _show_no_signal_folds(run.result.screening)
     tuning = run.tuning
     if tuning is None:
@@ -1160,7 +1186,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     # FF5 is an equity-factor benchmark and the research model's inputs are equity
     # gauges, so only the Equity tab offers them.
     equity = role == TargetRole.EQUITY
-    check_cols = st.columns([3, 4, 6, 4, 1] if equity else [3, 4, 11])
+    check_cols = st.columns([4, 4, 9, 5, 1] if equity else [3, 4, 11])
     run_poly = check_cols[0].checkbox("Polynomial", value=True, key=f"run_poly_{key}")
     run_ff5 = equity and check_cols[1].checkbox("Fama-French 5", value=True, key=f"run_ff5_{key}")
     research_ticked = equity and check_cols[2].checkbox(

@@ -1,11 +1,13 @@
 """Turn the active equity and bond models' signals into a weight schedule — the
 input ``portfolio.backtest.run_backtest`` chains through history.
 
-The allocation starts from the 50/50 benchmark and tilts away from it by what the
-signals say, in a benchmark-relative mean-variance problem: maximise the
-expected signal return of the tilt less ``λ/2`` times its variance. Risk here is
-how far the portfolio strays from the benchmark, so risk aversion sets how much
-a signal is acted on, and with no signal the portfolio is the benchmark.
+The allocation starts from the risk level's own starting weight and
+tilts away from it by what the signals say: maximise the expected signal
+return of the tilt less ``k/2`` times its variance, where ``k``
+(``TILT_STRENGTH``) is one fixed tilt strength shared by every level — the
+level sets where the allocation starts, not how hard a signal pulls. With no
+signal the portfolio sits at the starting weight. The 50/50 benchmark used for
+comparison (``backtest.BASELINE_WEIGHTS``) is separate and never moves.
 
 A model's signal is its forecast less its fold's training-mean return
 (``validation.harness.signal_forecasts``). The training means are left out on
@@ -18,8 +20,8 @@ period, so each allocation is held for exactly as long as the forecast it was
 set from looks ahead.
 
 Between rebalances the portfolio drifts with the two indices' returns, and a
-rebalance trades only when the new target is worth its cost (FYP-49): within a
-no-trade band of ``c / (λ·D)`` around the drifted weight, where ``c`` is the cost
+rebalance trades only when the new target is worth its cost: within a
+no-trade band of ``c / (k·D)`` around the drifted weight, where ``c`` is the cost
 of moving the equity weight by 1 (equity's plus bond's cost) and ``D`` the variance
 of the difference between the two indices' returns, the portfolio holds; outside
 it, it trades only as far as the band's near edge. A portfolio that has drifted
@@ -40,7 +42,6 @@ from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.portfolio.backtest import (
     ASSETS,
-    BASELINE_WEIGHTS,
     DEFAULT_COSTS_BPS,
     asset_returns,
 )
@@ -51,13 +52,17 @@ class OptimizeDataError(ValueError):
     """The message is written for a portfolio manager, like the other models' errors."""
 
 
-RISK_AVERSION_SCALE: Mapping[int, float] = {1: 1.0, 2: 3.0, 3: 10.0, 4: 30.0, 5: 100.0}
-"""The sponsor's 1-5 risk-aversion scale (1 most risk-loving, 5 most risk-averse)
-mapped to the optimiser's λ. Working calibration, not sponsor-confirmed: each step
-multiplies λ by about 3. On the Sep 2026 Bloomberg data, at a 10-day horizon and a
-252-day train window, level 1 sits at a weight bound on most rebalances where a
-signal is present, and level 5 keeps nine rebalances in ten within about 12
-percentage points of 50/50."""
+RISK_LEVELS: tuple[int, ...] = (1, 2, 3, 4, 5)
+"""The sponsor's 1-5 risk scale. ``starting_weight_for`` maps a level to its
+starting equity weight, scaled across whatever bounds are configured —
+reproduces the sponsor's `{1: 80%, 2: 65%, 3: 50%, 4: 35%, 5: 20%}` at the
+default bounds. Replaces ``RISK_AVERSION_SCALE``, which varied tilt strength
+instead of the starting point."""
+
+TILT_STRENGTH: float = 40.0
+"""``k``: how strongly a signal tilts the allocation, fixed across every level.
+Raised from 10 after testing showed level 3 moving too far from 50/50. Not
+yet PO-confirmed."""
 
 DEFAULT_RISK_LEVEL: int = 3
 """Working default, not sponsor-confirmed: the middle of the scale."""
@@ -182,11 +187,11 @@ class WeightBreakdown:
     """How one rebalance's equity weight was reached, for a reader to follow."""
 
     anchor: float
-    """Equity's benchmark weight: where the allocation sits when the two
-    signals agree."""
+    """Equity's starting weight for this risk level: where the allocation sits
+    with no signal, before any tilt."""
     forecast_tilt: float
-    """What the difference between the signals adds to equity at this risk
-    aversion, before any bound."""
+    """What the difference between the signals adds to equity at the fixed tilt
+    strength, before any bound."""
     equity: float
     """Equity's final weight, after the bounds and any no-trade band."""
     target: float | None = None
@@ -213,28 +218,51 @@ class WeightBreakdown:
         return self.bounded != self.unconstrained
 
 
-def risk_aversion_for(level: int) -> float:
-    """λ for a level on the sponsor's 1-5 scale (``RISK_AVERSION_SCALE``)."""
-    if level not in RISK_AVERSION_SCALE:
-        raise ValueError(f"risk aversion level must be 1 to 5, got {level}")
-    return RISK_AVERSION_SCALE[level]
+def starting_weight_for(
+    level: int, bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS
+) -> float:
+    """Equity's starting weight for a level, spaced evenly across ``bounds``:
+    1 at the upper bound, 5 at the lower, 3 always at the midpoint."""
+    if level not in RISK_LEVELS:
+        raise ValueError(f"risk level must be 1 to 5, got {level}")
+    lower, upper = bounds
+    return lower + (5 - level) / 4 * (upper - lower)
+
+
+def bounds_for_level(
+    level: int, bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS
+) -> tuple[float, float]:
+    """``bounds``, narrowed so the signal tilt can never cross 50% the wrong
+    way: levels 1-2 always end equity-heavy, levels 4-5 bond-heavy. Level 3
+    keeps ``bounds`` as given."""
+    if level not in RISK_LEVELS:
+        raise ValueError(f"risk level must be 1 to 5, got {level}")
+    lower, upper = bounds
+    if level in (1, 2):
+        lower = max(lower, 0.5)
+        upper = max(upper, lower)
+    elif level in (4, 5):
+        upper = min(upper, 0.5)
+        lower = min(lower, upper)
+    return lower, upper
 
 
 def weight_breakdown(
     expected_signal: pd.Series,
     covariance: pd.DataFrame,
     *,
-    risk_aversion: float = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
+    starting_weight: float = 0.5,
+    tilt_strength: float = TILT_STRENGTH,
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
 ) -> WeightBreakdown:
-    """``solve_weights``'s equity weight, split into the benchmark weight and the
-    signals' tilt from it: ``w = w_bench + (s_e − s_b)/(λ·D)``, with
+    """``solve_weights``'s equity weight, split into the starting weight and the
+    signals' tilt from it: ``w = start + (s_e − s_b)/(k·D)``, with
     ``D = σ_e² − 2σ_eb + σ_b²``, then clipped to ``bounds``."""
     equity, bond = ASSETS
-    anchor = float(BASELINE_WEIGHTS[equity])
+    anchor = float(starting_weight)
     signal_diff = expected_signal[equity] - expected_signal[bond]
     var_diff = _var_diff(covariance)
-    tilt = float(signal_diff / (risk_aversion * var_diff)) if var_diff > 0 else 0.0
+    tilt = float(signal_diff / (tilt_strength * var_diff)) if var_diff > 0 else 0.0
     w_equity = min(max(anchor + tilt, bounds[0]), bounds[1])
     return WeightBreakdown(anchor=anchor, forecast_tilt=tilt, equity=w_equity)
 
@@ -243,23 +271,28 @@ def solve_weights(
     expected_signal: pd.Series,
     covariance: pd.DataFrame,
     *,
-    risk_aversion: float = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
+    starting_weight: float = 0.5,
+    tilt_strength: float = TILT_STRENGTH,
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
 ) -> pd.Series:
-    """The long-only two-asset weights maximising the benchmark-relative
-    mean-variance objective ``a @ expected_signal - risk_aversion / 2 * a @
-    covariance @ a``, where ``a`` is the tilt from ``BASELINE_WEIGHTS``, subject
+    """The long-only two-asset weights maximising the starting-weight-relative
+    mean-variance objective ``a @ expected_signal - tilt_strength / 2 * a @
+    covariance @ a``, where ``a`` is the tilt from ``starting_weight``, subject
     to the two weights summing to 1 and each lying within ``bounds``.
 
     Two assets collapse that to one free variable — equity's tilt, bond's being
     its negative — with a closed form, then clipped to ``bounds``. When the two
     assets' returns are so alike that tilting between them changes no risk at
     all (equal variance, perfect correlation), the covariance can't size the
-    tilt, and the benchmark is kept rather than dividing by zero.
+    tilt, and the starting weight is kept rather than dividing by zero.
     """
     equity, bond = ASSETS
     w_equity = weight_breakdown(
-        expected_signal, covariance, risk_aversion=risk_aversion, bounds=bounds
+        expected_signal,
+        covariance,
+        starting_weight=starting_weight,
+        tilt_strength=tilt_strength,
+        bounds=bounds,
     ).equity
     return pd.Series({equity: w_equity, bond: 1 - w_equity})
 
@@ -272,7 +305,8 @@ def weight_schedule(
     train_window: int,
     test_window: int,
     embargo: int,
-    risk_aversion: float = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
+    starting_weight: float = 0.5,
+    tilt_strength: float = TILT_STRENGTH,
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
     costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
 ) -> pd.DataFrame:
@@ -287,7 +321,8 @@ def weight_schedule(
             train_window=train_window,
             test_window=test_window,
             embargo=embargo,
-            risk_aversion=risk_aversion,
+            starting_weight=starting_weight,
+            tilt_strength=tilt_strength,
             bounds=bounds,
             costs_bps=costs_bps,
         )
@@ -312,7 +347,8 @@ def schedule_breakdowns(
     train_window: int,
     test_window: int,
     embargo: int,
-    risk_aversion: float = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
+    starting_weight: float = 0.5,
+    tilt_strength: float = TILT_STRENGTH,
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
     costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
 ) -> dict[pd.Timestamp, WeightBreakdown]:
@@ -340,7 +376,13 @@ def schedule_breakdowns(
             )
         except OptimizeDataError:
             continue
-        breakdown = weight_breakdown(row, covariance, risk_aversion=risk_aversion, bounds=bounds)
+        breakdown = weight_breakdown(
+            row,
+            covariance,
+            starting_weight=starting_weight,
+            tilt_strength=tilt_strength,
+            bounds=bounds,
+        )
         targets[date] = (breakdown, _var_diff(covariance))
     if not targets:
         return {}
@@ -358,7 +400,7 @@ def schedule_breakdowns(
             continue
         breakdown, var_diff = targets[day]
         if held is not None and cost > 0:
-            band = cost / (risk_aversion * var_diff) if var_diff > 0 else math.inf
+            band = cost / (tilt_strength * var_diff) if var_diff > 0 else math.inf
             breakdown = _banded(breakdown, float(held[0]), band, bounds)
         breakdowns[day] = breakdown
         held = np.array([breakdown.equity, 1 - breakdown.equity])

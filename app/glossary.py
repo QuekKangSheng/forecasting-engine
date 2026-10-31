@@ -36,7 +36,7 @@ TERMS: Mapping[str, str] = {
         "under the same settings as every other model. Each gets its own row, "
         "named for which kind it is."
     ),
-    "Research model (fixed inputs)": (
+    "Polynomial – fixed economic inputs": (
         "The equity model the October 2026 model research chose: a degree-1 "
         "polynomial in HY OAS, IG OAS, VIX and the 2s10s slope, read as levels, "
         "each signed so a higher value means a higher expected return, with the "
@@ -180,9 +180,12 @@ TERMS: Mapping[str, str] = {
         "an interaction — the effect of one depends on the level of the other."
     ),
     "Feature attribution (SHAP)": (
-        "A boosted model has no equation to read, so each signal is scored by "
-        "how much it moved the predictions. Larger means more influential — it "
-        "says nothing about direction, only weight."
+        "Each signal scored by how much it moved the prediction, on the same "
+        "scale for every model family. A boosted model has no equation to "
+        "read, so this is sampled; a polynomial's is computed exactly from "
+        "its own terms, including its share of any square or interaction. "
+        "Larger means more influential — it says nothing about direction, "
+        "only weight."
     ),
     "Promotion gate": (
         "The bar every model but the naive baseline has to clear before it is "
@@ -196,31 +199,29 @@ TERMS: Mapping[str, str] = {
         "the prior one immediately. A model that failed both promotion gates "
         "can still be set active, but asks for confirmation first."
     ),
-    "Risk aversion": (
-        "How far the portfolio may stray from 50/50 on the strength of the "
-        "signals, on a scale of 1 (risk-loving) to 5 (risk-averse). The optimiser "
-        "starts at 50/50 and tilts: equity weight = 50% + (equity signal − bond "
-        "signal) / (λ × variance of the difference between the two indices' "
-        "returns), where a signal is what a model adds to its training-average "
-        "return. Risk is measured as distance from 50/50, so 1 (λ = 1) follows "
-        "the signals as far as the limits allow and 5 (λ = 100) barely moves. "
-        "Each step triples λ."
+    "Risk level": (
+        "Where the allocation starts, on a scale of 1 (risk-loving) to 5 "
+        "(risk-averse): 1 at the weight bounds' upper end, 5 at the lower, 3 "
+        "at 50/50 — e.g. 80/65/50/35/20% equity at the default bounds. "
+        "Signals tilt it from there at a fixed strength. Levels 1-2 never end "
+        "bond-heavy, 4-5 never end equity-heavy — level 3 is the only one a "
+        "strong signal can tip either way."
     ),
     "Weight bounds": (
         "The least either index may hold. Equity and bond always add up to "
         "100%, so a 20% floor on each also caps each at 80%. It stops a small, "
         "noisy difference between the two signals swinging the portfolio to "
-        "one extreme. The optimiser starts from 50/50 and tilts; the floor only "
-        "clips how far."
+        "one extreme, and also clips the risk level's own starting mix at the "
+        "extreme levels."
     ),
     "No-trade band": (
         "Between rebalances the portfolio drifts with the markets. At each "
         "rebalance it trades only if the new target is far enough from where it "
         "drifted to to be worth the trading cost: within the band it holds, and "
         "outside it, it trades only as far as the band's edge. The band is the "
-        "cost of moving the equity weight by one (both indices' costs) over risk "
-        "aversion times the variance of the difference between the two indices' "
-        "returns, so it is narrower when the signals are acted on more."
+        "cost of moving the equity weight by one (both indices' costs) over the "
+        "tilt strength times the variance of the difference between the two "
+        "indices' returns — the same at every risk level now."
     ),
     "Directional P&L": (
         "What you would have earned by holding this index only when the model "

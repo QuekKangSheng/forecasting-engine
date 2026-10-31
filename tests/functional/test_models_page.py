@@ -62,7 +62,7 @@ DEFAULT_SHARED = (5, 120, 20)
 DEFAULT_MODEL_SETTINGS = {
     POLY: 10,
     USER_POLY: ("", ()),
-    "Research model (fixed inputs)": "sign-ruled v1",
+    "Polynomial – fixed economic inputs": "sign-ruled v1",
 }
 NAIVE = "Naive (training mean)"
 
@@ -253,7 +253,7 @@ def test_the_model_checkboxes_default_to_every_family_and_none_is_compulsory():
     assert set(boxes) == {
         "Polynomial",
         "Fama-French 5",
-        "Research model (fixed inputs)",
+        "Polynomial – fixed economic inputs",
         "Machine learning",
     }
     assert all(box.value and not box.disabled for box in boxes.values())
@@ -953,6 +953,10 @@ def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch, stub_
     assert "Fama-French 5 · S&P 500" in _expander_labels(app)
     assert "Using the saved copy." in " ".join(w.value for w in app.warning)
     assert "10 target dates have no factor row" in _captions(app)
+    # User-supplied polynomial, FF5, and ML (stub_ml) each show a SHAP table
+    # beside their fitted terms (derived polynomial doesn't survive this
+    # fixture's small data, same as elsewhere on this page).
+    assert _markdown(app).count("Feature attribution (SHAP)") == 3
 
 
 def test_a_blank_own_function_runs_no_polynomial_and_says_why(stub_ml):
@@ -1026,6 +1030,16 @@ def test_ml_results_show_shap(stub_ml):
     app = _run_equity(_untick(_page(), "Fama-French 5"))
 
     assert "Feature attribution (SHAP)" in _markdown(app)
+
+
+def test_the_user_supplied_polynomial_also_shows_shap(stub_ml):
+    app = _run_equity(_untick(_page(), "Fama-French 5"))
+
+    # User-supplied polynomial and ML (stub_ml) each show a SHAP table beside
+    # their fitted terms; derived polynomial's own coverage is in
+    # test_the_research_model_also_shows_feature_attribution_shap, where it
+    # reliably survives this fixture's small data.
+    assert _markdown(app).count("Feature attribution (SHAP)") == 2
 
 
 def test_ml_results_show_which_tune_each_fold_used_and_the_latest_settings(stub_ml):
@@ -1373,7 +1387,7 @@ def test_a_run_without_saved_forecasts_shows_no_directional_check():
 
 # --- the research model (fixed inputs) ----------------------------------------------
 
-RESEARCH = "Research model (fixed inputs)"
+RESEARCH = "Polynomial – fixed economic inputs"
 RESEARCH_CAPTION = (
     "Inputs and signs chosen in the Oct 2026 model research on data overlapping this "
     "test period; treat its score as optimistic."
@@ -1429,6 +1443,20 @@ def test_the_research_model_runs_beside_the_derived_polynomial_on_the_same_dates
     assert f"**{RESEARCH}**: gate" in _markdown(app)
     assert f"{RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
     assert f"{RESEARCH} · S&P 500" in _expander_labels(app)
+
+
+def test_the_research_model_also_shows_feature_attribution_shap(stub_ml):
+    committed, sources = _with_research_inputs()
+    app = _page(committed=committed, sources=sources)
+    app = _press_run(_untick(app, "Fama-French 5", "Machine learning"))
+
+    assert not app.exception
+    # Derived polynomial and the research model each show a SHAP table beside
+    # their fitted terms; nothing else ran (user-supplied's formula is blank).
+    assert _markdown(app).count("Feature attribution (SHAP)") == 2
+    shap = _stored_runs(app)[RESEARCH].shap
+    assert set(shap.terms) == set(RESEARCH_INPUTS)
+    assert all(value > 0 for value in shap.coefficients)
 
 
 def test_unticking_the_research_model_runs_it_not(stub_ml):

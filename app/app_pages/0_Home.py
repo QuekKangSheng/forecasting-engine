@@ -18,7 +18,11 @@ from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import select_signals
 from forecasting_engine.reporting.factor_labels import labeller
-from forecasting_engine.reporting.model_metrics import MODEL_ORDER, ModelRunResult
+from forecasting_engine.reporting.model_metrics import (
+    MODEL_ORDER,
+    ModelRunResult,
+    display_model_name,
+)
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
 from forecasting_engine.store import active_model
 from forecasting_engine.validation.gates import evaluate_candidate
@@ -160,12 +164,15 @@ def _models_card() -> None:
             st.caption("Active model: none set.")
         elif _stale(active.dataset_fingerprint):
             st.warning(
-                f"Active model {active.model_name} was fitted on different data from the one "
-                "committed now.",
+                f"Active model {display_model_name(active.model_name)} was fitted on "
+                "different data from the one committed now.",
                 icon=":material/warning:",
             )
         else:
-            st.caption(f"Active model: {active.model_name}, fitted on the committed data.")
+            st.caption(
+                f"Active model: {display_model_name(active.model_name)}, "
+                "fitted on the committed data."
+            )
 
 
 def _portfolio_card() -> None:

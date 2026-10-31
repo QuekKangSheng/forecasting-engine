@@ -1,8 +1,8 @@
 """The sign-ruled polynomial: a degree-1 polynomial in risk gauges oriented by economics,
 whose slopes are shrunk toward one common positive slope.
 
-Run on the Models page's Equity tab as its own row, "Research model (fixed inputs)",
-exactly as the research ran it. Its inputs, their signs and its level were chosen by
+Run on the Models page's Equity tab as its own row, "Polynomial – fixed economic
+inputs", exactly as the research ran it. Its inputs, their signs and its level were chosen by
 looking at results over Aug 2016 - Sep 2024, which overlaps the scored period, so its
 scores there overstate it; the page's derived polynomial uses the same shrinkage
 (``models/shrinkage.py``) with every choice made per fold instead. See
