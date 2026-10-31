@@ -80,6 +80,9 @@ class BacktestResult:
     """The last day with a return, the same for both portfolios."""
     optimised: PortfolioPath
     baseline: PortfolioPath
+    index_returns: pd.DataFrame
+    """Each index's own daily return, a column per ``TargetRole``, on the same days
+    as the portfolios' paths: what holding that index alone earned, with no costs."""
     metrics: Mapping[tuple[str, str], PerformanceMetrics]
     """Keyed by ``(portfolio, basis)``: ``("optimised", "net")``, and so on."""
     relative: Mapping[str, RelativeMetrics]
@@ -128,6 +131,7 @@ def run_backtest(
         end=end,
         optimised=optimised,
         baseline=baseline,
+        index_returns=returns.iloc[1:],
         metrics={
             (name, basis): performance(getattr(path, basis), risk_free_rate=risk_free_rate)
             for name, path in paths.items()

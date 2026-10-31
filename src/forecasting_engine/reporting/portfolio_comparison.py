@@ -4,7 +4,10 @@ the same two portfolios' historical tail risk, as rows beside max drawdown.
 FYP-38: those rows for every VaR/CVaR method, with "Not run" for any not computed.
 FYP-20: whether the optimised portfolio's outperformance is statistically
 significant, as a figure and a plain-language label. FYP-36: the simulated tail
-over the next forecast horizon, as rows the same shape as the tail rows."""
+over the next forecast horizon, as rows the same shape as the tail rows. FYP-254:
+each index's and the optimised portfolio's rolling volatility, as paths a chart
+can draw. FYP-258: the same three series' drawdown from their running peak,
+likewise."""
 
 from __future__ import annotations
 
@@ -13,12 +16,16 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from forecasting_engine.portfolio.backtest import BASES, BacktestResult
+from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.portfolio.backtest import ASSETS, BASES, BacktestResult
 from forecasting_engine.portfolio.directional import cumulative
 from forecasting_engine.portfolio.performance import (
+    ROLLING_VOL_WINDOW,
     SIGNIFICANCE_CONFIDENCE,
     PerformanceMetrics,
     Significance,
+    drawdown,
+    rolling_volatility,
 )
 from forecasting_engine.risk.monte_carlo import MonteCarloResult
 from forecasting_engine.risk.tail import (
@@ -87,6 +94,45 @@ def cumulative_paths(result: BacktestResult, basis: str) -> pd.DataFrame:
             for name in PORTFOLIO_LABELS
         }
     )
+
+
+def rolling_volatility_paths(
+    result: BacktestResult,
+    basis: str,
+    labels: Mapping[TargetRole, str],
+    *,
+    window: int = ROLLING_VOL_WINDOW,
+) -> pd.DataFrame:
+    """Rolling annualised volatility of each index, named by ``labels``, and of the
+    optimised portfolio on ``basis``, a column each. An index pays no trading costs,
+    so only the portfolio follows ``basis``. Rows start once ``window`` days have
+    passed, so a backtest shorter than that has none."""
+    returns = _index_and_portfolio_returns(result, basis, labels)
+    return pd.DataFrame(
+        {name: rolling_volatility(r, window) for name, r in returns.items()}
+    ).dropna()
+
+
+def drawdown_paths(
+    result: BacktestResult, basis: str, labels: Mapping[TargetRole, str]
+) -> pd.DataFrame:
+    """How far each index, named by ``labels``, and the optimised portfolio on
+    ``basis`` stand below their running peak on each backtest day, a column each.
+    As with rolling volatility, only the portfolio follows ``basis``."""
+    returns = _index_and_portfolio_returns(result, basis, labels)
+    return pd.DataFrame({name: drawdown(r) for name, r in returns.items()})
+
+
+def _index_and_portfolio_returns(
+    result: BacktestResult, basis: str, labels: Mapping[TargetRole, str]
+) -> dict[str, pd.Series]:
+    """Each index's daily returns, named by ``labels``, then the optimised
+    portfolio's on ``basis``: the three lines the risk charts draw."""
+    if basis not in BASES:
+        raise ValueError(f"basis must be one of {BASES}, got {basis!r}")
+    returns = {labels[role]: result.index_returns[role] for role in ASSETS}
+    returns[PORTFOLIO_LABELS["optimised"]] = getattr(result.optimised, basis)
+    return returns
 
 
 @dataclass(frozen=True)
