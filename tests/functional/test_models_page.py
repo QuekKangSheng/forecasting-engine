@@ -957,6 +957,7 @@ def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch, stub_
     # beside their fitted terms (derived polynomial doesn't survive this
     # fixture's small data, same as elsewhere on this page).
     assert _markdown(app).count("Feature attribution (SHAP)") == 3
+    assert _stored_runs(app)["FF5 Benchmark"].shap.name == Origin.FAMA_FRENCH
 
 
 def test_a_blank_own_function_runs_no_polynomial_and_says_why(stub_ml):

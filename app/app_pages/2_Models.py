@@ -599,7 +599,7 @@ def _run_famafrench(
     result, description = run_famafrench(panel, splitter)
     fn = from_description(
         description,
-        origin=Origin.DERIVED,
+        origin=Origin.FAMA_FRENCH,
         target=price_col,
         horizon=horizon,
         columns=FACTOR_COLUMNS,

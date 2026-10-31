@@ -39,6 +39,7 @@ Factors = tuple[tuple[str, int], ...]
 class Origin(StrEnum):
     USER_SUPPLIED = "User-Supplied Function"
     DERIVED = "Derived Function"
+    FAMA_FRENCH = "Fama-French Regression"
 
 
 @dataclass(frozen=True)

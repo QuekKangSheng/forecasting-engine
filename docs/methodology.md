@@ -384,6 +384,20 @@ signal, or expands past 50 terms). `tests/unit/test_shap_attribution.py`
 checks the degree-1 case against the closed form directly and the interaction
 case's conservation property (the two signals' shares sum to the term's own).
 
+For a degree-1 term, mean |SHAP value| equals |coefficient| × the mean absolute
+deviation of the input over the fold's training rows, the input being as the
+function reads it (clipped, and standardised where the function is). So for
+degree-1 models it ranks signals almost the same way as standardised
+coefficients, which scale by the standard deviation instead: the two rankings
+can differ only through the ratio of those two spreads, which depends on the
+shape of each signal's distribution. Its added value is for degrees 2–3, where a
+signal appears in several terms, and for comparing polynomial models with the ML
+models in one table.
+
+SHAP explains the last fold's fitted function over that fold's training rows
+(the test window is too short to average over), the same convention the ML SHAP
+uses (`models.boosted._explain_last_fold`).
+
 ## 10. Metrics
 
 `validation/harness.summarize` pools every fold's test predictions and realised
