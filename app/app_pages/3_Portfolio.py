@@ -12,6 +12,7 @@ own parameters (risk level, weight bounds) are configurable on this page.
 from __future__ import annotations
 
 import html
+import traceback
 
 import altair as alt
 import pandas as pd
@@ -23,6 +24,7 @@ import portfolio_summary
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.portfolio import optimize
 from forecasting_engine.portfolio.backtest import (
     BASELINE_WEIGHTS,
@@ -48,7 +50,8 @@ from forecasting_engine.reporting.portfolio_comparison import (
 )
 from forecasting_engine.risk import monte_carlo
 from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, TAIL_METHODS
-from forecasting_engine.store import active_model
+from forecasting_engine.store import active_model, portfolio_runs
+from forecasting_engine.store import runs as run_history
 from model_settings import EMBARGO_DAYS, TRAIN_WINDOW
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
@@ -330,6 +333,32 @@ st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSum
     net_sharpe=backtest.metrics[("optimised", "net")].sharpe,
     baseline_net_sharpe=backtest.metrics[("baseline", "net")].sharpe,
 )
+
+# Recorded once per distinct set of inputs (store/portfolio_runs): the key is the
+# hash of everything the result depends on, so recording on every view is safe,
+# and a failed write is reported without stopping the page.
+try:
+    portfolio_runs.record_portfolio_run(
+        portfolio_runs.PortfolioInputs(
+            dataset_sha256=frame_sha256(merged),
+            equity_run_id=equity_active.run_id,
+            bond_run_id=bond_active.run_id,
+            equity_set_at=equity_active.set_at,
+            bond_set_at=bond_active.set_at,
+            horizon=equity_active.horizon,
+            train_window=TRAIN_WINDOW,
+            test_window=equity_active.test_window,
+            embargo=EMBARGO_DAYS,
+            risk_level=risk_level,
+            bounds=(lower, upper),
+            costs_bps={role.value: cost for role, cost in backtest.costs_bps.items()},
+            code_version=run_history.code_version(),
+        ),
+        backtest,
+        schedule,
+    )
+except Exception:  # noqa: BLE001 - a failed log must not stop the page
+    traceback.print_exc()
 
 costs = backtest.costs_bps
 st.caption(
