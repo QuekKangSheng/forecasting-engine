@@ -545,7 +545,11 @@ def test_the_t_statistic_explains_itself_on_hover():
 
 
 def test_a_second_t_statistic_tests_the_forecasts_against_the_no_forecast_level():
-    app = _happy_page()
+    committed = _long_committed()
+    stamp = {"dataset_fingerprint": str(dataset_fingerprint(committed))}
+    _set_active(EQUITY, forecast=_following_returns(committed, +1), **stamp)
+    _set_active(BOND, forecast=_flat_bond(committed), **stamp)
+    app = _page(committed)
 
     assert not app.exception
     row = next(m.value for m in app.markdown if "Did the forecasts add value?" in m.value)
@@ -554,7 +558,22 @@ def test_a_second_t_statistic_tests_the_forecasts_against_the_no_forecast_level(
     captions = _captions(app)
     assert "optimised minus the same level with no forecasts" in captions
     assert "also reflects level 3's equity weight" in captions
-    assert "no-trade band" in captions
+    assert "no-trade band on both sides" in captions
+
+
+@pytest.mark.parametrize("floor", [0.2, 0.1])
+def test_at_level_5_the_forecast_test_shows_no_verdict(floor):
+    app = _happy_page()
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+    (low,) = [s for s in app.slider if s.label == "Minimum in each index"]
+    scale.set_value(5)
+    low.set_value(floor).run()
+
+    assert not app.exception
+    row = next(m.value for m in app.markdown if "Did the forecasts add value?" in m.value)
+    assert "No forecast effect to test" in row
+    assert "t = —" in row
+    assert "at 95% confidence" not in row
 
 
 def test_without_performance_data_the_page_guides_instead_of_testing():

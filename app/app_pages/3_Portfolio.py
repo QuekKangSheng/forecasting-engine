@@ -194,17 +194,19 @@ with st.expander("Settings"):
         "highest-risk mixes these limits allow, and the forecasts tilt from there."
     )
 
+schedule_settings = {
+    "baselines": baselines,
+    "horizon": equity_active.horizon,
+    "train_window": TRAIN_WINDOW,
+    "test_window": equity_active.test_window,
+    "embargo": EMBARGO_DAYS,
+    "risk_level": risk_level,
+    "bounds": (lower, upper),
+}
 try:
-    breakdowns = optimize.schedule_breakdowns(
-        signals,
-        prices,
-        baselines=baselines,
-        horizon=equity_active.horizon,
-        train_window=TRAIN_WINDOW,
-        test_window=equity_active.test_window,
-        embargo=EMBARGO_DAYS,
-        risk_level=risk_level,
-        bounds=(lower, upper),
+    breakdowns = optimize.schedule_breakdowns(signals, prices, **schedule_settings)
+    no_forecast_breakdowns = optimize.schedule_breakdowns(
+        signals, prices, trust=0.0, **schedule_settings
     )
 except BacktestDataError as exc:
     st.warning(f"The allocation could not be set: {exc}", icon=":material/warning:")
@@ -311,9 +313,9 @@ except BacktestDataError as exc:
     st.warning(f"The allocation could not be backtested: {exc}", icon=":material/warning:")
     st.stop()
 
-# The level's no-forecast weights at the same rebalances, so what the forecasts
-# added can be read separately.
-no_forecast_backtest = run_backtest(prices, optimize.no_forecast_schedule(breakdowns))
+# The same level and no-trade band with no forecasts, so what the forecasts added
+# can be read separately.
+no_forecast_backtest = run_backtest(prices, optimize.schedule_weights(no_forecast_breakdowns))
 
 st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
     dataset_fingerprint=str(dataset_fingerprint(merged)),
@@ -400,9 +402,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption(
-    f"{NO_FORECAST_COL} holds level {risk_level}'s target weight at each rebalance with no "
-    "forecast, so it shows what the risk level alone would have earned, separate from what "
-    "the forecasts added on top of it. Difference is optimised minus benchmark: positive "
+    f"{NO_FORECAST_COL} holds level {risk_level}'s target weight with no forecast, under the "
+    "same no-trade band, so the forecasts are the only difference between it and the "
+    "optimised portfolio. Difference is optimised minus benchmark: positive "
     "favours the optimised portfolio "
     "on every row, drawdown included."
 )
@@ -502,8 +504,8 @@ st.markdown(
 )
 st.caption(
     f"{forecast_value.detail} {basis_label}. The test above, against the benchmark, also "
-    f"reflects level {risk_level}'s equity weight. This one has that weight on both sides, "
-    "so it tests the forecasts, along with any effect of the no-trade band.",
+    f"reflects level {risk_level}'s equity weight. This one has that weight and the no-trade "
+    "band on both sides, so the forecasts are the only difference.",
     help=glossary.term("Forecast value t-statistic"),
 )
 

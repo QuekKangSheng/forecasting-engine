@@ -318,7 +318,7 @@ def forecast_value_summary(
 ) -> SignificanceSummary:
     """Did the forecasts add value on ``basis``? The same paired, Newey-West test as
     ``significance_summary``, of the optimised portfolio against ``no_forecast``, the
-    backtest of the risk level's weights held with no forecasts."""
+    backtest of the same risk level and no-trade band with no forecasts."""
     if basis not in BASES:
         raise ValueError(f"basis must be one of {BASES}, got {basis!r}")
     spread = relative(getattr(result.optimised, basis), getattr(no_forecast.optimised, basis))

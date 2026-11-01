@@ -4,6 +4,7 @@ covariance each rebalance is sized against, and a risk level's Markowitz weight.
 import numpy as np
 import pandas as pd
 import pytest
+import statsmodels.api as sm
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.backtest import run_backtest
@@ -19,14 +20,16 @@ from forecasting_engine.portfolio.optimize import (
     forecast_trust,
     level_weight,
     long_run_premium,
-    no_forecast_schedule,
     pairs_known_by,
     schedule_breakdowns,
+    schedule_weights,
     solve_weights,
     trust_pairs,
     weight_breakdown,
     weight_schedule,
 )
+from forecasting_engine.portfolio.performance import newey_west_lags
+from forecasting_engine.reporting.portfolio_comparison import forecast_value_summary
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 
@@ -517,17 +520,6 @@ def test_with_no_trust_yet_the_schedule_holds_each_levels_no_forecast_weight():
     assert all(b.equity == b.level_weight for b in breakdowns.values())
 
 
-def test_the_no_forecast_schedule_is_the_level_weight_at_the_same_rebalances():
-    _dates, prices, forecasts = _schedule_inputs()
-
-    breakdowns = schedule_breakdowns(forecasts, prices, **_SCHEDULE_KWARGS)
-    schedule = no_forecast_schedule(breakdowns)
-
-    assert list(schedule.index) == list(breakdowns)
-    assert list(schedule[EQUITY]) == [b.level_weight for b in breakdowns.values()]
-    assert schedule.sum(axis=1).sub(1.0).abs().max() < 1e-9
-
-
 # --- FYP-49: the no-trade band ---------------------------------------------------------
 
 
@@ -873,6 +865,99 @@ def test_below_the_minimum_history_the_trust_is_zero():
     assert forecast_trust(one_short, pairs) == 0.0
     assert len(pairs_known_by(enough, pairs)) == MIN_TRUST_HISTORY
     assert forecast_trust(enough, pairs) == pytest.approx(1.0)
+
+
+def _weak_slope(x, rng):
+    """A true slope of 0.05 with noise uncorrelated with ``x``, whatever the seed."""
+    noise = rng.normal(0, 0.01, len(x))
+    return 0.05 * x + noise - np.polyval(np.polyfit(x, noise, 1), x)
+
+
+def _strong_slope(x, rng):
+    return 0.5 * x + rng.normal(0, 0.01, len(x))
+
+
+def _gated_and_not(make_y) -> tuple[float, float]:
+    dates, signals, prices = _trust_inputs(make_y)
+    pairs = trust_pairs(signals, _zero_baselines(dates), prices, horizon=1)
+    return forecast_trust(dates[-1], pairs), forecast_trust(dates[-1], pairs, gate=float("-inf"))
+
+
+def test_a_weak_noisy_slope_earns_no_trust():
+    gated, slope = _gated_and_not(_weak_slope)
+
+    assert slope > 0
+    assert gated == 0.0
+
+
+def test_a_strong_slope_keeps_its_value():
+    gated, slope = _gated_and_not(_strong_slope)
+
+    assert gated == pytest.approx(0.5, abs=0.1)
+    assert gated == slope
+
+
+def test_the_gate_reads_a_newey_west_t_with_the_spread_lag_rule_and_is_strict():
+    dates, signals, prices = _trust_inputs(_weak_slope)
+    pairs = trust_pairs(signals, _zero_baselines(dates), prices, horizon=1)
+    known = pairs_known_by(dates[-1], pairs)
+    t = (
+        sm.OLS(known["y"].to_numpy(), sm.add_constant(known["x"].to_numpy()))
+        .fit(cov_type="HAC", cov_kwds={"maxlags": newey_west_lags(len(known))})
+        .tvalues[1]
+    )
+
+    assert forecast_trust(dates[-1], pairs, gate=t - 1e-9) > 0
+    assert forecast_trust(dates[-1], pairs, gate=t) == 0.0
+
+
+def _weak_schedule_inputs():
+    dates, signals, prices = _trust_inputs(_weak_slope)
+    rising = _rising_prices(dates, seed=7)
+    rng = np.random.default_rng(8)
+    noise = pd.Series(rng.normal(0, 0.01, len(dates)), index=dates)
+    return (
+        rising,
+        {**signals, EQUITY: noise},
+        {**_SCHEDULE_KWARGS, "baselines": _zero_baselines(dates)},
+    )
+
+
+def test_a_schedule_with_a_rejected_slope_is_the_no_forecast_level():
+    prices, signals, kwargs = _weak_schedule_inputs()
+
+    breakdowns = schedule_breakdowns(signals, prices, **kwargs)
+    ungated = schedule_breakdowns(signals, prices, trust_gate=float("-inf"), **kwargs)
+
+    assert breakdowns == schedule_breakdowns(signals, prices, trust=0.0, **kwargs)
+    assert any(b.forecast_tilt != 0 for b in ungated.values())
+
+
+def test_the_no_forecast_level_keeps_the_no_trade_band():
+    prices, signals, kwargs = _weak_schedule_inputs()
+
+    breakdowns = list(schedule_breakdowns(signals, prices, trust=0.0, **kwargs).values())
+
+    assert all(b.forecast_tilt == 0 for b in breakdowns)
+    assert any(b.held for b in breakdowns)
+
+
+@pytest.mark.parametrize("bounds", [(0.2, 0.8), (0.1, 0.9)])
+def test_at_level_5_the_optimised_and_no_forecast_series_are_identical(bounds):
+    prices, signals, kwargs = _weak_schedule_inputs()
+    kwargs = {**kwargs, "risk_level": 5, "bounds": bounds}
+
+    optimised = run_backtest(
+        prices, schedule_weights(schedule_breakdowns(signals, prices, trust=1.0, **kwargs))
+    )
+    no_forecast = run_backtest(
+        prices, schedule_weights(schedule_breakdowns(signals, prices, trust=0.0, **kwargs))
+    )
+
+    pd.testing.assert_series_equal(optimised.optimised.net, no_forecast.optimised.net)
+    summary = forecast_value_summary(optimised, no_forecast, "net")
+    assert summary.t == "—"
+    assert summary.label == "No forecast effect to test"
 
 
 def test_the_pairs_used_never_fall_from_one_rebalance_to_the_next():

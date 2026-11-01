@@ -32,8 +32,9 @@ bound whatever the signals say.
 
 ``β̂`` is estimated on an expanding window, from each past date's signal difference
 and the return that followed it, using only returns fully known before the rebalance
-(``forecast_trust``). Until ``MIN_TRUST_HISTORY`` such pairs exist it is zero, so the
-forecasts move nothing.
+(``forecast_trust``). Until ``MIN_TRUST_HISTORY`` such pairs exist, and whenever the
+slope's Newey-West t-statistic is not above ``validation.gates.SIGNIFICANCE_T_GATE``,
+it is zero, so the forecasts move nothing.
 
 A rebalance happens once every ``horizon`` trading days over the out-of-sample
 period, so each allocation is held for exactly as long as the forecast it was
@@ -56,6 +57,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
@@ -64,6 +66,8 @@ from forecasting_engine.portfolio.backtest import (
     DEFAULT_COSTS_BPS,
     asset_returns,
 )
+from forecasting_engine.portfolio.performance import newey_west_lags
+from forecasting_engine.validation.gates import SIGNIFICANCE_T_GATE
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 
 
@@ -246,17 +250,25 @@ def pairs_known_by(rebalance_date: pd.Timestamp, pairs: pd.DataFrame) -> pd.Data
     return pairs[pairs["label_end"] < rebalance_date]
 
 
-def forecast_trust(rebalance_date: pd.Timestamp, pairs: pd.DataFrame) -> float:
+def forecast_trust(
+    rebalance_date: pd.Timestamp, pairs: pd.DataFrame, *, gate: float = SIGNIFICANCE_T_GATE
+) -> float:
     """``β̂``: how much of the signal difference the models have earned trust for. The
     slope of an OLS of ``y`` on ``x`` with an intercept, over every pair known by
     ``rebalance_date``, clipped to ``[0, 1]`` (Grinold 1994). Zero with fewer than
-    ``MIN_TRUST_HISTORY`` pairs, or where ``x`` never varies and has no slope."""
+    ``MIN_TRUST_HISTORY`` pairs, where ``x`` never varies and has no slope, or where the
+    slope's t-statistic is not above ``gate``, on a Newey-West standard error with the
+    spread t-statistic's lag rule (``performance.newey_west_lags``)."""
     known = pairs_known_by(rebalance_date, pairs)
     x, y = known["x"].to_numpy(dtype=float), known["y"].to_numpy(dtype=float)
     if len(known) < MIN_TRUST_HISTORY or np.ptp(x) == 0:
         return 0.0
-    slope = float(np.cov(x, y, ddof=1)[0, 1] / np.var(x, ddof=1))
-    return min(max(slope, 0.0), 1.0)
+    fit = sm.OLS(y, sm.add_constant(x)).fit(
+        cov_type="HAC", cov_kwds={"maxlags": newey_west_lags(len(known))}
+    )
+    if not fit.tvalues[1] > gate:
+        return 0.0
+    return min(max(float(fit.params[1]), 0.0), 1.0)
 
 
 @dataclass(frozen=True)
@@ -415,16 +427,6 @@ def schedule_weights(breakdowns: Mapping[pd.Timestamp, WeightBreakdown]) -> pd.D
     )
 
 
-def no_forecast_schedule(breakdowns: Mapping[pd.Timestamp, WeightBreakdown]) -> pd.DataFrame:
-    """The level's no-forecast weight ``w*_L`` at each rebalance in ``breakdowns``, as
-    a schedule ``run_backtest`` runs like the optimised one."""
-    equity, bond = ASSETS
-    weights = np.array([b.level_weight for b in breakdowns.values()], dtype=float)
-    return pd.DataFrame(
-        {equity: weights, bond: 1 - weights}, index=pd.DatetimeIndex(list(breakdowns))
-    )
-
-
 def schedule_breakdowns(
     signals: Mapping[TargetRole, pd.Series],
     prices: Mapping[TargetRole, pd.Series],
@@ -438,13 +440,16 @@ def schedule_breakdowns(
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
     costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
     trust: float | None = None,
+    trust_gate: float = SIGNIFICANCE_T_GATE,
 ) -> dict[pd.Timestamp, WeightBreakdown]:
     """How each rebalance's equity weight was reached, in date order: the target
     solved from that date's signals, ``forecast_trust`` and the covariance over its
     own training window, then the no-trade band against the weight the last
     allocation drifted to. Zero costs leave no band, so every rebalance moves to its
     target. ``baselines`` are each forecast's fold training means. A ``trust`` given
-    is used at every rebalance in place of the estimate.
+    is used at every rebalance in place of the estimate; ``trust=0.0`` is the level
+    with no forecasts, under the same band. ``trust_gate`` is the t-statistic the
+    estimate must clear.
 
     A rebalance whose signal is missing (a model had no prediction that day) or
     whose training window can't support a covariance estimate is left out rather
@@ -472,7 +477,7 @@ def schedule_breakdowns(
             row,
             covariance,
             premium=premium,
-            trust=forecast_trust(date, pairs) if trust is None else trust,
+            trust=forecast_trust(date, pairs, gate=trust_gate) if trust is None else trust,
             risk_level=risk_level,
             bounds=bounds,
         )
