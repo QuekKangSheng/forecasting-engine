@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -17,8 +18,10 @@ from forecasting_engine.ingest.upload import (
     frame_csv_bytes,
     frame_sha256,
 )
+from forecasting_engine.portfolio.backtest import run_backtest
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.store import active_model, lineage
+from forecasting_engine.store.portfolio_runs import PortfolioInputs, record_portfolio_run
 from forecasting_engine.store.runs import record_run
 from forecasting_engine.validation.crash import CrashDiagnostics
 
@@ -79,6 +82,9 @@ def db(tmp_path_factory):
             db_path=db,
             set_at=start + timedelta(hours=hours),
         )
+    # Two portfolio settings, one of which beats 50/50 after costs.
+    for aversion in (10.0, 100.0):
+        _record_portfolio(db, aversion)
     record_run(
         role=TargetRole.EQUITY,
         model_name="FF5 Benchmark",
@@ -93,8 +99,28 @@ def db(tmp_path_factory):
     return db
 
 
+def _record_portfolio(db, aversion: float) -> None:
+    rng = np.random.default_rng(int(aversion))
+    idx = pd.bdate_range("2024-01-31", periods=80)
+    prices = {
+        TargetRole.EQUITY: pd.Series(100 * np.cumprod(1 + rng.normal(0.002, 0.01, 80)), index=idx),
+        TargetRole.BOND: pd.Series(100 * np.cumprod(1 + rng.normal(0.0, 0.003, 80)), index=idx),
+    }
+    equity = 0.8 if aversion == 10.0 else 0.2  # the low-aversion mix holds the rising index
+    schedule = pd.DataFrame(
+        {TargetRole.EQUITY: [equity], TargetRole.BOND: [1 - equity]}, index=idx[:1]
+    )
+    inputs = PortfolioInputs(
+        dataset_sha256=frame_sha256(DATA), equity_run_id=None, bond_run_id=None,
+        equity_set_at=datetime(2026, 10, 26), bond_set_at=datetime(2026, 10, 26),
+        horizon=20, train_window=504, test_window=20, embargo=20, risk_aversion=aversion,
+        bounds=(0.2, 0.8), costs_bps={"equity": 3.0, "bond": 5.0}, code_version="abc1234",
+    )
+    record_portfolio_run(inputs, run_backtest(prices, schedule), schedule, db_path=db)
+
+
 def test_the_doc_has_its_queries():
-    assert len(QUERIES) == 6
+    assert len(QUERIES) == 7
 
 
 @pytest.mark.parametrize("query", QUERIES, ids=[f"query-{i + 1}" for i in range(len(QUERIES))])
@@ -114,7 +140,7 @@ def test_the_lineage_query_finds_the_file_each_run_was_fitted_on(db):
 
 def test_the_hit_rate_query_counts_only_dates_with_a_view(db):
     with duckdb.connect(str(db), read_only=True) as conn:
-        frame = conn.execute(QUERIES[5]).df()
+        frame = conn.execute(QUERIES[6]).df()
 
     # Of 4 dates, one forecast equals its baseline; of the other 3, two call it right.
     (row,) = frame.itertuples()
@@ -134,3 +160,11 @@ def test_the_end_to_end_query_traces_the_current_active_model_to_its_exports(db)
     assert list(frame["source_role"]) == ["target", "signal"]
     assert set(frame["run_id"]) == {newest}
     assert set(frame["code_version"]) == {"bbb2222"}
+
+
+def test_the_portfolio_query_keeps_only_settings_that_beat_the_benchmark(db):
+    with duckdb.connect(str(db), read_only=True) as conn:
+        frame = conn.execute(QUERIES[4]).df()
+
+    assert list(frame["risk_aversion"]) == ["10.0"]
+    assert (frame["net_sharpe"] > frame["baseline_net_sharpe"]).all()

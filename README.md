@@ -99,7 +99,8 @@ hosting step is needed.
 - **Run history** — every model fit recorded in DuckDB, failures included: when it
   ran, the SHA-256 of the exact data, its settings and code version, how long it
   took, and its metrics and forecasts. A page lists the runs and traces each one to
-  the uploaded file it was fitted on. See [docs/run-history.md](docs/run-history.md)
+  the uploaded file it was fitted on. Every distinct Portfolio result is recorded
+  too, once, under a key hashed from everything it depends on. See [docs/run-history.md](docs/run-history.md)
   for the tables, guarantees and example queries.
 - **Directional P&L** — for one model and one index, what holding the index only
   when the forecast says it will rise would have earned against holding it

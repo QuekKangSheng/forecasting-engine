@@ -1,8 +1,10 @@
 """The Run history page, driven through the real Streamlit page script."""
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
@@ -15,8 +17,10 @@ from forecasting_engine.ingest.upload import (
     frame_csv_bytes,
     frame_sha256,
 )
+from forecasting_engine.portfolio.backtest import run_backtest
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.store import active_model, lineage, runs
+from forecasting_engine.store.portfolio_runs import PortfolioInputs, record_portfolio_run
 from forecasting_engine.store.uploads import record_upload
 from forecasting_engine.validation.crash import CrashDiagnostics
 
@@ -186,3 +190,44 @@ def test_the_run_behind_an_active_model_is_marked_active():
 
     assert list(app.dataframe[0].value["Active"]) == ["", "Equity"]
     assert any(o.endswith("· active") for o in app.selectbox[0].options)
+
+
+# --- portfolio runs ------------------------------------------------------------------
+
+
+def _portfolio_tab(app) -> str:
+    return " ".join(m.value for m in app.tabs[1].markdown) + " ".join(
+        i.value for i in app.tabs[1].info
+    )
+
+
+def test_with_no_portfolio_result_the_tab_says_where_they_come_from():
+    app = _page()
+
+    assert "Open the Portfolio Optimizer" in _portfolio_tab(app)
+
+
+def test_each_distinct_portfolio_result_is_listed_once():
+    rng = np.random.default_rng(0)
+    idx = pd.bdate_range("2024-01-31", periods=60)
+    prices = {
+        TargetRole.EQUITY: pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.01, 60)), index=idx),
+        TargetRole.BOND: pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.003, 60)), index=idx),
+    }
+    schedule = pd.DataFrame({TargetRole.EQUITY: [0.6, 0.5], TargetRole.BOND: [0.4, 0.5]},
+                            index=idx[[0, 30]])
+    result = run_backtest(prices, schedule)
+    inputs = PortfolioInputs(
+        dataset_sha256=frame_sha256(DATA), equity_run_id=None, bond_run_id=None,
+        equity_set_at=T0, bond_set_at=T0, horizon=20, train_window=504, test_window=20,
+        embargo=20, risk_aversion=10.0, bounds=(0.2, 0.8),
+        costs_bps={"equity": 3.0, "bond": 5.0}, code_version="abc1234",
+    )
+    for _ in range(3):  # the page shown three times
+        record_portfolio_run(inputs, result, schedule)
+    record_portfolio_run(replace(inputs, risk_aversion=30.0), result, schedule)
+    app = _page()
+
+    table = app.tabs[1].dataframe[0].value
+    assert sorted(table["Risk aversion λ"]) == [10.0, 30.0]
+    assert "2 distinct results" in _portfolio_tab(app)
