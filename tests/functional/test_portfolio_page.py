@@ -782,6 +782,66 @@ def test_switching_the_active_model_updates_the_weights_and_t_statistic():
         assert after[output] != before[output], output
 
 
+UNRELIABLE = "the forecasts not used because they are not yet statistically reliable"
+
+
+def _t_against_no_forecasts(app) -> float:
+    row = next(m.value for m in app.markdown if "Did the forecasts add value?" in m.value)
+    return float(re.search(r"t = (-?\d+\.\d\d)", row).group(1))
+
+
+def test_an_oracle_forecast_beats_the_no_forecast_level_on_the_page():
+    committed = _long_committed()
+    stamp = {"dataset_fingerprint": str(dataset_fingerprint(committed))}
+    _set_active(EQUITY, forecast=_following_returns(committed, +1), **stamp)
+    _set_active(BOND, forecast=_flat_bond(committed), **stamp)
+
+    app = _page(committed)
+
+    assert not app.exception
+    assert _t_against_no_forecasts(app) > 0
+    assert UNRELIABLE not in _captions(app)
+
+
+def _noise_page() -> AppTest:
+    """Forecasts unrelated to what followed, over enough days for the gate to judge them."""
+    committed = _long_committed()
+    stamp = {"dataset_fingerprint": str(dataset_fingerprint(committed))}
+    _set_active(EQUITY, forecast=_forecast(committed, seed=1, n_dates=LONG_DAYS), **stamp)
+    _set_active(BOND, forecast=_flat_bond(committed), **stamp)
+    return _page(committed)
+
+
+def test_with_the_gate_shut_the_caption_says_the_forecasts_are_not_used():
+    app = _noise_page()
+
+    assert not app.exception
+    assert UNRELIABLE in _captions(app)
+
+
+def test_the_gate_caption_shows_no_trust_risk_aversion_or_t_value():
+    app = _noise_page()
+
+    caption = next(c.value for c in app.caption if c.value.startswith("How this was set"))
+    assert UNRELIABLE in caption
+    for hidden in ("β", "λ", "t-statistic", "t ="):
+        assert hidden not in caption
+
+
+def test_level_5_does_not_blame_the_forecasts_for_ignoring_them():
+    app = _noise_page()
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+
+    scale.set_value(5).run()
+
+    assert not app.exception
+    assert UNRELIABLE not in _captions(app)
+
+
+def test_too_little_history_is_not_called_unreliable():
+    assert UNRELIABLE not in _captions(_happy_page())
+
+
 def test_the_page_names_both_models_before_any_result():
     committed = _committed()
     _set_active(EQUITY, forecast=_leaning(committed, +0.05))

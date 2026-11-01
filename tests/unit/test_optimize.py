@@ -17,6 +17,7 @@ from forecasting_engine.portfolio.optimize import (
     common_rebalance_dates,
     covariance_at_rebalance,
     expected_returns,
+    forecast_gate_shut,
     forecast_trust,
     level_weight,
     long_run_premium,
@@ -699,7 +700,7 @@ def _zero_baselines(dates) -> dict:
 def _trust_at_the_end(make_y, **kwargs) -> float:
     dates, signals, prices = _trust_inputs(make_y, **kwargs)
     return forecast_trust(
-        dates[-1], trust_pairs(signals, _zero_baselines(dates), prices, horizon=1)
+        dates[-1], trust_pairs(signals, _zero_baselines(dates), prices, horizon=1), horizon=1
     )
 
 
@@ -731,7 +732,7 @@ def test_a_signal_that_never_varies_earns_no_trust():
 
     pairs = trust_pairs(constant, _zero_baselines(dates), prices, horizon=1)
 
-    assert forecast_trust(dates[-1], pairs) == 0.0
+    assert forecast_trust(dates[-1], pairs, horizon=1) == 0.0
 
 
 @pytest.mark.parametrize(("role", "share"), [(EQUITY, -0.5), (BOND, 0.5)])
@@ -741,9 +742,11 @@ def test_the_realised_return_is_net_of_the_same_training_means_as_the_signal(rol
     x = signals[EQUITY]
     baselines = {**_zero_baselines(dates), role: share * x}
 
-    netted = forecast_trust(dates[-1], trust_pairs(signals, baselines, prices, horizon=1))
+    netted = forecast_trust(
+        dates[-1], trust_pairs(signals, baselines, prices, horizon=1), horizon=1
+    )
     gross = forecast_trust(
-        dates[-1], trust_pairs(signals, _zero_baselines(dates), prices, horizon=1)
+        dates[-1], trust_pairs(signals, _zero_baselines(dates), prices, horizon=1), horizon=1
     )
 
     assert netted == pytest.approx(1.0)
@@ -807,7 +810,7 @@ def test_returns_ending_on_or_after_the_rebalance_never_change_the_trust():
     dates, prices, signals = _leakage_inputs()
     t = dates[350]
     zeros = _zero_baselines(dates)
-    before = forecast_trust(t, trust_pairs(signals, zeros, prices, horizon=20))
+    before = forecast_trust(t, trust_pairs(signals, zeros, prices, horizon=20), horizon=20)
     assert 0 < before < 1
 
     extreme = prices[EQUITY].copy()
@@ -815,21 +818,24 @@ def test_returns_ending_on_or_after_the_rebalance_never_change_the_trust():
     pairs = trust_pairs(signals, zeros, {**prices, EQUITY: extreme}, horizon=20)
 
     assert pairs.loc[dates[330], "y"] > 10  # ends exactly on t, and is extreme
-    assert forecast_trust(t, pairs) == before
+    assert forecast_trust(t, pairs, horizon=20) == before
 
 
 def test_a_return_ending_the_day_before_the_rebalance_is_used():
     dates, prices, signals = _leakage_inputs()
     t = dates[350]
     zeros = _zero_baselines(dates)
-    before = forecast_trust(t, trust_pairs(signals, zeros, prices, horizon=20))
+    before = forecast_trust(t, trust_pairs(signals, zeros, prices, horizon=20), horizon=20)
 
     moved = prices[EQUITY].copy()
     moved.iloc[349] *= 1.5
 
-    assert forecast_trust(
-        t, trust_pairs(signals, zeros, {**prices, EQUITY: moved}, horizon=20)
-    ) != (before)
+    assert (
+        forecast_trust(
+            t, trust_pairs(signals, zeros, {**prices, EQUITY: moved}, horizon=20), horizon=20
+        )
+        != before
+    )
 
 
 def test_no_weight_up_to_a_rebalance_depends_on_anything_after_it():
@@ -862,9 +868,9 @@ def test_below_the_minimum_history_the_trust_is_zero():
     # position p there are p - 1 pairs known.
     one_short, enough = dates[MIN_TRUST_HISTORY], dates[MIN_TRUST_HISTORY + 1]
     assert len(pairs_known_by(one_short, pairs)) == MIN_TRUST_HISTORY - 1
-    assert forecast_trust(one_short, pairs) == 0.0
+    assert forecast_trust(one_short, pairs, horizon=1) == 0.0
     assert len(pairs_known_by(enough, pairs)) == MIN_TRUST_HISTORY
-    assert forecast_trust(enough, pairs) == pytest.approx(1.0)
+    assert forecast_trust(enough, pairs, horizon=1) == pytest.approx(1.0)
 
 
 def _weak_slope(x, rng):
@@ -880,7 +886,10 @@ def _strong_slope(x, rng):
 def _gated_and_not(make_y) -> tuple[float, float]:
     dates, signals, prices = _trust_inputs(make_y)
     pairs = trust_pairs(signals, _zero_baselines(dates), prices, horizon=1)
-    return forecast_trust(dates[-1], pairs), forecast_trust(dates[-1], pairs, gate=float("-inf"))
+    return (
+        forecast_trust(dates[-1], pairs, horizon=1),
+        forecast_trust(dates[-1], pairs, horizon=1, gate=float("-inf")),
+    )
 
 
 def test_a_weak_noisy_slope_earns_no_trust():
@@ -897,18 +906,31 @@ def test_a_strong_slope_keeps_its_value():
     assert gated == slope
 
 
-def test_the_gate_reads_a_newey_west_t_with_the_spread_lag_rule_and_is_strict():
-    dates, signals, prices = _trust_inputs(_weak_slope)
-    pairs = trust_pairs(signals, _zero_baselines(dates), prices, horizon=1)
+def test_the_gate_reads_a_newey_west_t_over_h_minus_1_lags_and_is_strict():
+    dates, prices, signals = _leakage_inputs()
+    pairs = trust_pairs(signals, _zero_baselines(dates), prices, horizon=20)
     known = pairs_known_by(dates[-1], pairs)
-    t = (
-        sm.OLS(known["y"].to_numpy(), sm.add_constant(known["x"].to_numpy()))
-        .fit(cov_type="HAC", cov_kwds={"maxlags": newey_west_lags(len(known))})
-        .tvalues[1]
-    )
+    fit = sm.OLS(known["y"].to_numpy(), sm.add_constant(known["x"].to_numpy()))
+    t = fit.fit(cov_type="HAC", cov_kwds={"maxlags": 19}).tvalues[1]
+    spread_rule_t = fit.fit(
+        cov_type="HAC", cov_kwds={"maxlags": newey_west_lags(len(known))}
+    ).tvalues[1]
+    assert t != pytest.approx(spread_rule_t)
 
-    assert forecast_trust(dates[-1], pairs, gate=t - 1e-9) > 0
-    assert forecast_trust(dates[-1], pairs, gate=t) == 0.0
+    assert forecast_trust(dates[-1], pairs, horizon=20, gate=t - 1e-9) > 0
+    assert forecast_trust(dates[-1], pairs, horizon=20, gate=t) == 0.0
+
+
+def test_the_gate_is_shut_only_where_a_fit_fails_it():
+    weak_dates, weak_signals, weak_prices = _trust_inputs(_weak_slope)
+    weak = trust_pairs(weak_signals, _zero_baselines(weak_dates), weak_prices, horizon=1)
+    strong_dates, strong_signals, strong_prices = _trust_inputs(_strong_slope)
+    strong = trust_pairs(strong_signals, _zero_baselines(strong_dates), strong_prices, horizon=1)
+
+    assert forecast_gate_shut(weak_dates[-1], weak, horizon=1)
+    assert not forecast_gate_shut(strong_dates[-1], strong, horizon=1)
+    # Too little history is not the gate.
+    assert not forecast_gate_shut(weak_dates[MIN_TRUST_HISTORY], weak, horizon=1)
 
 
 def _weak_schedule_inputs():

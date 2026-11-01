@@ -234,12 +234,23 @@ cap = (
     if breakdown.capped
     else ""
 )
+# Level 5 ignores forecasts whatever their record, so their record isn't why.
+unreliable = (
+    ", with the forecasts not used because they are not yet statistically reliable"
+    if risk_level != optimize.RISK_LEVELS[-1]
+    and optimize.forecast_gate_shut(
+        latest_date,
+        optimize.trust_pairs(signals, baselines, prices, horizon=equity_active.horizon),
+        horizon=equity_active.horizon,
+    )
+    else ""
+)
 st.caption(
     f"How this was set: level {risk_level} targets {breakdown.level_weight:.0%} {equity_name}. "
     f"The signals — what each model adds to its training-mean return — ({equity_name} "
     f"{latest_signal[EQUITY]:+.2%}, {bond_name} {latest_signal[BOND]:+.2%} over "
     f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%}, giving "
-    f"{breakdown.unconstrained:.0%}{cap}."
+    f"{breakdown.unconstrained:.0%}{cap}{unreliable}."
 )
 if breakdown.held:
     st.caption(

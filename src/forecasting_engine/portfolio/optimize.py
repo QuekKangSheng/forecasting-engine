@@ -66,7 +66,6 @@ from forecasting_engine.portfolio.backtest import (
     DEFAULT_COSTS_BPS,
     asset_returns,
 )
-from forecasting_engine.portfolio.performance import newey_west_lags
 from forecasting_engine.validation.gates import SIGNIFICANCE_T_GATE
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 
@@ -250,25 +249,45 @@ def pairs_known_by(rebalance_date: pd.Timestamp, pairs: pd.DataFrame) -> pd.Data
     return pairs[pairs["label_end"] < rebalance_date]
 
 
-def forecast_trust(
-    rebalance_date: pd.Timestamp, pairs: pd.DataFrame, *, gate: float = SIGNIFICANCE_T_GATE
-) -> float:
-    """``β̂``: how much of the signal difference the models have earned trust for. The
-    slope of an OLS of ``y`` on ``x`` with an intercept, over every pair known by
-    ``rebalance_date``, clipped to ``[0, 1]`` (Grinold 1994). Zero with fewer than
-    ``MIN_TRUST_HISTORY`` pairs, where ``x`` never varies and has no slope, or where the
-    slope's t-statistic is not above ``gate``, on a Newey-West standard error with the
-    spread t-statistic's lag rule (``performance.newey_west_lags``)."""
+def _trust_fit(rebalance_date: pd.Timestamp, pairs: pd.DataFrame, *, horizon: int):
+    """The OLS of ``y`` on ``x`` with an intercept over every pair known by
+    ``rebalance_date``, or ``None`` with fewer than ``MIN_TRUST_HISTORY`` pairs or where
+    ``x`` never varies and has no slope. Its standard errors are Newey-West over h - 1
+    lags, for the overlap between neighbouring h-day labels, as the model metrics'
+    (``validation.metrics.rank_ic_se``)."""
     known = pairs_known_by(rebalance_date, pairs)
     x, y = known["x"].to_numpy(dtype=float), known["y"].to_numpy(dtype=float)
     if len(known) < MIN_TRUST_HISTORY or np.ptp(x) == 0:
-        return 0.0
-    fit = sm.OLS(y, sm.add_constant(x)).fit(
-        cov_type="HAC", cov_kwds={"maxlags": newey_west_lags(len(known))}
-    )
-    if not fit.tvalues[1] > gate:
+        return None
+    return sm.OLS(y, sm.add_constant(x)).fit(cov_type="HAC", cov_kwds={"maxlags": horizon - 1})
+
+
+def forecast_trust(
+    rebalance_date: pd.Timestamp,
+    pairs: pd.DataFrame,
+    *,
+    horizon: int,
+    gate: float = SIGNIFICANCE_T_GATE,
+) -> float:
+    """``β̂``: how much of the signal difference the models have earned trust for. The
+    slope of ``_trust_fit``, clipped to ``[0, 1]`` (Grinold 1994). Zero where there is no
+    fit, or where the slope's t-statistic is not above ``gate``."""
+    fit = _trust_fit(rebalance_date, pairs, horizon=horizon)
+    if fit is None or not fit.tvalues[1] > gate:
         return 0.0
     return min(max(float(fit.params[1]), 0.0), 1.0)
+
+
+def forecast_gate_shut(
+    rebalance_date: pd.Timestamp,
+    pairs: pd.DataFrame,
+    *,
+    horizon: int,
+    gate: float = SIGNIFICANCE_T_GATE,
+) -> bool:
+    """Whether there is a fit but its slope's t-statistic is not above ``gate``."""
+    fit = _trust_fit(rebalance_date, pairs, horizon=horizon)
+    return fit is not None and not fit.tvalues[1] > gate
 
 
 @dataclass(frozen=True)
@@ -477,7 +496,9 @@ def schedule_breakdowns(
             row,
             covariance,
             premium=premium,
-            trust=forecast_trust(date, pairs, gate=trust_gate) if trust is None else trust,
+            trust=forecast_trust(date, pairs, horizon=horizon, gate=trust_gate)
+            if trust is None
+            else trust,
             risk_level=risk_level,
             bounds=bounds,
         )
