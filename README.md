@@ -109,18 +109,21 @@ hosting step is needed.
 
 **Portfolio**
 
-- **Optimiser** — starts from a 1–5 risk level's own starting mix (80/20 down
-  to 20/80, level 3 at 50/50) and tilts towards whichever index the active
-  models' signals favour, sized by recent risk at a fixed strength shared by
-  every level, rebalanced every forecast horizon, and trading only when a move
-  is worth its cost (a no-trade band around the weight the portfolio has
-  drifted to).
+- **Optimiser** — a two-asset Markowitz allocation. Each 1–5 risk level targets a
+  volatility evenly spaced between the lowest-risk and highest-risk mixes the
+  weight bounds allow, and tilts from there towards whichever index the active
+  models' signals favour, by as much as their record has earned and only once that
+  record is statistically significant. It rebalances every forecast horizon and
+  trades only when a move is worth its cost (a no-trade band around the weight the
+  portfolio has drifted to).
 - **Backtest against 50/50** — runs the optimised weights and a monthly-reset
   50/50 benchmark through the same days, before and after trading costs, and
   compares Sharpe, Sortino, Calmar and maximum drawdown side by side.
 - **Significance of the outperformance** — a paired, Newey-West-adjusted
   t-statistic on the daily difference between the two, with a plain-language
-  verdict at 95% confidence, so luck isn't mistaken for skill.
+  verdict at 95% confidence, so luck isn't mistaken for skill. A second one tests
+  the portfolio against the same risk level with no forecasts, so the forecasts are
+  the only difference.
 - **Tail risk** — historical one-day VaR and CVaR at 95% and 99% beside maximum
   drawdown, for both portfolios; the Monte Carlo methods are listed as "Not run"
   until computed.

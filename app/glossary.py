@@ -200,28 +200,27 @@ TERMS: Mapping[str, str] = {
         "can still be set active, but asks for confirmation first."
     ),
     "Risk level": (
-        "Where the allocation starts, on a scale of 1 (risk-loving) to 5 "
-        "(risk-averse): 1 at the weight bounds' upper end, 5 at the lower, 3 "
-        "at 50/50 — e.g. 80/65/50/35/20% equity at the default bounds. "
-        "Signals tilt it from there at a fixed strength. Levels 1-2 never end "
-        "bond-heavy, 4-5 never end equity-heavy — level 3 is the only one a "
-        "strong signal can tip either way."
+        "The volatility the allocation aims for, on a scale of 1 (risk-loving) to 5 "
+        "(risk-averse). Level 5 is the lowest-risk mix the weight bounds allow and "
+        "level 1 the highest, with the levels between evenly spaced in volatility, so "
+        "each level's equity weight moves with recent risk. Forecasts tilt it from "
+        "there once they are statistically reliable, except at level 5, which ignores "
+        "them. Level 1 starts at the upper bound, so it can only tilt down. Level 3 is "
+        "not 50/50."
     ),
     "Weight bounds": (
         "The least either index may hold. Equity and bond always add up to "
         "100%, so a 20% floor on each also caps each at 80%. It stops a small, "
         "noisy difference between the two signals swinging the portfolio to "
-        "one extreme, and also clips the risk level's own starting mix at the "
-        "extreme levels."
+        "one extreme, and it sets the range of mixes the risk levels are spaced across."
     ),
     "No-trade band": (
         "Between rebalances the portfolio drifts with the markets. At each "
         "rebalance it trades only if the new target is far enough from where it "
         "drifted to to be worth the trading cost: within the band it holds, and "
-        "outside it, it trades only as far as the band's edge. The band is the "
-        "cost of moving the equity weight by one (both indices' costs) over the "
-        "tilt strength times the variance of the difference between the two "
-        "indices' returns — the same at every risk level now."
+        "outside it, it trades only as far as the band's edge. The band grows with "
+        "the cost of moving the equity weight and with the risk level's appetite for "
+        "risk, so it is widest at level 1. Level 5 has none."
     ),
     "Directional P&L": (
         "What you would have earned by holding this index only when the model "

@@ -11,7 +11,8 @@ The key covers every input: the data's content hash, both active models (their
 run ids and when they were set), the windows, the risk level and bounds, the
 trading costs, and the code version. Leaving the code version out would let a
 change in how results are computed hide behind the first row stored for those
-inputs.
+inputs. The forecast trust and each level's risk aversion are not inputs: they
+follow from the data and the models already in the key.
 
 ``DO NOTHING`` keeps the first write and never updates it, so the table stays
 append-only. An upsert (``DO UPDATE SET last_seen = …``) would record when a

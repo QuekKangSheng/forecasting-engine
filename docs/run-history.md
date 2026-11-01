@@ -64,7 +64,9 @@ times. `store/portfolio_runs.py` records each **distinct** result once.
   windows, the risk level and limits, the trading costs and the code version.
   The same inputs give the same key on any machine. Leave out the code version, and a
   change in how results are computed would hide behind the first row stored for
-  those inputs.
+  those inputs. The forecast trust `β̂` and each level's risk aversion `λ` aren't
+  inputs: they follow from the data and the models already in the key. The **Run
+  history** page shows each run's **Risk level**.
 - **Idempotent writes.** The run is inserted with `ON CONFLICT DO NOTHING RETURNING
   run_key`. A new key comes back and its metrics and weight schedule are written in
   the same transaction; a repeat comes back empty and writes nothing. So recording on

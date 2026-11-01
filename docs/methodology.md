@@ -26,7 +26,7 @@ flowchart TD
     K["11. Selection<br/>validation/harness.select_best_candidate"] --> L
     L["12. Gates<br/>validation/gates"]
     J --> M["13. Naive baseline row<br/>models/naive"]
-    J --> Q["17. Optimiser: 50/50 tilted by the signals<br/>portfolio/optimize"]
+    J --> Q["17. Optimiser: risk level's target tilted by the signals<br/>portfolio/optimize"]
     Q --> N["14. Portfolio backtest vs 50/50<br/>portfolio/backtest, portfolio/performance"]
     N --> P
     J --> O["15. Directional P&L vs buy-and-hold<br/>portfolio/directional"]
@@ -638,54 +638,94 @@ signals into the weight schedule step 14 backtests.
    its forecast looks ahead; a 5-day forecast held 20 days says nothing about the
    last 15. With perfect foresight on the Sep 2026 data, rebalancing every 20
    days, a 5-day forecast reached a Sharpe of 1.15 and a 20-day one 1.91, against
-   0.83 for 50/50.
+   0.83 for 50/50, under the fixed-strength weight rule this section's steps 4 to 7
+   replaced.
 3. **Covariance.** Daily equity/bond return covariance over the
    `TRAIN_WINDOW` (504) dates ending `EMBARGO_DAYS` before the rebalance and purged like a
    training window, scaled to `h` days (`covariance_at_rebalance`).
-4. **Weights.** The starting-weight-relative mean-variance problem: maximise
-   `a·s − k/2 · a'Σa`, where `a` is the tilt from the risk level's starting
-   weight, `s` the two signals, `Σ` the covariance, and `k` (`TILT_STRENGTH`)
-   one fixed tilt strength shared by every level. With two assets,
-   `w_equity = start + (s_equity − s_bond) / (k · D)`, with
-   `D = σ_e² − 2σ_eb + σ_b²`, then clipped to the bounds (`DEFAULT_WEIGHT_BOUNDS`,
-   set on the page as a minimum in each index). With no signal the portfolio
-   sits at `start`; when `D` is zero `start` is kept. `BASELINE_WEIGHTS` — the
-   fixed 50/50 the benchmark comparison uses — is separate and never changes.
-5. **Risk level.** 1-5 (`RISK_LEVELS`), 1 risk-loving to 5 risk-averse, mapped
-   to `start` by `starting_weight_for(level, bounds)`: level 1 at the upper
-   bound, 5 at the lower, 3 at the exact midpoint, 2 and 4 spaced evenly
-   between — so `start` scales with the page's minimum-per-index slider,
-   reproducing the sponsor's `{1: 80%, 2: 65%, 3: 50%, 4: 35%, 5: 20%}` at the
-   default (0.2, 0.8) bounds. `TILT_STRENGTH = 40` (provisional, pending PO
-   sign-off), raised from 10 after level 3 moved too far from 50/50. Working
-   calibration: `docs/evidence/2026-10-29-risk-level-calibration.md`.
-   `bounds_for_level` then narrows `bounds` so the tilt can never cross 50%
-   the wrong way: levels 1-2 get a 50% floor, levels 4-5 a 50% ceiling, level
-   3 is unconstrained.
+4. **Risk level.** 1-5 (`RISK_LEVELS`), 1 risk-loving to 5 risk-averse. A level
+   fixes a target volatility, not a risk aversion. With `D = σ_e² − 2σ_eb + σ_b²`,
+   the variance of the difference between the two indices' returns, the
+   minimum-variance equity weight is `w_mv = (σ_b² − σ_eb) / D` and a portfolio
+   holding `w` in equity has variance `σ²(w) = σ_mv² + D·(w − w_mv)²` (Merton 1972).
+   The lowest-risk mix the bounds (`DEFAULT_WEIGHT_BOUNDS`, set on the page as a
+   minimum in each index) allow is `w_low`, `w_mv` clipped to them, and the highest
+   is their upper end, `w_high`. The levels are evenly spaced in volatility between
+   the two, `σ_L = σ(w_low) + (5 − L)/4 · (σ(w_high) − σ(w_low))`, and `w*_L`
+   (`level_weight`) is the weight on the `w ≥ w_mv` side with that volatility,
+   `w*_L = w_mv + √((σ_L² − σ_mv²) / D)`. Level 5 is `w_low` and level 1 is `w_high`.
+   If `w_mv ≥ w_high` every level holds `w_high`; if `D ≤ 0` every mix is equally
+   risky and every level holds the bounds' midpoint. So `w*_L` moves with the
+   covariance at every rebalance, and level 3 is not pinned to 50/50.
+   `BASELINE_WEIGHTS`, the fixed 50/50 the benchmark comparison uses, is separate
+   and never changes.
+5. **Long-run premium.** `π̄`, the mean daily equity-minus-bond return over every
+   day to date, scaled to `h` days (`long_run_premium`). A rebalance trades at its
+   day's close, so that day's own return counts.
+6. **Forecast trust.** `β̂` (`forecast_trust`), how much of the signal difference
+   `Δs = s_equity − s_bond` the models have earned trust for (Grinold 1994). Each
+   date with a stored forecast from both models gives a pair (`trust_pairs`): `x`
+   is that date's `Δs`, and `y` is the equity-minus-bond return over the horizon
+   starting that date, from the harness's own labels (`align_and_lag`), less the
+   same training-mean difference taken off the forecasts. At a rebalance only pairs
+   whose later label ended before it count, so no return the rebalance couldn't see
+   reaches it. `β̂` is the slope of an OLS of `y` on `x` with an intercept, over every
+   such pair (expanding), clipped to `[0, 1]`. It is zero with fewer than
+   `MIN_TRUST_HISTORY` pairs, where `x` never varies, or where the slope's t-statistic
+   is not above `SIGNIFICANCE_T_GATE`. That t-statistic's standard error is Newey-West
+   over `h − 1` lags, for the overlap between neighbouring h-day labels, the same
+   choice as the Signal Rank IC's h-day standard error (§10). At 252 pairs a 20-day horizon holds only
+   about 13 independent observations, so early estimates are noisy. The t-statistic
+   gate was added after seeing the ungated result on the Sep 2026 data, so it is not
+   an independent test on that data; the optimiser calibration evidence
+   (`docs/evidence/*-optimiser-calibration.md`) reports both.
+7. **Weights.** The two-asset Markowitz solution is `w = w_mv + μ/(λ·D)`, with `μ` the
+   expected equity-minus-bond return over the horizon and `λ` the risk aversion
+   (Markowitz 1952). Each level's `λ_L` is the one at which, with no forecast
+   information (`μ = π̄`), the optimal portfolio is `w*_L`:
+   `λ_L = π̄ / (D·(w*_L − w_mv))`, reverse optimisation (Sharpe 1974; Black & Litterman
+   1992). The expected return used is `μ = π̄ + β̂·Δs`, the premium plus the part of
+   the signal difference that has earned trust (Grinold 1994; Black & Litterman 1992).
+   Substituting gives `w = w*_L + β̂·Δs·(w*_L − w_mv)/π̄` (`weight_breakdown`), then
+   clipped to the bounds. Level 5 is infinite risk aversion, so it ignores forecasts.
+   Level 1 sits at the upper bound and so can only tilt down, which follows from the
+   bounds, not a separate rule. The tilt scales with `1/π̄`, so a small premium makes a
+   large tilt.
 
-6. **No-trade band** (FYP-49). Between rebalances the portfolio drifts with the
+   **Limitation.** When `π̄ ≤ 0` the rule has no positive `λ_L`, so the tilt and
+   the no-trade band are both zero: it ignores even a perfect forecast until the
+   running premium is positive again.
+8. **No-trade band** (FYP-49). Between rebalances the portfolio drifts with the
    two indices' returns, exactly as the backtest drifts it (§14). At each
    rebalance after the first, with `c` the cost of moving the equity weight by 1
-   (equity's plus bond's `DEFAULT_COSTS_BPS`, over 10,000) and `D` as in step 4,
-   the band is `c / (k · D)`. If the bounded target is within the band of the
-   drifted equity weight, the portfolio holds and trades nothing; otherwise it
-   moves to the band's near edge, `target − sign(target − drifted) × band`,
-   clipped to the bounds. If `D ≤ 0` it holds. Before any of that, if drift has
-   carried the equity weight outside the bounds, the rebalance trades back to the
-   nearest bound, whatever the band, and pays for it like any trade, so no
-   rebalance ever leaves the portfolio outside them. The first rebalance buys the
-   target from cash. With zero costs there is no band and the schedule is the
-   one step 4 gives. On the Sep 2026 data the band raised net Sharpe at
-   every horizon (h = 1 from 0.85 to 1.02, h = 20 from 0.80 to 0.85) and cut the
-   cost drag at h = 1 from 404 to 9 bp a year
-   ([evidence](evidence/2026-10-12-design-verification.md)). Directional P&L (§15) is unaffected and
-   stays gross.
+   (equity's plus bond's `DEFAULT_COSTS_BPS`, over 10,000), the band is
+   `c / (λ_L·D) = c·(w*_L − w_mv)/π̄`. It is zero at level 5, where `π̄ ≤ 0`, where
+   `D ≤ 0`, and where `w*_L` is not above `w_mv`. If the bounded target is within the
+   band of the drifted equity weight, the portfolio holds and trades nothing;
+   otherwise it moves to the band's near edge,
+   `target − sign(target − drifted) × band`, clipped to the bounds. Before any of
+   that, if drift has carried the equity weight outside the bounds, the rebalance
+   trades back to the nearest bound, whatever the band, and pays for it like any
+   trade, so no rebalance ever leaves the portfolio outside them. The first rebalance
+   buys the target from cash. With zero costs there is no band and the schedule is
+   the one step 7 gives. On the Sep 2026 data, under the fixed-strength weight rule
+   steps 4 to 7 replaced, the band raised net Sharpe at every horizon (h = 1 from 0.85
+   to 1.02, h = 20 from 0.80 to 0.85) and cut the cost drag at h = 1 from 404 to 9 bp
+   a year ([evidence](evidence/2026-10-12-design-verification.md)). Directional P&L
+   (§15) is unaffected and stays gross.
+9. **What the forecasts added.** "Level L, no forecasts" is the same schedule with
+   `β̂ = 0` and the same no-trade band, so the forecasts are the only difference from
+   the optimised portfolio. The page shows it as a column beside the optimised
+   portfolio and the benchmark, and runs §14's spread t-statistic against it as well
+   as against 50/50, which also reflects the level's equity weight. At level 5 the two
+   series are identical, so no verdict is shown.
 
 A rebalance whose signal is missing, or whose window can't support a covariance,
 is left out, and the portfolio drifts on through it. The Portfolio page shows,
-for the latest rebalance, the benchmark weight, the signals and the tilt they
-gave, the drifted weight and band, whether it held, and the share of rebalances
-the band held.
+for the latest rebalance, the level's target weight, the signals and the tilt they
+gave, why they were not used where the gate is shut, the drifted weight and band,
+whether it held, and the share of rebalances the band held. It never shows `β̂`, `λ`
+or `π̄`.
 
 ## 18. Signal shock scenarios
 

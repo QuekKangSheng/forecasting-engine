@@ -1,3 +1,5 @@
+**Superseded** by `docs/evidence/*-optimiser-calibration.md`: the fixed starting weights and `k = 40` measured here were replaced by volatility-targeted risk levels and earned forecast trust (methodology §17).
+
 # Risk level calibration, 29 Oct 2026 (updated for scaled starting weight + k=40)
 
 The share of rebalances at a bound and net Sharpe for each of the 5 risk levels. Produced by `docs/evidence/2026-10-29-risk-level-calibration.py`, run on the real committed dataset cached in `data/last_commit.pkl` (31 Aug 2016 – 30 Sep 2026; equity = SPX total return, bond = LBUSTRUU total return, 9 Bloomberg signals). No app code was changed for the run.

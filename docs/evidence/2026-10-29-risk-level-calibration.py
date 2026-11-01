@@ -1,3 +1,5 @@
+# Superseded by docs/evidence/*-optimiser-calibration.py: the fixed starting weights and
+# k = 40 were replaced (methodology §17). It no longer runs on this code.
 """Calibration of the new starting-weight risk levels.
 
 Fits equity (derived polynomial) and bond (ML) once, at the Models page's

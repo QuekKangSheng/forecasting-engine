@@ -1,3 +1,5 @@
+# Its optimiser measurements are superseded by docs/evidence/*-optimiser-calibration.py: the
+# fixed tilt strength was replaced (methodology §17). Its model design decisions still stand.
 """Run once, as scratch/verify.py on the Toby branch at commit cbd859b, to produce
 docs/evidence/2026-10-12-design-verification.md, with the derived grid set to
 degrees 1-3 x (lasso, elastic net) + shrinkage. Kept unchanged as the record of

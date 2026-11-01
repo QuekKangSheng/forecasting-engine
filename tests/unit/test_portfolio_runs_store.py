@@ -1,6 +1,6 @@
 """Portfolio runs: one row per distinct set of inputs, however often it is computed."""
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import datetime
 
 import duckdb
@@ -106,6 +106,13 @@ def test_any_one_input_changing_gives_another_key(change):
 
 
 # --- idempotent recording ----------------------------------------------------------------
+
+
+def test_what_follows_from_the_data_and_models_is_not_an_input():
+    inputs = {field.name for field in fields(PortfolioInputs)}
+
+    assert "risk_level" in inputs
+    assert not inputs & {"trust", "beta", "risk_aversion", "lambda", "premium", "tilt_strength"}
 
 
 def test_the_first_record_of_a_key_is_new_and_every_repeat_is_not(db):
