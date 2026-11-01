@@ -90,10 +90,10 @@ def _result(forecast=None, *, with_baseline=True) -> ModelRunResult:
     )
 
 
-def _set_active(role, forecast=None, *, with_baseline=True, **overrides):
+def _set_active(role, forecast=None, *, name="Polynomial", with_baseline=True, **overrides):
     active_model.set_active_model(
         role,
-        "Polynomial",
+        name,
         _result(forecast=forecast, with_baseline=with_baseline),
         high_risk=False,
         **{**SETTINGS, **overrides},
@@ -331,8 +331,9 @@ def test_every_var_method_is_labelled_and_monte_carlo_shows_not_run():
     app = _happy_page()
 
     tail = _tail_table(app)
-    for method in ("Historical", "Monte Carlo (Parametric / Bootstrap)", "Monte Carlo (GARCH)"):
+    for method in ("Historical", "Monte Carlo (Parametric / Bootstrap)"):
         assert method in tail
+    assert "GARCH" not in tail  # optional, and not built: no row (FYP-251)
     assert ">Not run</td>" in tail
     assert "Max drawdown" in tail
 
@@ -427,6 +428,201 @@ def test_without_performance_data_the_page_guides_instead_of_testing():
     assert not app.exception
     assert any("statistically significant appear here" in t for t in _infos(app))
     assert "Spread t-statistic" not in _markdown(app)
+
+
+# --- FYP-36: Monte Carlo VaR, CVaR and drawdown over the next horizon --------------
+
+
+def _simulation_table(app: AppTest) -> str | None:
+    return next(
+        (m.value for m in app.markdown if "Max drawdown 95%" in m.value and "<table" in m.value),
+        None,
+    )
+
+
+def _run_simulation(app: AppTest) -> AppTest:
+    (button,) = [b for b in app.button if b.label == "Run simulation"]
+    button.click().run()
+    assert not app.exception
+    return app
+
+
+def test_the_simulation_waits_to_be_run_and_defaults_to_bootstrap_and_100000_paths():
+    app = _happy_page()
+
+    assert not app.exception
+    assert any("Monte Carlo over the next 3 days" in m.value for m in app.markdown)
+    (method,) = [c for c in app.segmented_control if c.label == "Sampling method"]
+    assert method.value == "bootstrap"
+    assert list(method.options) == ["Bootstrap (historical days)", "Parametric (fitted normal)"]
+    (paths,) = [n for n in app.number_input if n.label == "Simulated paths"]
+    assert paths.value == 100_000
+    assert _simulation_table(app) is None
+    assert "Choose a sampling method, then run it." in _captions(app)
+
+
+def test_running_the_simulation_shows_var_cvar_and_drawdown_at_both_levels():
+    app = _run_simulation(_happy_page())
+
+    table = _simulation_table(app)
+    for metric in (
+        "Mean 3-day return",
+        "3-day VaR 95%",
+        "3-day CVaR 95%",
+        "3-day VaR 99%",
+        "3-day CVaR 99%",
+        "Max drawdown 95%",
+        "Max drawdown 99%",
+    ):
+        assert f">{metric}<span" in table
+    for heading in ("Optimised", "Equal-weight benchmark"):
+        assert f"<th>{heading}</th>" in table
+    captions = _captions(app)
+    assert "100,000 paths of the next 3 trading days" in captions
+    assert "by resampling whole days" in captions
+    assert "the one-day Monte Carlo rows above are the first day of these same paths" in captions
+
+
+def test_the_path_count_is_adjustable_under_advanced_settings():
+    app = _happy_page()
+    (paths,) = [n for n in app.number_input if n.label == "Simulated paths"]
+    paths.set_value(5_000).run()
+
+    _run_simulation(app)
+
+    assert "5,000 paths of the next 3 trading days" in _captions(app)
+
+
+def test_parametric_sampling_can_be_chosen_and_gives_other_figures():
+    app = _run_simulation(_happy_page())
+    bootstrap = _simulation_table(app)
+    (method,) = [c for c in app.segmented_control if c.label == "Sampling method"]
+
+    method.set_value("parametric").run()
+
+    # The bootstrap figures are not shown as if they answered the new settings.
+    assert _simulation_table(app) is None
+    assert any("changed since the last simulation" in i.value for i in app.info)
+
+    _run_simulation(app)
+
+    assert _simulation_table(app) != bootstrap
+    assert "from a normal distribution fitted to the days" in _captions(app)
+
+
+def test_a_new_allocation_hides_the_old_simulation_until_it_is_run_again():
+    app = _run_simulation(_happy_page())
+    (floor,) = [s for s in app.slider if s.label == "Minimum in each index"]
+
+    floor.set_value(0.45).run()
+
+    assert _simulation_table(app) is None
+    assert any("changed since the last simulation" in i.value for i in app.info)
+
+
+def _tail_table(app: AppTest) -> str:
+    return next(m.value for m in app.markdown if "<th>Method</th>" in m.value)
+
+
+def _method_rows(table: str, method: str) -> list[str]:
+    return [row for row in table.split("<tr>") if f">{method}<span" in row]
+
+
+def test_running_the_simulation_fills_the_monte_carlo_rows_of_the_tail_table():
+    app = _happy_page()
+    before = _method_rows(_tail_table(app), "Monte Carlo (Parametric / Bootstrap)")
+    assert len(before) == 4 and all("Not run" in row for row in before)
+
+    _run_simulation(app)
+
+    table = _tail_table(app)
+    after = _method_rows(table, "Monte Carlo (Parametric / Bootstrap)")
+    assert len(after) == 4
+    assert not any("Not run" in row for row in after)
+    assert "the first day of each simulated path below" in _captions(app)
+
+
+def test_a_changed_setting_puts_the_monte_carlo_rows_back_to_not_run():
+    app = _run_simulation(_happy_page())
+    (method,) = [c for c in app.segmented_control if c.label == "Sampling method"]
+
+    method.set_value("parametric").run()
+
+    rows = _method_rows(_tail_table(app), "Monte Carlo (Parametric / Bootstrap)")
+    assert all("Not run" in row for row in rows)
+
+
+# --- FYP-53: switching an active model re-solves the page -------------------------
+
+
+def _leaning(committed, signal: float) -> pd.Series:
+    """A forecast whose signal is ``signal`` on every date: ``_result``'s baseline
+    is 0.001 throughout."""
+    return _forecast(committed) * 0 + 0.001 + signal
+
+
+def _outputs(app: AppTest) -> dict:
+    """Everything the page derives from the active models."""
+    return {
+        "weights": [m.value for m in app.metric],
+        "comparison": _comparison_table(app),
+        "charts": [c.proto.SerializeToString() for c in app.get("vega_lite_chart")],
+        "t": next(m.value for m in app.markdown if "Spread t-statistic" in m.value),
+    }
+
+
+def _models_line(app: AppTest) -> str:
+    return next(m.value for m in app.markdown if "Active models" in m.value)
+
+
+def test_switching_the_active_model_updates_the_weights_and_t_statistic():
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0))
+    app = _page(committed)
+    assert not app.exception
+    before = _outputs(app)
+
+    # Set on the Models page while this session stays open: the next rerun, not a
+    # restart, picks it up.
+    _set_active(EQUITY, forecast=_leaning(committed, -0.05), name="Machine Learning")
+    app.run()
+
+    assert not app.exception
+    after = _outputs(app)
+    for output in before:
+        assert after[output] != before[output], output
+    assert float(after["weights"][0].strip("%")) < float(before["weights"][0].strip("%"))
+
+
+def test_the_page_names_both_models_before_any_result():
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0), name="FF5 Benchmark")
+    app = _page(committed)
+
+    line = _models_line(app)
+    assert "S&amp;P 500" in line and "Polynomial" in line
+    assert "FF5 Benchmark" in line
+    # Above the weights, so it heads every result on the page.
+    texts = [m.value for m in app.markdown]
+    first_result = next(i for i, t in enumerate(texts) if "Latest weights" in t)
+    assert texts.index(line) < first_result
+
+
+def test_the_named_models_follow_a_switch():
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0), name="FF5 Benchmark")
+    app = _page(committed)
+
+    _set_active(EQUITY, forecast=_leaning(committed, -0.05), name="Machine Learning")
+    app.run()
+
+    line = _models_line(app)
+    assert "Machine Learning" in line
+    assert "Polynomial" not in line
+    assert "S&P 500: Machine Learning" in _captions(app)
 
 
 # --- every distinct result recorded once (store/portfolio_runs) ------------------------
