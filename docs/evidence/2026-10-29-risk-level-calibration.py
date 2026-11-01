@@ -1,4 +1,4 @@
-# Superseded by docs/evidence/*-optimiser-calibration.py: the fixed starting weights and
+# Superseded by docs/evidence/2026-11-01-optimiser-calibration.py: the fixed starting weights and
 # k = 40 were replaced (methodology §17). It no longer runs on this code.
 """Calibration of the new starting-weight risk levels.
 

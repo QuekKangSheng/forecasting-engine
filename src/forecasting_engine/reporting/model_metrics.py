@@ -36,6 +36,7 @@ def display_model_name(model_name: str) -> str:
     to its current one."""
     return _LEGACY_MODEL_NAMES.get(model_name, model_name)
 
+
 _COLUMNS: tuple[str, ...] = (
     "IC",
     "Signal Rank IC",

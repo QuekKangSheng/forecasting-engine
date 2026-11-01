@@ -1,4 +1,4 @@
-**Superseded** by `docs/evidence/*-optimiser-calibration.md`: the fixed starting weights and `k = 40` measured here were replaced by volatility-targeted risk levels and earned forecast trust (methodology §17).
+**Superseded** by [the optimiser calibration](2026-11-01-optimiser-calibration.md): the fixed starting weights and `k = 40` measured here were replaced by volatility-targeted risk levels and earned forecast trust (methodology §17).
 
 # Risk level calibration, 29 Oct 2026 (updated for scaled starting weight + k=40)
 

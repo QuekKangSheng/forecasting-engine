@@ -677,8 +677,9 @@ signals into the weight schedule step 14 backtests.
    choice as the Signal Rank IC's h-day standard error (§10). At 252 pairs a 20-day horizon holds only
    about 13 independent observations, so early estimates are noisy. The t-statistic
    gate was added after seeing the ungated result on the Sep 2026 data, so it is not
-   an independent test on that data; the optimiser calibration evidence
-   (`docs/evidence/*-optimiser-calibration.md`) reports both.
+   an independent test on that data;
+   [the optimiser calibration evidence](evidence/2026-11-01-optimiser-calibration.md)
+   reports both.
 7. **Weights.** The two-asset Markowitz solution is `w = w_mv + μ/(λ·D)`, with `μ` the
    expected equity-minus-bond return over the horizon and `λ` the risk aversion
    (Markowitz 1952). Each level's `λ_L` is the one at which, with no forecast
