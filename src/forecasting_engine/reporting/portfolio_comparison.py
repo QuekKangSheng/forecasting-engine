@@ -3,7 +3,8 @@ page can show side by side, and as cumulative paths a chart can draw. FYP-56:
 the same two portfolios' historical tail risk, as rows beside max drawdown.
 FYP-38: those rows for every VaR/CVaR method, with "Not run" for any not computed.
 FYP-20: whether the optimised portfolio's outperformance is statistically
-significant, as a figure and a plain-language label."""
+significant, as a figure and a plain-language label. FYP-36: the simulated tail
+over the next forecast horizon, as rows the same shape as the tail rows."""
 
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from forecasting_engine.portfolio.performance import (
     PerformanceMetrics,
     Significance,
 )
+from forecasting_engine.risk.monte_carlo import MonteCarloResult
 from forecasting_engine.risk.tail import (
     HISTORICAL,
     TAIL_METHODS,
@@ -162,6 +164,45 @@ def tail_rows(
             )
         if method == HISTORICAL:
             rows.extend(historical_only)
+    return rows
+
+
+def monte_carlo_rows(result: MonteCarloResult) -> list[TailRow]:
+    """The mean simulated return over the horizon, then VaR and CVaR at each
+    confidence, then max drawdown at each, for both portfolios. Losses are positive
+    percentages and drawdowns negative, as in ``tail_rows``."""
+    optimised = result.risk["optimised"]
+    baseline = result.risk["baseline"]
+    days = f"{result.horizon}-day"
+    rows = [
+        TailRow(
+            f"Mean {days} return",
+            _fmt(optimised.mean_return, True, signed=True),
+            _fmt(baseline.mean_return, True, signed=True),
+            result.label,
+        )
+    ]
+    for mine, theirs in zip(optimised.levels, baseline.levels, strict=True):
+        level = f"{mine.confidence:.0%}"
+        rows.append(
+            TailRow(
+                f"{days} VaR {level}", _fmt(mine.var, True), _fmt(theirs.var, True), result.label
+            )
+        )
+        rows.append(
+            TailRow(
+                f"{days} CVaR {level}", _fmt(mine.cvar, True), _fmt(theirs.cvar, True), result.label
+            )
+        )
+    for mine, theirs in zip(optimised.levels, baseline.levels, strict=True):
+        rows.append(
+            TailRow(
+                f"Max drawdown {mine.confidence:.0%}",
+                _fmt(mine.max_drawdown, True),
+                _fmt(theirs.max_drawdown, True),
+                result.label,
+            )
+        )
     return rows
 
 
