@@ -85,7 +85,6 @@ DOCUMENTED = {
     ("forecasting_engine.risk.tail", "VAR_CONFIDENCES"),
     ("forecasting_engine.risk.tail", "VAR_WINDOW"),
     ("forecasting_engine.portfolio.optimize", "RISK_LEVELS"),
-    ("forecasting_engine.portfolio.optimize", "TILT_STRENGTH"),
     ("forecasting_engine.portfolio.optimize", "DEFAULT_RISK_LEVEL"),
     ("forecasting_engine.portfolio.optimize", "DEFAULT_WEIGHT_BOUNDS"),
     ("forecasting_engine.risk.monte_carlo", "SAMPLING_METHODS"),

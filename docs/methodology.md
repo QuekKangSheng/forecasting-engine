@@ -869,7 +869,6 @@ Values are Python literals as the code holds them.
 | `VAR_CONFIDENCES` | `forecasting_engine.risk.tail` | `(0.95, 0.99)` |
 | `VAR_WINDOW` | `forecasting_engine.risk.tail` | `252` |
 | `RISK_LEVELS` | `forecasting_engine.portfolio.optimize` | `(1, 2, 3, 4, 5)` |
-| `TILT_STRENGTH` | `forecasting_engine.portfolio.optimize` | `40.0` |
 | `DEFAULT_RISK_LEVEL` | `forecasting_engine.portfolio.optimize` | `3` |
 | `DEFAULT_WEIGHT_BOUNDS` | `forecasting_engine.portfolio.optimize` | `(0.2, 0.8)` |
 | `SAMPLING_METHODS` | `forecasting_engine.risk.monte_carlo` | `("bootstrap", "parametric")` |

@@ -292,25 +292,42 @@ def test_after_costs_is_the_default_and_before_costs_can_be_chosen():
 def test_the_latest_weights_say_how_they_were_set():
     captions = _captions(_happy_page())
 
-    assert "How this was set: level 3 starts at 50% S&P 500" in captions
+    assert re.search(r"How this was set: level 3 targets \d+% S&P 500", captions)
 
 
-def test_risk_level_is_a_1_to_5_scale_defaulting_to_the_middle_and_sets_the_starting_weight():
+def test_risk_level_is_a_1_to_5_scale_defaulting_to_the_middle_and_sets_the_target_weight():
     app = _happy_page()
     (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
     assert list(scale.options) == ["1 · risk-loving", "2", "3", "4", "5 · risk-averse"]
     assert scale.value == 3
-    assert "Level 3 starts the allocation at 50% equity / 50% bonds." in _captions(app)
-    solved3 = _solved_weight(app)
-    tilt = solved3 - 0.5  # level 3 starts at 50%
+    assert "Each level targets a volatility evenly spaced between" in _captions(app)
+    level_3 = _solved_weight(app)
 
     scale.set_value(5).run()
 
     assert not app.exception
-    # Level 5 starts at 20%, not 50%; the tilt itself is unchanged, since the
-    # tilt strength no longer varies by risk level (FYP-221).
-    assert _solved_weight(app) == pytest.approx(0.20 + tilt, abs=1e-6)
-    assert "Level 5 starts the allocation at 20% equity / 80% bonds." in _captions(app)
+    assert _solved_weight(app) < level_3
+
+
+def test_the_no_forecast_column_follows_the_risk_level():
+    app = _happy_page()
+    assert "<th>Level 3, no forecasts</th>" in _comparison_table(app)
+    assert "Starting mix" not in _markdown(app) + _captions(app)
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+
+    scale.set_value(5).run()
+
+    assert not app.exception
+    assert "<th>Level 5, no forecasts</th>" in _comparison_table(app)
+    assert "Level 5, no forecasts holds level 5's target weight" in _captions(app)
+
+
+def test_the_page_never_shows_the_trust_the_risk_aversion_or_the_premium():
+    shown = _markdown(_happy_page())
+    captions = _captions(_happy_page())
+
+    for symbol in ("β", "λ", "π"):
+        assert symbol not in shown and symbol not in captions
 
 
 def _solved_weight(app) -> float:
@@ -420,8 +437,6 @@ def test_the_risk_charts_are_recomputed_when_the_risk_level_changes(value):
     before = _line_data(app, value)
     (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
 
-    # 5, not 1: in this fixture both 1 and the default 3 push every rebalance to the
-    # 80% cap, the same schedule.
     scale.set_value(5).run()
 
     assert not app.exception
@@ -681,7 +696,10 @@ def _models_line(app: AppTest) -> str:
     return next(m.value for m in app.markdown if "Active models" in m.value)
 
 
-def test_switching_the_active_model_updates_the_weights_and_t_statistic():
+def test_switching_the_active_model_updates_the_weights_and_t_statistic(monkeypatch):
+    monkeypatch.setattr(
+        "forecasting_engine.portfolio.optimize.forecast_trust", lambda *_, **__: 1.0
+    )
     committed = _committed()
     _set_active(EQUITY, forecast=_leaning(committed, +0.05))
     _set_active(BOND, forecast=_leaning(committed, 0.0))
