@@ -94,6 +94,9 @@ class SimulatedTailRisk:
     levels: tuple[SimulatedLevel, ...]
     mean_return: float
     """Mean simulated return over the horizon: the base case the paths centre on."""
+    volatility: float
+    """Standard deviation of the simulated horizon returns across paths: how
+    widely the outcomes spread around ``mean_return``."""
     one_day: tuple[SimulatedLevel, ...]
     """VaR and CVaR of each path's first day, comparable with the historical
     one-day figures. Its ``max_drawdown`` is the first day's loss, if any."""
@@ -206,6 +209,7 @@ def simulate(
         name: SimulatedTailRisk(
             levels=_levels(outcomes[name], drawdowns[name], confidences),
             mean_return=float(outcomes[name].mean()),
+            volatility=float(outcomes[name].std(ddof=1)),
             one_day=_levels(
                 first_days[name], np.minimum(first_days[name], 0.0), confidences
             ),

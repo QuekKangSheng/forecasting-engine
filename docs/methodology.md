@@ -679,6 +679,41 @@ the change in percentage points and as a % of the base case, the extrapolation
 flags, and what each model reads before and after the shock. An index with no
 stored function is listed with the reason.
 
+### Portfolio impact (FYP-33)
+
+`scenario/portfolio_impact` carries a scenario's forecasts through to the
+optimised portfolio: what the allocation held today would return, how widely its
+outcomes would spread, and how far it could fall, under the shock against the
+base case.
+
+1. **Two simulations, one difference.** The Monte Carlo simulation of §19 is
+   run twice with the same weights, the same history window, the same sampling
+   method, the same number of paths and the same `SEED`: once centred on each
+   index's base-case forecast and once on its shocked forecast. Everything but
+   the forecasts is identical, so the difference between the two results is the
+   shock's alone, and a zero shock reproduces the base case exactly.
+2. **Weights.** The latest optimised weights as the Portfolio page last solved
+   them (`app/portfolio_summary`), held as they are: they are not re-solved for
+   the shock. Re-optimising under the shock is a separate, explicit action
+   (FYP-246). The Portfolio page must have been opened on the committed data
+   for the weights to be known.
+3. **Forecasts.** An index the scenario evaluated contributes its own base-case
+   and shocked forecasts (`ScenarioResult`). An index it could not evaluate (no
+   stored function, or no active polynomial) contributes its active model's
+   latest saved forecast to both cases, so the shock leaves it unmoved and the
+   page says so. The horizon is the longest among the indices evaluated.
+4. **Measures**, each read off one portfolio's simulated outcomes
+   (`risk/monte_carlo.SimulatedTailRisk`):
+   - **return**: the mean simulated return over the horizon, the base case the
+     paths centre on;
+   - **volatility**: the standard deviation of the simulated horizon returns
+     across paths. A shock that only shifts the forecasts leaves it close to the
+     base case, since the size of the moves is set by history, not the forecast;
+   - **max drawdown** at each of `VAR_CONFIDENCES`: the drawdown only the worst
+     `1 − c` of paths exceed (§19), negative like §14's.
+   The page shows each beside its base case, with the change in percentage
+   points, and states the weights, the horizon, the paths and the method.
+
 ## 19. Monte Carlo VaR, CVaR and drawdown
 
 `risk/monte_carlo.simulate` asks what the next forecast horizon could bring from

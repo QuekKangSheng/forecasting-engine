@@ -135,6 +135,10 @@ hosting step is needed.
   beside the base case. A shocked input outside the model's training range is
   flagged as an extrapolation. The active polynomial's fitted function is saved in
   DuckDB with the active model for this.
+- **Portfolio impact** — the shocked forecasts carried through to the optimised
+  portfolio at its latest weights, held as they are: return, volatility and
+  max drawdown over the next horizon beside the base case, from the same Monte
+  Carlo paths, so the difference is the shock's alone.
 
 ## Interface
 
