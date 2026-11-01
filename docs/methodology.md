@@ -669,8 +669,9 @@ signals into the weight schedule step 14 backtests.
    starting that date, from the harness's own labels (`align_and_lag`), less the
    same training-mean difference taken off the forecasts. At a rebalance only pairs
    whose later label ended before it count, so no return the rebalance couldn't see
-   reaches it. `β̂` is the slope of an OLS of `y` on `x` with an intercept, over every
-   such pair (expanding), clipped to `[0, 1]`. It is zero with fewer than
+   reaches it. `β̂` is the slope of an OLS of `y` on `x` with an intercept — a
+   Mincer-Zarnowitz regression of realised return on forecast (Mincer & Zarnowitz
+   1969) — over every such pair (expanding), clipped to `[0, 1]`. It is zero with fewer than
    `MIN_TRUST_HISTORY` pairs, where `x` never varies, or where the slope's t-statistic
    is not above `SIGNIFICANCE_T_GATE`. That t-statistic's standard error is Newey-West
    over `h − 1` lags, for the overlap between neighbouring h-day labels, the same

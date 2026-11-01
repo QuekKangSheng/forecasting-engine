@@ -31,8 +31,9 @@ with recent performance, so fed to the optimiser it pins the allocation to a
 bound whatever the signals say.
 
 ``β̂`` is estimated on an expanding window, from each past date's signal difference
-and the return that followed it, using only returns fully known before the rebalance
-(``forecast_trust``). Until ``MIN_TRUST_HISTORY`` such pairs exist, and whenever the
+and the return that followed it — a Mincer-Zarnowitz regression of realised on
+forecast (Mincer & Zarnowitz 1969) — using only returns fully known before the
+rebalance (``forecast_trust``). Until ``MIN_TRUST_HISTORY`` such pairs exist, and whenever the
 slope's Newey-West t-statistic is not above ``validation.gates.SIGNIFICANCE_T_GATE``,
 it is zero, so the forecasts move nothing.
 
