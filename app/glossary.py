@@ -306,6 +306,12 @@ TERMS: Mapping[str, str] = {
         "for neighbouring days moving together, which would otherwise make a lucky "
         "streak look reliable."
     ),
+    "Forecast value t-statistic": (
+        "The same test, against the risk level's own weights held with no forecasts "
+        "rather than against the benchmark. The risk level's equity weight is on both "
+        "sides, so it does not count as an edge here. Beyond ±2, what the forecasts "
+        "changed is unlikely to be luck."
+    ),
     "Historical tail risk": (
         "VaR and CVaR by method: how bad the worst days were, or could be. "
         "Historical figures are read straight off the backtest's own daily "

@@ -16,6 +16,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     comparison_rows,
     cumulative_paths,
     drawdown_paths,
+    forecast_value_summary,
     monte_carlo_rows,
     rolling_volatility_paths,
     significance_summary,
@@ -412,3 +413,31 @@ def test_a_real_simulation_fills_the_monte_carlo_rows_of_the_tail_table():
     ]
     assert rows[0].optimised == f"{one_day[0].var * 100:.2f}%"
     assert rows[3].optimised == f"{one_day[1].cvar * 100:.2f}%"
+
+
+# --- did the forecasts add value? -------------------------------------------------------
+
+
+def test_the_forecast_value_test_compares_the_two_optimised_paths():
+    result, other = _backtest(0.8), _backtest(0.5)
+
+    summary = forecast_value_summary(result, other, "net")
+
+    assert summary.t != "—"
+    assert "optimised minus the same level with no forecasts" in summary.detail
+
+
+def test_with_no_difference_from_the_no_forecast_level_there_is_nothing_to_test():
+    result = _with_t(9.0)
+
+    summary = forecast_value_summary(result, result, "net")
+
+    assert summary.t == "—"
+    assert summary.label == "No forecast effect to test"
+    assert summary.tone == "neutral"
+    assert "never differ" in summary.detail
+
+
+def test_the_forecast_value_test_needs_a_known_basis():
+    with pytest.raises(ValueError, match="basis"):
+        forecast_value_summary(_backtest(), _backtest(), "nope")

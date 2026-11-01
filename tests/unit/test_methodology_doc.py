@@ -87,6 +87,7 @@ DOCUMENTED = {
     ("forecasting_engine.portfolio.optimize", "RISK_LEVELS"),
     ("forecasting_engine.portfolio.optimize", "DEFAULT_RISK_LEVEL"),
     ("forecasting_engine.portfolio.optimize", "DEFAULT_WEIGHT_BOUNDS"),
+    ("forecasting_engine.portfolio.optimize", "MIN_TRUST_HISTORY"),
     ("forecasting_engine.risk.monte_carlo", "SAMPLING_METHODS"),
     ("forecasting_engine.risk.monte_carlo", "DEFAULT_PATHS"),
     ("forecasting_engine.risk.monte_carlo", "MIN_PATHS"),

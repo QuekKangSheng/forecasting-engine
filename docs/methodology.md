@@ -871,6 +871,7 @@ Values are Python literals as the code holds them.
 | `RISK_LEVELS` | `forecasting_engine.portfolio.optimize` | `(1, 2, 3, 4, 5)` |
 | `DEFAULT_RISK_LEVEL` | `forecasting_engine.portfolio.optimize` | `3` |
 | `DEFAULT_WEIGHT_BOUNDS` | `forecasting_engine.portfolio.optimize` | `(0.2, 0.8)` |
+| `MIN_TRUST_HISTORY` | `forecasting_engine.portfolio.optimize` | `252` |
 | `SAMPLING_METHODS` | `forecasting_engine.risk.monte_carlo` | `("bootstrap", "parametric")` |
 | `DEFAULT_PATHS` | `forecasting_engine.risk.monte_carlo` | `100_000` |
 | `MIN_PATHS` | `forecasting_engine.risk.monte_carlo` | `1_000` |
@@ -879,6 +880,8 @@ Values are Python literals as the code holds them.
 | `_CHUNK_PATHS` | `forecasting_engine.risk.monte_carlo` | `50_000` |
 | `MAX_RANGE_MULTIPLE` | `forecasting_engine.scenario.shock` | `10.0` |
 | `POSITIVE_TRANSFORMS` | `forecasting_engine.scenario.shock` | `frozenset({"level", "log return"})` |
+
+`MIN_TRUST_HISTORY` is a convention, not a derived value: about a year of daily pairs.
 
 ## Decisions and evidence
 

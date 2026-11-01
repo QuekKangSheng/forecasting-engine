@@ -16,6 +16,7 @@ from forecasting_engine.store.active_model import (
     ActiveFunction,
     get_active_function,
     get_active_model,
+    get_active_model_baseline,
     get_active_model_forecast,
     get_active_model_signal,
     set_active_model,
@@ -273,6 +274,9 @@ def test_each_forecasts_baseline_is_saved_so_its_signal_can_be_read_back(db):
 
     signal = get_active_model_signal(TargetRole.EQUITY, db_path=db)
     assert list(signal) == pytest.approx([0.01, -0.006, 0.02])
+    baseline = get_active_model_baseline(TargetRole.EQUITY, db_path=db)
+    forecast = get_active_model_forecast(TargetRole.EQUITY, db_path=db)
+    pd.testing.assert_series_equal(baseline, forecast - signal, check_exact=False)
     assert get_active_model(TargetRole.EQUITY, db_path=db).signal_rank_ic == 0.05
 
 
@@ -288,11 +292,13 @@ def test_a_model_saved_without_baselines_has_no_signal(db):
     )
 
     assert get_active_model_signal(TargetRole.EQUITY, db_path=db) is None
+    assert get_active_model_baseline(TargetRole.EQUITY, db_path=db) is None
     assert get_active_model_forecast(TargetRole.EQUITY, db_path=db) is not None
 
 
 def test_with_no_active_model_the_signal_is_none(db):
     assert get_active_model_signal(TargetRole.EQUITY, db_path=db) is None
+    assert get_active_model_baseline(TargetRole.EQUITY, db_path=db) is None
 
 
 def test_the_run_an_active_model_came_from_is_kept(db):

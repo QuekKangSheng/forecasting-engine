@@ -26,6 +26,7 @@ EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 EQUITY_COL = "SPX_Index_PX_LAST"
 BOND_COL = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
 N_DAYS = 60
+LONG_DAYS = 400
 
 
 @pytest.fixture(autouse=True)
@@ -543,6 +544,19 @@ def test_the_t_statistic_explains_itself_on_hover():
     assert hint in _markdown(_happy_page())
 
 
+def test_a_second_t_statistic_tests_the_forecasts_against_the_no_forecast_level():
+    app = _happy_page()
+
+    assert not app.exception
+    row = next(m.value for m in app.markdown if "Did the forecasts add value?" in m.value)
+    assert "Against level 3, no forecasts" in row
+    assert re.search(r"t = (-?\d+\.\d\d|—)", row)
+    captions = _captions(app)
+    assert "optimised minus the same level with no forecasts" in captions
+    assert "also reflects level 3's equity weight" in captions
+    assert "no-trade band" in captions
+
+
 def test_without_performance_data_the_page_guides_instead_of_testing():
     app = _page(_committed())
 
@@ -682,6 +696,10 @@ def _leaning(committed, signal: float) -> pd.Series:
     return _forecast(committed) * 0 + 0.001 + signal
 
 
+def _forecast_value_row(app: AppTest) -> str:
+    return next(m.value for m in app.markdown if "Did the forecasts add value?" in m.value)
+
+
 def _outputs(app: AppTest) -> dict:
     """Everything the page derives from the active models."""
     return {
@@ -689,6 +707,7 @@ def _outputs(app: AppTest) -> dict:
         "comparison": _comparison_table(app),
         "charts": [c.proto.SerializeToString() for c in app.get("vega_lite_chart")],
         "t": next(m.value for m in app.markdown if "Spread t-statistic" in m.value),
+        "forecast_t": _forecast_value_row(app),
     }
 
 
@@ -696,27 +715,52 @@ def _models_line(app: AppTest) -> str:
     return next(m.value for m in app.markdown if "Active models" in m.value)
 
 
-def test_switching_the_active_model_updates_the_weights_and_t_statistic(monkeypatch):
-    monkeypatch.setattr(
-        "forecasting_engine.portfolio.optimize.forecast_trust", lambda *_, **__: 1.0
+def _long_committed() -> pd.DataFrame:
+    """Long enough for a model to earn the trust that lets its forecasts move weights."""
+    rng = np.random.default_rng(0)
+    return pd.DataFrame(
+        {
+            "Date": pd.bdate_range("2021-01-04", periods=LONG_DAYS),
+            EQUITY_COL: 100 * np.cumprod(1 + rng.normal(0.001, 0.01, LONG_DAYS)),
+            BOND_COL: 100 * np.cumprod(1 + rng.normal(0.0, 0.003, LONG_DAYS)),
+        }
     )
-    committed = _committed()
-    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
-    _set_active(BOND, forecast=_leaning(committed, 0.0))
+
+
+def _following_returns(committed, sign: float) -> pd.Series:
+    """An equity forecast whose signal is ``sign`` times the equity-minus-bond return
+    over the three days that follow: a skilful model, or a backwards one. The last
+    rows, with no such return yet, lean the same way."""
+    indexed = committed.set_index("Date")
+    forward = indexed.pct_change(3, fill_method=None).shift(-3)
+    following = (forward[EQUITY_COL] - forward[BOND_COL]).fillna(0.05)
+    return sign * following + 0.001
+
+
+def _flat_bond(committed) -> pd.Series:
+    return pd.Series(0.001, index=pd.DatetimeIndex(committed["Date"]))
+
+
+def test_switching_the_active_model_updates_the_weights_and_t_statistic():
+    committed = _long_committed()
+    stamp = {"dataset_fingerprint": str(dataset_fingerprint(committed))}
+    _set_active(EQUITY, forecast=_following_returns(committed, +1), **stamp)
+    _set_active(BOND, forecast=_flat_bond(committed), **stamp)
     app = _page(committed)
     assert not app.exception
     before = _outputs(app)
 
     # Set on the Models page while this session stays open: the next rerun, not a
     # restart, picks it up.
-    _set_active(EQUITY, forecast=_leaning(committed, -0.05), name="Machine Learning")
+    _set_active(
+        EQUITY, forecast=_following_returns(committed, -1), name="Machine Learning", **stamp
+    )
     app.run()
 
     assert not app.exception
     after = _outputs(app)
     for output in before:
         assert after[output] != before[output], output
-    assert float(after["weights"][0].strip("%")) < float(before["weights"][0].strip("%"))
 
 
 def test_the_page_names_both_models_before_any_result():

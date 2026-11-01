@@ -48,7 +48,13 @@ def test_optimised_weights_flow_from_signals_through_the_backtest_to_the_compari
     signals = _signals(dates, seed=2)
 
     schedule = weight_schedule(
-        signals, prices, horizon=5, train_window=20, test_window=20, embargo=5
+        signals,
+        prices,
+        baselines=signals,
+        horizon=5,
+        train_window=20,
+        test_window=20,
+        embargo=5,
     )
     assert not schedule.empty
 
@@ -82,7 +88,13 @@ def test_a_real_schedule_fed_a_price_series_missing_an_index_raises_before_the_c
     signals = _signals(dates, seed=2)
 
     schedule = weight_schedule(
-        signals, prices, horizon=5, train_window=20, test_window=20, embargo=5
+        signals,
+        prices,
+        baselines=signals,
+        horizon=5,
+        train_window=20,
+        test_window=20,
+        embargo=5,
     )
     assert not schedule.empty
 

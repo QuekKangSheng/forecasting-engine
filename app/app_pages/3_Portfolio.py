@@ -42,6 +42,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     comparison_rows,
     cumulative_paths,
     drawdown_paths,
+    forecast_value_summary,
     monte_carlo_rows,
     rolling_volatility_paths,
     significance_summary,
@@ -138,6 +139,10 @@ if signals[EQUITY] is None or signals[BOND] is None:
         icon=":material/info:",
     )
     st.stop()
+baselines = {
+    EQUITY: active_model.get_active_model_baseline(EQUITY),
+    BOND: active_model.get_active_model_baseline(BOND),
+}
 
 equity_name = label(target_columns[EQUITY])
 bond_name = label(target_columns[BOND])
@@ -193,6 +198,7 @@ try:
     breakdowns = optimize.schedule_breakdowns(
         signals,
         prices,
+        baselines=baselines,
         horizon=equity_active.horizon,
         train_window=TRAIN_WINDOW,
         test_window=equity_active.test_window,
@@ -484,6 +490,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption(f"{significance.detail} {basis_label}, the same basis as the table above.")
+
+forecast_value = forecast_value_summary(backtest, no_forecast_backtest, basis)
+st.markdown(
+    ui.status_row(
+        f"Did the forecasts add value? Against level {risk_level}, no forecasts",
+        ui.lozenge(html.escape(forecast_value.label), forecast_value.tone),
+        f"t = {forecast_value.t}",
+    ),
+    unsafe_allow_html=True,
+)
+st.caption(
+    f"{forecast_value.detail} {basis_label}. The test above, against the benchmark, also "
+    f"reflects level {risk_level}'s equity weight. This one has that weight on both sides, "
+    "so it tests the forecasts, along with any effect of the no-trade band.",
+    help=glossary.term("Forecast value t-statistic"),
+)
 
 
 # --- FYP-56 / FYP-38: VaR and CVaR by method, beside max drawdown -------------------

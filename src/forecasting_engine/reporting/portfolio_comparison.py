@@ -25,6 +25,7 @@ from forecasting_engine.portfolio.performance import (
     PerformanceMetrics,
     Significance,
     drawdown,
+    relative,
     rolling_volatility,
 )
 from forecasting_engine.risk.monte_carlo import MonteCarloResult
@@ -309,4 +310,33 @@ def significance_summary(result: BacktestResult, basis: str) -> SignificanceSumm
             "neighbouring correlation."
         )
     t = "—" if relative.spread_t != relative.spread_t else f"{relative.spread_t:.2f}"
+    return SignificanceSummary(t=t, label=label, tone=tone, detail=detail)
+
+
+def forecast_value_summary(
+    result: BacktestResult, no_forecast: BacktestResult, basis: str
+) -> SignificanceSummary:
+    """Did the forecasts add value on ``basis``? The same paired, Newey-West test as
+    ``significance_summary``, of the optimised portfolio against ``no_forecast``, the
+    backtest of the risk level's weights held with no forecasts."""
+    if basis not in BASES:
+        raise ValueError(f"basis must be one of {BASES}, got {basis!r}")
+    spread = relative(getattr(result.optimised, basis), getattr(no_forecast.optimised, basis))
+    level = f"{SIGNIFICANCE_CONFIDENCE:.0%}"
+    verdict = spread.significance
+    label, tone = {
+        Significance.OUTPERFORMS: (f"Forecasts added value at {level} confidence", "success"),
+        Significance.UNDERPERFORMS: (f"Forecasts cost value at {level} confidence", "danger"),
+        Significance.NOT_SIGNIFICANT: ("No significant forecast value", "neutral"),
+        Significance.UNDEFINED: ("No forecast effect to test", "neutral"),
+    }[verdict]
+    if verdict == Significance.UNDEFINED:
+        detail = "The two portfolios' daily returns never differ, so there is nothing to test."
+    else:
+        detail = (
+            f"Paired test on {spread.days:,} daily return differences (optimised minus the "
+            f"same level with no forecasts), Newey-West adjusted for {spread.spread_t_lags} "
+            "days of neighbouring correlation."
+        )
+    t = "—" if spread.spread_t != spread.spread_t else f"{spread.spread_t:.2f}"
     return SignificanceSummary(t=t, label=label, tone=tone, detail=detail)

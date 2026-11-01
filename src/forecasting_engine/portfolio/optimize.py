@@ -30,6 +30,11 @@ purpose: equity's trailing mean is far above bond's in most windows and swings
 with recent performance, so fed to the optimiser it pins the allocation to a
 bound whatever the signals say.
 
+``β̂`` is estimated on an expanding window, from each past date's signal difference
+and the return that followed it, using only returns fully known before the rebalance
+(``forecast_trust``). Until ``MIN_TRUST_HISTORY`` such pairs exist it is zero, so the
+forecasts move nothing.
+
 A rebalance happens once every ``horizon`` trading days over the out-of-sample
 period, so each allocation is held for exactly as long as the forecast it was
 set from looks ahead.
@@ -53,7 +58,7 @@ import numpy as np
 import pandas as pd
 
 from forecasting_engine.extraction.targets import TargetRole
-from forecasting_engine.ingest.align import FeaturePanel
+from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
 from forecasting_engine.portfolio.backtest import (
     ASSETS,
     DEFAULT_COSTS_BPS,
@@ -77,6 +82,13 @@ DEFAULT_WEIGHT_BOUNDS: tuple[float, float] = (0.2, 0.8)
 """Working default, not sponsor-confirmed: stops either asset being pushed to a
 corner by a small, noisy difference between the two forecasts. Revisit once
 Alpha Norm states how far the allocation may tilt from 50/50."""
+
+MIN_TRUST_HISTORY: int = 252
+"""A convention, not a derived value: about a year of daily forecast-and-outcome pairs
+before the forecasts move any weight. With a 20-day horizon those pairs overlap, so
+they hold about 13 independent observations and the first estimates are noisy."""
+
+_PRICE = "price"
 
 
 def _common_price_calendar(prices: Mapping[TargetRole, pd.Series]) -> pd.DatetimeIndex:
@@ -201,16 +213,50 @@ def long_run_premium(prices: Mapping[TargetRole, pd.Series], *, horizon: int) ->
     return (returns[equity] - returns[bond]).expanding().mean() * horizon
 
 
-def forecast_trust(
-    rebalance_date: pd.Timestamp,
+def trust_pairs(
     signals: Mapping[TargetRole, pd.Series],
+    baselines: Mapping[TargetRole, pd.Series],
     prices: Mapping[TargetRole, pd.Series],
     *,
     horizon: int,
-) -> float:
-    """``β̂``: how much of the signal difference the models have earned trust for.
-    None yet, so every level holds its no-forecast weight."""
-    return 0.0
+) -> pd.DataFrame:
+    """One row per date with a stored forecast for both models: ``x``, the signal
+    difference; ``y``, the realised equity-minus-bond return over the horizon starting
+    that date, less the same training-mean difference taken off the forecasts; and
+    ``label_end``, the date the later of the two returns is known.
+
+    The returns are the labels the models were trained and scored on
+    (``ingest.align.align_and_lag``)."""
+    equity, bond = ASSETS
+    panels = {
+        role: align_and_lag(prices[role].to_frame(_PRICE), (), _PRICE, horizon) for role in ASSETS
+    }
+    labels = {role: panel.frame[panel.targets[0]] for role, panel in panels.items()}
+    return pd.DataFrame(
+        {
+            "x": signals[equity] - signals[bond],
+            "y": labels[equity] - labels[bond] - (baselines[equity] - baselines[bond]),
+            "label_end": pd.concat([panels[role].label_end for role in ASSETS], axis=1).max(axis=1),
+        }
+    ).dropna()
+
+
+def pairs_known_by(rebalance_date: pd.Timestamp, pairs: pd.DataFrame) -> pd.DataFrame:
+    """The ``trust_pairs`` rows whose horizon fully ended before ``rebalance_date``."""
+    return pairs[pairs["label_end"] < rebalance_date]
+
+
+def forecast_trust(rebalance_date: pd.Timestamp, pairs: pd.DataFrame) -> float:
+    """``β̂``: how much of the signal difference the models have earned trust for. The
+    slope of an OLS of ``y`` on ``x`` with an intercept, over every pair known by
+    ``rebalance_date``, clipped to ``[0, 1]`` (Grinold 1994). Zero with fewer than
+    ``MIN_TRUST_HISTORY`` pairs, or where ``x`` never varies and has no slope."""
+    known = pairs_known_by(rebalance_date, pairs)
+    x, y = known["x"].to_numpy(dtype=float), known["y"].to_numpy(dtype=float)
+    if len(known) < MIN_TRUST_HISTORY or np.ptp(x) == 0:
+        return 0.0
+    slope = float(np.cov(x, y, ddof=1)[0, 1] / np.var(x, ddof=1))
+    return min(max(slope, 0.0), 1.0)
 
 
 @dataclass(frozen=True)
@@ -329,6 +375,7 @@ def weight_schedule(
     signals: Mapping[TargetRole, pd.Series],
     prices: Mapping[TargetRole, pd.Series],
     *,
+    baselines: Mapping[TargetRole, pd.Series],
     horizon: int,
     train_window: int,
     test_window: int,
@@ -336,6 +383,7 @@ def weight_schedule(
     risk_level: int = DEFAULT_RISK_LEVEL,
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
     costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
+    trust: float | None = None,
 ) -> pd.DataFrame:
     """The full weight schedule ``portfolio.backtest.run_backtest`` chains
     through history: one row of equity/bond weights per rebalance date, from
@@ -344,6 +392,7 @@ def weight_schedule(
         schedule_breakdowns(
             signals,
             prices,
+            baselines=baselines,
             horizon=horizon,
             train_window=train_window,
             test_window=test_window,
@@ -351,6 +400,7 @@ def weight_schedule(
             risk_level=risk_level,
             bounds=bounds,
             costs_bps=costs_bps,
+            trust=trust,
         )
     )
 
@@ -379,6 +429,7 @@ def schedule_breakdowns(
     signals: Mapping[TargetRole, pd.Series],
     prices: Mapping[TargetRole, pd.Series],
     *,
+    baselines: Mapping[TargetRole, pd.Series],
     horizon: int,
     train_window: int,
     test_window: int,
@@ -386,11 +437,14 @@ def schedule_breakdowns(
     risk_level: int = DEFAULT_RISK_LEVEL,
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
     costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
+    trust: float | None = None,
 ) -> dict[pd.Timestamp, WeightBreakdown]:
     """How each rebalance's equity weight was reached, in date order: the target
-    solved from that date's signals and the covariance over its own training
-    window, then the no-trade band against the weight the last allocation drifted
-    to. Zero costs leave no band, so every rebalance moves to its target.
+    solved from that date's signals, ``forecast_trust`` and the covariance over its
+    own training window, then the no-trade band against the weight the last
+    allocation drifted to. Zero costs leave no band, so every rebalance moves to its
+    target. ``baselines`` are each forecast's fold training means. A ``trust`` given
+    is used at every rebalance in place of the estimate.
 
     A rebalance whose signal is missing (a model had no prediction that day) or
     whose training window can't support a covariance estimate is left out rather
@@ -401,6 +455,7 @@ def schedule_breakdowns(
     )
     returns = expected_returns(rebalance_dates, signals)
     premiums = long_run_premium(prices, horizon=horizon)
+    pairs = trust_pairs(signals, baselines, prices, horizon=horizon)
     targets: dict[pd.Timestamp, tuple[WeightBreakdown, float]] = {}
     for date in rebalance_dates:
         row = returns.loc[date]
@@ -417,7 +472,7 @@ def schedule_breakdowns(
             row,
             covariance,
             premium=premium,
-            trust=forecast_trust(date, signals, prices, horizon=horizon),
+            trust=forecast_trust(date, pairs) if trust is None else trust,
             risk_level=risk_level,
             bounds=bounds,
         )
