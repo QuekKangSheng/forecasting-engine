@@ -379,6 +379,28 @@ TERMS: Mapping[str, str] = {
         "The active model's function evaluated on the latest data, with no shock: what "
         "it forecasts for the next horizon today. A shock is measured against it."
     ),
+    "Portfolio impact": (
+        "What the shock does to the optimised portfolio as a whole, not just to each "
+        "index's forecast. The Monte Carlo simulation is run twice with the same "
+        "weights and the same random paths, once centred on the base-case forecasts "
+        "and once on the shocked ones, so the difference is the shock's alone. The "
+        "weights are the latest optimised weights, held as they are, not re-solved."
+    ),
+    "Shocked return": (
+        "The portfolio's mean simulated return over the next horizon under the shocked "
+        "forecasts, against the base case. Lower means the shock would cost the "
+        "allocation held today."
+    ),
+    "Shocked volatility": (
+        "How widely the simulated horizon returns spread around their mean, as a "
+        "standard deviation. A shock that only shifts the forecasts leaves it close to "
+        "the base case, since the size of the daily moves comes from history."
+    ),
+    "Shocked drawdown": (
+        "The worst fall from a peak within the horizon that only 5% (or 1%) of paths "
+        "exceed, under the shocked forecasts. A lower forecast tilts every path down, "
+        "so the tail of drawdowns deepens."
+    ),
     "Shocked forecast": (
         "The same function, not refitted, evaluated on the shocked inputs. It shows "
         "how much the forecast leans on the signals moved, not what the market would "

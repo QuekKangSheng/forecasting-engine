@@ -289,3 +289,152 @@ def test_changing_a_shock_after_a_run_hides_the_old_result():
 
     assert _table(app) is None
     assert any("shocks have changed" in i.value for i in app.info)
+
+
+# --- FYP-33: what the shock does to the optimised portfolio ---------------------------
+
+
+def _impact_table(app) -> str | None:
+    return next((m.value for m in app.markdown if ">Return<span" in m.value), None)
+
+
+def _with_weights(app, equity=0.6, bond=0.4, fingerprint=None):
+    """The latest optimised weights, as the Portfolio page leaves them for Home."""
+    import portfolio_summary
+
+    committed = _committed()
+    app.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
+        dataset_fingerprint=fingerprint or str(dataset_fingerprint(committed)),
+        as_of=pd.Timestamp(committed["Date"].iloc[-1]),
+        equity_weight=equity,
+        bond_weight=bond,
+        net_sharpe=0.9,
+        baseline_net_sharpe=0.8,
+    )
+    return app
+
+
+def _long_committed(n: int = 540) -> pd.DataFrame:
+    """Enough history for the simulation's 504-day window."""
+    rng = np.random.default_rng(0)
+    vix = np.linspace(12, 28, n)
+    vix[-1] = 20.0
+    return pd.DataFrame(
+        {
+            "Date": pd.bdate_range("2023-06-01", periods=n),
+            SPX: 4000 * np.cumprod(1 + rng.normal(0, 0.01, n)),
+            AGG: 100 * np.cumprod(1 + rng.normal(0, 0.003, n)),
+            VIX: vix,
+            RATE: 4 + np.cumsum(rng.normal(0, 0.02, n)),
+        }
+    )
+
+
+def _impact_page(shock_value="25", small_paths=True):
+    """Both indices active, the equity shocked, the latest weights known."""
+    import portfolio_summary
+
+    committed = _long_committed()
+    fingerprint = str(dataset_fingerprint(committed))
+    _set_active(EQUITY, function=LINEAR, fingerprint=fingerprint)
+    _set_active(BOND, "Polynomial (user-supplied)", function=BOND_FN, fingerprint=fingerprint)
+    app = AppTest.from_file(str(PAGE), default_timeout=120)
+    app.session_state[bloomberg_extraction_panel.COMMITTED_KEY] = committed
+    app.session_state[bloomberg_extraction_panel.COMMITTED_TARGETS_KEY] = {EQUITY: SPX, BOND: AGG}
+    app.session_state[bloomberg_extraction_panel.COMMITTED_SOURCES_KEY] = SOURCES
+    app.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
+        dataset_fingerprint=fingerprint,
+        as_of=pd.Timestamp(committed["Date"].iloc[-1]),
+        equity_weight=0.6,
+        bond_weight=0.4,
+        net_sharpe=0.9,
+        baseline_net_sharpe=0.8,
+    )
+    if small_paths:
+        app.session_state["monte_carlo_paths"] = 2_000
+    app.run()
+    return _run(_shock(app, VIX, shock_value))
+
+
+def test_without_the_portfolio_page_visited_the_impact_asks_for_it():
+    _set_active(EQUITY, function=LINEAR)
+    app = _run(_shock(_page(), VIX, "25"))
+
+    assert _impact_table(app) is None
+    assert any("Open the Portfolio Optimizer page first" in i.value for i in app.info)
+
+
+def test_weights_from_another_dataset_are_not_used():
+    _set_active(EQUITY, function=LINEAR)
+    app = _with_weights(_page(), fingerprint="another-dataset")
+    app = _run(_shock(app, VIX, "25"))
+
+    assert _impact_table(app) is None
+    assert any("Open the Portfolio Optimizer page first" in i.value for i in app.info)
+
+
+def test_the_shocked_portfolio_is_shown_beside_the_base_case():
+    app = _impact_page()
+
+    table = _impact_table(app)
+    assert table is not None
+    for heading in ("Base case", "Shocked", "Change"):
+        assert f"<th>{heading}</th>" in table
+    for metric in ("Return", "Volatility", "Max drawdown 95%", "Max drawdown 99%"):
+        assert f">{metric}<span" in table
+    # The equity forecast fell from 1% to 0.8% at a 60% weight: the portfolio's
+    # return falls, and the change column says by how much in points.
+    assert "-0.1" in table and " pts" in table
+
+
+def test_the_impact_states_the_weights_held_and_that_they_are_not_re_optimised():
+    captions = " ".join(c.value for c in _impact_page().caption)
+
+    assert "60% S&P 500" in captions and "40%" in captions
+    assert "not re-optimised" in captions
+    assert "Over the next 5 trading days" in captions
+
+
+def test_a_zero_shock_shows_no_change_in_any_portfolio_metric():
+    app = _impact_page(shock_value="20")  # VIX's last observed value
+
+    table = _impact_table(app)
+    assert table.count("+0.00 pts") == 4
+
+
+def test_an_index_without_a_scenario_result_still_lets_the_portfolio_be_simulated():
+    """Bond is active without a stored function: its saved forecast stands in."""
+    import portfolio_summary
+
+    committed = _long_committed()
+    fingerprint = str(dataset_fingerprint(committed))
+    _set_active(EQUITY, function=LINEAR, fingerprint=fingerprint)
+    saved = pd.Series([0.004], index=[pd.Timestamp(committed["Date"].iloc[-1])])
+    active_model.set_active_model(
+        BOND,
+        "Machine Learning",
+        replace(_result(), forecast=saved),
+        high_risk=False,
+        horizon=5,
+        train_window=60,
+        test_window=10,
+        dataset_fingerprint=fingerprint,
+    )
+    app = AppTest.from_file(str(PAGE), default_timeout=120)
+    app.session_state[bloomberg_extraction_panel.COMMITTED_KEY] = committed
+    app.session_state[bloomberg_extraction_panel.COMMITTED_TARGETS_KEY] = {EQUITY: SPX, BOND: AGG}
+    app.session_state[bloomberg_extraction_panel.COMMITTED_SOURCES_KEY] = SOURCES
+    app.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
+        dataset_fingerprint=fingerprint,
+        as_of=pd.Timestamp(committed["Date"].iloc[-1]),
+        equity_weight=0.6,
+        bond_weight=0.4,
+        net_sharpe=0.9,
+        baseline_net_sharpe=0.8,
+    )
+    app.session_state["monte_carlo_paths"] = 2_000
+    app.run()
+    app = _run(_shock(app, VIX, "25"))
+
+    assert _impact_table(app) is not None
+    assert any("had no scenario result" in c.value for c in app.caption)

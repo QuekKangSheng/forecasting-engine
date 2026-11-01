@@ -1,11 +1,16 @@
 """Scenarios page: shock one or more signals the active polynomials read and see
-what each index's forecast becomes (FYP-32).
+what each index's forecast becomes (FYP-32), then what that does to the
+optimised portfolio (FYP-33).
 
 The active functions are evaluated again on the shocked inputs; nothing is
 refitted. Each shock replaces the signal's last observed value and goes through
 the same alignment, transform and lag as the fit (``scenario.shock``). Shocks are
 validated before the scenario can run, and a shocked input outside the range the
 model was trained on is flagged as an extrapolation.
+
+The portfolio impact (``scenario.portfolio_impact``) carries the shocked
+forecasts through the Monte Carlo simulation at the latest optimised weights,
+held as they are, beside the same simulation on the base-case forecasts.
 """
 
 from __future__ import annotations
@@ -17,6 +22,7 @@ import streamlit as st
 
 import bloomberg_extraction_panel
 import glossary
+import portfolio_summary
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
@@ -24,13 +30,17 @@ from forecasting_engine.ingest.align import transform_for
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
-from forecasting_engine.scenario import shock
+from forecasting_engine.risk import monte_carlo
+from forecasting_engine.scenario import portfolio_impact, shock
 from forecasting_engine.store import active_model
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
-from model_settings import EMBARGO_DAYS
+from model_settings import EMBARGO_DAYS, TRAIN_WINDOW
 
 ROLES = (TargetRole.EQUITY, TargetRole.BOND)
 RESULT_KEY = "scenario_result"
+#: The Portfolio page's Monte Carlo settings, so both pages simulate the same way.
+METHOD_KEY = "monte_carlo_method"
+PATHS_KEY = "monte_carlo_paths"
 KIND_LABELS = {shock.ShockKind.ABSOLUTE: "New value", shock.ShockKind.PERCENT: "% change"}
 
 ui.inject()
@@ -310,3 +320,129 @@ with st.expander("What each model reads"):
         "change, or a one-day log return) and the one-day lag. Trained on is the input's "
         "range over the latest walk-forward fold's training rows, the fit the function is."
     )
+
+
+# --- FYP-33: what the shock does to the optimised portfolio ---------------------------
+
+
+def _pts(value: float) -> str:
+    return "—" if value != value else f"{value * 100:+.2f} pts"
+
+
+def _base_forecast(role: TargetRole) -> float | None:
+    """The index's base-case forecast for an index the scenario didn't evaluate:
+    its active model's latest saved forecast, as the Portfolio page centres the
+    simulation on. ``None`` if the index has no usable active model."""
+    record = active_model.get_active_model(role)
+    if record is None or record.dataset_fingerprint != fingerprint:
+        return None
+    saved = active_model.get_active_model_forecast(role)
+    if saved is None or saved.dropna().empty:
+        return None
+    return float(saved.dropna().iloc[-1])
+
+
+def _portfolio_forecasts() -> tuple[dict, dict, str | None]:
+    """Each index's base-case and shocked forecast for the simulation, or why the
+    portfolio can't be simulated. An index the scenario evaluated takes its own
+    base and shocked forecasts; one it didn't takes its active model's latest
+    saved forecast for both, so the shock leaves it unmoved."""
+    base, shocked = {}, {}
+    for role in ROLES:
+        if role in results:
+            base[role], shocked[role] = results[role].base, results[role].shocked
+            continue
+        latest = _base_forecast(role)
+        if latest is None:
+            name = label(target_columns[role]) if role in target_columns else role.value
+            return {}, {}, (
+                f"The portfolio can't be simulated without a forecast for {name}: "
+                + (failures.get(role) or unavailable.get(role, ""))
+            )
+        base[role] = shocked[role] = latest
+    return base, shocked, None
+
+
+summary = st.session_state.get(portfolio_summary.SUMMARY_KEY)
+st.markdown(
+    ui.eyebrow("Portfolio impact", glossary.term("Portfolio impact")), unsafe_allow_html=True
+)
+if summary is None or summary.dataset_fingerprint != fingerprint:
+    st.info(
+        "Open the Portfolio Optimizer page first, so the latest optimised weights are "
+        "known. The shocked forecasts are then carried through to the portfolio at "
+        "those weights.",
+        icon=":material/info:",
+    )
+    st.stop()
+
+base_forecasts, shocked_forecasts, blocked_reason = _portfolio_forecasts()
+if blocked_reason:
+    st.info(blocked_reason, icon=":material/info:")
+    st.stop()
+
+weights = {TargetRole.EQUITY: summary.equity_weight, TargetRole.BOND: summary.bond_weight}
+horizon = max(records[role].horizon for role in results)
+method = st.session_state.get(METHOD_KEY, monte_carlo.BOOTSTRAP)
+paths = int(st.session_state.get(PATHS_KEY, monte_carlo.DEFAULT_PATHS))
+prices = {role: frame[target_columns[role]].dropna() for role in ROLES}
+try:
+    impact = portfolio_impact.portfolio_impact(
+        monte_carlo.history_window(prices, summary.as_of, window=TRAIN_WINDOW),
+        base_forecasts,
+        shocked_forecasts,
+        weights,
+        horizon=horizon,
+        method=method,
+        paths=paths,
+    )
+except (portfolio_impact.PortfolioImpactError, monte_carlo.MonteCarloDataError) as exc:
+    st.warning(str(exc), icon=":material/warning:")
+    st.stop()
+
+impact_header = (
+    _heading("Metric")
+    + _heading("Base case")
+    + _heading("Shocked")
+    + _heading("Change")
+)
+impact_rows = [
+    _heading("Return", "Shocked return")
+    + _cell(_pct(impact.base.mean_return))
+    + _cell(_pct(impact.shocked.mean_return))
+    + _cell(_pts(impact.return_change)),
+    _heading("Volatility", "Shocked volatility")
+    + _cell(_pct(impact.base.volatility, signed=False))
+    + _cell(_pct(impact.shocked.volatility, signed=False))
+    + _cell(_pts(impact.volatility_change)),
+]
+for confidence in impact.base.max_drawdown:
+    impact_rows.append(
+        _heading(f"Max drawdown {confidence:.0%}", "Shocked drawdown")
+        + _cell(_pct(impact.base.max_drawdown[confidence]))
+        + _cell(_pct(impact.shocked.max_drawdown[confidence]))
+        + _cell(_pts(impact.drawdown_change(confidence)))
+    )
+st.markdown(
+    f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{impact_header}</tr>'
+    f"</thead><tbody>{''.join(f'<tr>{r}</tr>' for r in impact_rows)}</tbody></table></div>",
+    unsafe_allow_html=True,
+)
+equity_name = label(target_columns[TargetRole.EQUITY])
+bond_name = label(target_columns[TargetRole.BOND])
+untouched = [label(target_columns[role]) for role in ROLES if role not in results]
+st.caption(
+    f"Over the next {impact.horizon} trading days, at the latest optimised weights "
+    f"({impact.weights[TargetRole.EQUITY]:.0%} {equity_name}, "
+    f"{impact.weights[TargetRole.BOND]:.0%} {bond_name}, as of {summary.as_of:%d %b %Y}), "
+    "held as they are: the weights are not re-optimised for the shock. Both cases are "
+    f"simulated on the same {impact.paths:,} {method} paths, so the change is the "
+    "shock's alone. Volatility is the spread of the simulated horizon returns; max "
+    "drawdown is the fall only the worst 5% or 1% of paths exceed."
+    + (
+        f" {' and '.join(untouched)} had no scenario result, so its base-case "
+        "forecast is used in both cases."
+        if untouched
+        else ""
+    )
+)
