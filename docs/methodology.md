@@ -96,8 +96,10 @@ a target is decided at ingestion, never inferred later.
   for both targets. The target securities come from the committed target
   assignment, never from a hard-coded list.
 - Each security contributes one column: its `TOT_RETURN_INDEX` field if there is
-  one, otherwise `PX_LAST` (`_PRICE_FIELD`), otherwise its first other field. Bid
-  and ask quotes (`_QUOTE_FIELDS`) are never used.
+  one, otherwise `PX_LAST` (`_PRICE_FIELD`), otherwise its first other field by
+  name. Bid and ask quotes (`_QUOTE_FIELDS`) are never used.
+- The kept signals are sorted by name, so a model does not depend on the order
+  the files were uploaded in.
 
 ## 4. Transform map
 

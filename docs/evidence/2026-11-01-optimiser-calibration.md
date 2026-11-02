@@ -6,7 +6,7 @@ The volatility-targeted risk levels and the earned forecast trust on the real da
 
 Page defaults: 20-day horizon, 504-day train window, 20-day test window, 20-day embargo, bounds 20%–80%, equity = Polynomial (derived), bond = Machine Learning. 99 rebalances from 4 Oct 2018 to 11 Aug 2026, 1,978 forecast-and-outcome pairs.
 
-**The t-statistic gate was added after seeing the ungated result**, so it is not an independent test on this data. Results at the default bounds are shown with and without it. The Machine Learning bond model fails the model gate on t (0.59).
+**The t-statistic gate was added after seeing the ungated result**, so it is not an independent test on this data. Results at the default bounds are shown with and without it. The Machine Learning bond model fails the model gate on t (1.22, Signal Rank IC 0.0700).
 
 ## Conclusion
 

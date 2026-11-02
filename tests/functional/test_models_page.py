@@ -1067,7 +1067,7 @@ def test_each_placeholder_gets_a_signal_dropdown_starting_with_the_first_signals
     app = _choose_own(_page())
     next(t for t in app.text_input if t.label.startswith("Function")).set_value("x - y ** 2").run()
 
-    assert _bindings(app) == {"x": VIX, "y": IG}
+    assert _bindings(app) == {"x": IG, "y": VIX}
 
 
 def test_a_placeholder_named_after_a_signal_defaults_to_that_signal():
@@ -1083,7 +1083,7 @@ def test_the_example_uses_the_first_two_real_signals():
     formula = next(t for t in app.text_input if t.label.startswith("Function"))
 
     assert formula.placeholder == "e.g. x - 0.5 * y ** 2"
-    assert "x and y would start as VIX and US IG credit spread" in _captions(app)
+    assert "x and y would start as US IG credit spread and VIX" in _captions(app)
 
 
 def test_the_signal_table_lists_every_signal_with_its_transform_and_lag():
@@ -1094,9 +1094,9 @@ def test_the_signal_table_lists_every_signal_with_its_transform_and_lag():
     app = _choose_own(_page(sources=sources))
 
     table = next(d.value for d in app.dataframe if "Latest value" in d.value.columns)
-    assert table["Column"].tolist() == [VIX, IG]
-    assert table["Signal"].tolist() == ["VIX", "US IG credit spread"]
-    assert table["Security"].tolist() == ["VIX Index", "LUACOAS Index"]
+    assert table["Column"].tolist() == [IG, VIX]
+    assert table["Signal"].tolist() == ["US IG credit spread", "VIX"]
+    assert table["Security"].tolist() == ["LUACOAS Index", "VIX Index"]
     assert table["Transform"].tolist() == ["level", "level"]
     assert set(table["Lag"]) == {"1 day"}
 
@@ -1104,11 +1104,11 @@ def test_the_signal_table_lists_every_signal_with_its_transform_and_lag():
 def test_running_binds_each_placeholder_to_its_chosen_signal(stub_ml):
     app = _untick(_page(), "Fama-French 5", "Machine learning")
     app = _run_equity(app, formula="2 * x + y")
-    next(s for s in app.selectbox if s.label == "y stands for").set_value(VIX).run()
+    next(s for s in app.selectbox if s.label == "y stands for").set_value(IG).run()
     app = _press_run(app)
 
     description = _stored_runs(app)[USER_POLY].description
-    assert description.terms == (f"2 * {VIX} + {VIX}",)
+    assert description.terms == (f"2 * {IG} + {IG}",)
     assert description.intercept is not None
 
 
@@ -1117,7 +1117,7 @@ def test_changing_a_placeholders_signal_clears_only_the_user_supplied_row():
     app = _choose_own(_page(tabs))
     next(t for t in app.text_input if t.label.startswith("Function")).set_value("x").run()
     app.session_state[model_runs.RUNS_KEY].tabs[EQUITY].runs[USER_POLY] = _polynomial_run()
-    next(s for s in app.selectbox if s.label == "x stands for").set_value(IG).run()
+    next(s for s in app.selectbox if s.label == "x stands for").set_value(VIX).run()
 
     assert set(_stored_runs(app)) == {POLY}
 
