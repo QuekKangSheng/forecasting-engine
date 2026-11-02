@@ -33,6 +33,12 @@ TRADING_DAYS_PER_YEAR: int = 252
 RISK_FREE_RATE: float = 0.0
 """Annual. A working default: the app holds no cash-rate series to take it from."""
 
+ROLLING_VOL_WINDOW: int = 63
+"""Trading days behind each point of a rolling volatility: about three months, a
+quarter of ``TRADING_DAYS_PER_YEAR``. Long enough that one large day doesn't swing
+the estimate on its own, short enough that a change of regime, such as entering a
+crisis, shows within weeks rather than being averaged away over a year."""
+
 SIGNIFICANCE_CONFIDENCE: float = 0.95
 """The confidence a significant verdict states. The cut-off itself is the sponsor's
 t-statistic bar, ``validation.gates.SIGNIFICANCE_T_GATE`` (2), the one every model
@@ -105,23 +111,44 @@ def performance(
     downside = math.sqrt(float(np.mean(np.minimum(excess, 0.0) ** 2)))
     growth = float(np.prod(1 + r))
     annual_return = growth ** (periods_per_year / len(r)) - 1 if len(r) else float("nan")
-    drawdown = max_drawdown(returns)
+    worst = max_drawdown(returns)
 
     return PerformanceMetrics(
         annual_return=annual_return,
         annual_volatility=float(np.std(r, ddof=1)) * root_year if varies else 0.0,
         sharpe=_ratio(float(np.mean(excess)) * root_year, sd),
         sortino=_ratio(float(np.mean(excess)) * root_year, downside),
-        calmar=_ratio(annual_return, abs(drawdown)),
-        max_drawdown=drawdown,
+        calmar=_ratio(annual_return, abs(worst)),
+        max_drawdown=worst,
     )
 
 
+def drawdown(returns: pd.Series) -> pd.Series:
+    """How far the compounded path stands below its running peak on each date, a
+    negative fraction, or zero at a new high. The starting value of 1 counts as the
+    first peak, so a loss on the first day is already a drawdown."""
+    path = (1 + returns.dropna().astype(float)).cumprod()
+    return path / path.cummax().clip(lower=1.0) - 1
+
+
 def max_drawdown(returns: pd.Series) -> float:
-    """The worst fall from a running peak of the compounded path, the starting
-    value of 1 included as the first peak."""
-    path = np.concatenate([[1.0], np.cumprod(1 + returns.dropna().to_numpy(dtype=float))])
-    return float(np.min(path / np.maximum.accumulate(path) - 1))
+    """The worst fall from a running peak of the compounded path: the deepest point
+    of ``drawdown``, or zero for no returns."""
+    return float(drawdown(returns).to_numpy().min(initial=0.0))
+
+
+def rolling_volatility(
+    returns: pd.Series,
+    window: int = ROLLING_VOL_WINDOW,
+    *,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> pd.Series:
+    """Annualised volatility of the ``window`` days to each date: their sample
+    standard deviation times √``periods_per_year``, what ``annual_volatility`` gives
+    for those days alone. NaN until ``window`` days have passed. A window whose
+    returns never vary is exactly zero: pandas counts the repeated values rather
+    than leaving the rounding error ``performance()`` has to guard against."""
+    return returns.astype(float).rolling(window).std(ddof=1) * math.sqrt(periods_per_year)
 
 
 def relative(

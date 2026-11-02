@@ -83,8 +83,8 @@ def db(tmp_path_factory):
             set_at=start + timedelta(hours=hours),
         )
     # Two portfolio settings, one of which beats 50/50 after costs.
-    for aversion in (10.0, 100.0):
-        _record_portfolio(db, aversion)
+    for level in (1, 5):
+        _record_portfolio(db, level)
     record_run(
         role=TargetRole.EQUITY,
         model_name="FF5 Benchmark",
@@ -99,21 +99,21 @@ def db(tmp_path_factory):
     return db
 
 
-def _record_portfolio(db, aversion: float) -> None:
-    rng = np.random.default_rng(int(aversion))
+def _record_portfolio(db, level: int) -> None:
+    rng = np.random.default_rng(level)
     idx = pd.bdate_range("2024-01-31", periods=80)
     prices = {
         TargetRole.EQUITY: pd.Series(100 * np.cumprod(1 + rng.normal(0.002, 0.01, 80)), index=idx),
         TargetRole.BOND: pd.Series(100 * np.cumprod(1 + rng.normal(0.0, 0.003, 80)), index=idx),
     }
-    equity = 0.8 if aversion == 10.0 else 0.2  # the low-aversion mix holds the rising index
+    equity = 0.8 if level == 1 else 0.2  # level 1 holds the rising index
     schedule = pd.DataFrame(
         {TargetRole.EQUITY: [equity], TargetRole.BOND: [1 - equity]}, index=idx[:1]
     )
     inputs = PortfolioInputs(
         dataset_sha256=frame_sha256(DATA), equity_run_id=None, bond_run_id=None,
         equity_set_at=datetime(2026, 10, 26), bond_set_at=datetime(2026, 10, 26),
-        horizon=20, train_window=504, test_window=20, embargo=20, risk_aversion=aversion,
+        horizon=20, train_window=504, test_window=20, embargo=20, risk_level=level,
         bounds=(0.2, 0.8), costs_bps={"equity": 3.0, "bond": 5.0}, code_version="abc1234",
     )
     record_portfolio_run(inputs, run_backtest(prices, schedule), schedule, db_path=db)
@@ -166,5 +166,5 @@ def test_the_portfolio_query_keeps_only_settings_that_beat_the_benchmark(db):
     with duckdb.connect(str(db), read_only=True) as conn:
         frame = conn.execute(QUERIES[4]).df()
 
-    assert list(frame["risk_aversion"]) == ["10.0"]
+    assert list(frame["risk_level"]) == ["1"]
     assert (frame["net_sharpe"] > frame["baseline_net_sharpe"]).all()

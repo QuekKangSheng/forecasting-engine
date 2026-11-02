@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from streamlit.dataframe_util import convert_arrow_bytes_to_pandas_df
 from streamlit.testing.v1 import AppTest
 
 import bloomberg_extraction_panel
@@ -25,6 +26,7 @@ EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 EQUITY_COL = "SPX_Index_PX_LAST"
 BOND_COL = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
 N_DAYS = 60
+LONG_DAYS = 400
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +47,13 @@ def short_train_window(monkeypatch):
     """The covariance is estimated over the models' fixed train window (252 days),
     longer than this 60-day fixture."""
     monkeypatch.setattr(model_settings, "TRAIN_WINDOW", 15)
+
+
+@pytest.fixture(autouse=True)
+def short_volatility_window(monkeypatch):
+    """Rolling volatility needs a quarter's returns (63 days) before its first point,
+    longer than this fixture's backtest."""
+    monkeypatch.setattr("forecasting_engine.portfolio.performance.ROLLING_VOL_WINDOW", 5)
 
 
 def _committed() -> pd.DataFrame:
@@ -252,6 +261,23 @@ def test_the_backtest_date_range_rebalancing_and_costs_are_stated():
     assert "S&P 500: Polynomial" in captions
 
 
+def test_an_active_model_saved_under_its_old_name_shows_the_new_one():
+    committed = _committed()
+    active_model.set_active_model(
+        EQUITY,
+        "Research model (fixed inputs)",
+        _result(forecast=_forecast(committed, seed=1)),
+        high_risk=False,
+        **SETTINGS,
+    )
+    _set_active(BOND, forecast=_forecast(committed, seed=2))
+
+    captions = _captions(_page(committed))
+
+    assert "S&P 500: Polynomial – fixed economic inputs" in captions
+    assert "Research model (fixed inputs)" not in captions
+
+
 def test_after_costs_is_the_default_and_before_costs_can_be_chosen():
     app = _happy_page()
     (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
@@ -267,24 +293,42 @@ def test_after_costs_is_the_default_and_before_costs_can_be_chosen():
 def test_the_latest_weights_say_how_they_were_set():
     captions = _captions(_happy_page())
 
-    assert "How this was set: the benchmark holds 50%" in captions
-    assert "at risk aversion 3" in captions
+    assert re.search(r"How this was set: level 3 targets \d+% S&P 500", captions)
 
 
-def test_risk_aversion_is_a_1_to_5_scale_defaulting_to_the_middle():
+def test_risk_level_is_a_1_to_5_scale_defaulting_to_the_middle_and_sets_the_target_weight():
     app = _happy_page()
-    (scale,) = [s for s in app.select_slider if s.label == "Risk aversion"]
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
     assert list(scale.options) == ["1 · risk-loving", "2", "3", "4", "5 · risk-averse"]
     assert scale.value == 3
-    tilt = _solved_weight(app) - 0.5
+    assert "Each level targets a volatility evenly spaced between" in _captions(app)
+    level_3 = _solved_weight(app)
 
     scale.set_value(5).run()
 
     assert not app.exception
-    # The solved weight, before the no-trade band: a held rebalance's weight is
-    # wherever the portfolio drifted to, whatever the risk aversion.
-    assert abs(_solved_weight(app) - 0.5) <= abs(tilt)
-    assert "Level 5 is λ = 100." in _captions(app)
+    assert _solved_weight(app) < level_3
+
+
+def test_the_no_forecast_column_follows_the_risk_level():
+    app = _happy_page()
+    assert "<th>Level 3, no forecasts</th>" in _comparison_table(app)
+    assert "Starting mix" not in _markdown(app) + _captions(app)
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+
+    scale.set_value(5).run()
+
+    assert not app.exception
+    assert "<th>Level 5, no forecasts</th>" in _comparison_table(app)
+    assert "Level 5, no forecasts holds level 5's target weight" in _captions(app)
+
+
+def test_the_page_never_shows_the_trust_the_risk_aversion_or_the_premium():
+    shown = _markdown(_happy_page())
+    captions = _captions(_happy_page())
+
+    for symbol in ("β", "λ", "π"):
+        assert symbol not in shown and symbol not in captions
 
 
 def _solved_weight(app) -> float:
@@ -304,7 +348,6 @@ def test_a_minimum_in_each_index_bounds_both_weights():
     assert not app.exception
     values = [float(m.value.strip("%")) / 100 for m in app.metric]
     assert all(0.4 - 1e-9 <= v <= 0.6 + 1e-9 for v in values)
-    assert "Each index stays between 40% and 60%." in _captions(app)
 
 
 def _tail_table(app: AppTest) -> str:
@@ -355,8 +398,87 @@ def test_the_caption_explains_that_not_run_is_not_zero_risk():
 def test_the_cumulative_return_chart_is_drawn_beside_the_weights_chart():
     app = _happy_page()
 
-    # The weights bar chart and the cumulative-return line chart.
-    assert len(app.get("vega_lite_chart")) == 2
+    # The weights bar chart, the cumulative-return, rolling volatility and drawdown
+    # line charts.
+    assert len(app.get("vega_lite_chart")) == 4
+
+
+# --- FYP-255 / FYP-256: the rolling volatility chart ---------------------------------
+
+
+def _line_chart(app: AppTest, value: str):
+    """The line chart whose values are named ``value``."""
+    (chart,) = [c for c in app.get("vega_lite_chart") if value in c.proto.spec]
+    return chart
+
+
+def _line_data(app: AppTest, value: str) -> pd.DataFrame:
+    (dataset,) = _line_chart(app, value).proto.datasets
+    long = convert_arrow_bytes_to_pandas_df(dataset.data.data)
+    return long.pivot(index="date", columns="Series", values=value)
+
+
+def test_rolling_volatility_is_charted_for_both_indices_and_the_optimised_portfolio():
+    app = _happy_page()
+
+    assert not app.exception
+    data = _line_data(app, "Rolling volatility")
+    assert len(data.columns) == 3 and "Optimised" in data.columns
+    assert "S&P 500" in data.columns
+    assert (data > 0).all().all()
+    spec = _line_chart(app, "Rolling volatility").proto.spec
+    assert "%d %b %Y" in spec, "the tooltip gives the exact date"
+    assert "previous 5 trading days' returns" in _captions(app)
+    assert any("Rolling volatility" in m.value for m in app.markdown)
+
+
+@pytest.mark.parametrize("value", ["Rolling volatility", "Drawdown"])
+def test_the_risk_charts_are_recomputed_when_the_risk_level_changes(value):
+    app = _happy_page()
+    before = _line_data(app, value)
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+
+    scale.set_value(5).run()
+
+    assert not app.exception
+    after = _line_data(app, value)
+    assert not np.allclose(after["Optimised"], before["Optimised"])
+    indices = [c for c in before.columns if c != "Optimised"]
+    pd.testing.assert_frame_equal(after[indices], before[indices])
+
+
+def test_a_backtest_no_longer_than_the_window_explains_why_there_is_no_volatility_chart(
+    monkeypatch,
+):
+    window = "forecasting_engine.portfolio.performance.ROLLING_VOL_WINDOW"
+    monkeypatch.setattr(window, 1000)
+    app = _happy_page()
+    (info,) = [t for t in _infos(app) if "Rolling volatility needs more than 1000" in t]
+    days = int(re.search(r"this backtest has (\d+)", info).group(1))
+
+    # A window of exactly the backtest's length leaves a single point, not a line.
+    monkeypatch.setattr(window, days)
+    app.run()
+
+    assert not app.exception
+    assert any(f"Rolling volatility needs more than {days}" in t for t in _infos(app))
+    assert not [c for c in app.get("vega_lite_chart") if "Rolling volatility" in c.proto.spec]
+
+
+# --- FYP-259 / FYP-260: the drawdown chart -------------------------------------------
+
+
+def test_drawdown_is_charted_for_both_indices_and_the_optimised_portfolio():
+    app = _happy_page()
+
+    assert not app.exception
+    data = _line_data(app, "Drawdown")
+    assert len(data.columns) == 3 and "Optimised" in data.columns
+    assert "S&P 500" in data.columns
+    assert (data <= 0).all().all() and (data < 0).any().all()
+    assert "%d %b %Y" in _line_chart(app, "Drawdown").proto.spec, "the tooltip gives the date"
+    assert "highest value reached so far" in _captions(app)
+    assert any("Drawdown" in m.value for m in app.markdown)
 
 
 def test_without_active_models_the_page_explains_what_will_appear():
@@ -420,6 +542,38 @@ def test_the_t_statistic_explains_itself_on_hover():
 
     hint = html.escape(glossary.term("Spread t-statistic"), quote=True)
     assert hint in _markdown(_happy_page())
+
+
+def test_a_second_t_statistic_tests_the_forecasts_against_the_no_forecast_level():
+    committed = _long_committed()
+    stamp = {"dataset_fingerprint": str(dataset_fingerprint(committed))}
+    _set_active(EQUITY, forecast=_following_returns(committed, +1), **stamp)
+    _set_active(BOND, forecast=_flat_bond(committed), **stamp)
+    app = _page(committed)
+
+    assert not app.exception
+    row = next(m.value for m in app.markdown if "Did the forecasts add value?" in m.value)
+    assert "Against level 3, no forecasts" in row
+    assert re.search(r"t = (-?\d+\.\d\d|—)", row)
+    captions = _captions(app)
+    assert "optimised minus the same level with no forecasts" in captions
+    assert "also reflects level 3's equity weight" in captions
+    assert "no-trade band on both sides" in captions
+
+
+@pytest.mark.parametrize("floor", [0.2, 0.1])
+def test_at_level_5_the_forecast_test_shows_no_verdict(floor):
+    app = _happy_page()
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+    (low,) = [s for s in app.slider if s.label == "Minimum in each index"]
+    scale.set_value(5)
+    low.set_value(floor).run()
+
+    assert not app.exception
+    row = next(m.value for m in app.markdown if "Did the forecasts add value?" in m.value)
+    assert "No forecast effect to test" in row
+    assert "t = —" in row
+    assert "at 95% confidence" not in row
 
 
 def test_without_performance_data_the_page_guides_instead_of_testing():
@@ -561,6 +715,10 @@ def _leaning(committed, signal: float) -> pd.Series:
     return _forecast(committed) * 0 + 0.001 + signal
 
 
+def _forecast_value_row(app: AppTest) -> str:
+    return next(m.value for m in app.markdown if "Did the forecasts add value?" in m.value)
+
+
 def _outputs(app: AppTest) -> dict:
     """Everything the page derives from the active models."""
     return {
@@ -568,6 +726,7 @@ def _outputs(app: AppTest) -> dict:
         "comparison": _comparison_table(app),
         "charts": [c.proto.SerializeToString() for c in app.get("vega_lite_chart")],
         "t": next(m.value for m in app.markdown if "Spread t-statistic" in m.value),
+        "forecast_t": _forecast_value_row(app),
     }
 
 
@@ -575,24 +734,112 @@ def _models_line(app: AppTest) -> str:
     return next(m.value for m in app.markdown if "Active models" in m.value)
 
 
+def _long_committed() -> pd.DataFrame:
+    """Long enough for a model to earn the trust that lets its forecasts move weights."""
+    rng = np.random.default_rng(0)
+    return pd.DataFrame(
+        {
+            "Date": pd.bdate_range("2021-01-04", periods=LONG_DAYS),
+            EQUITY_COL: 100 * np.cumprod(1 + rng.normal(0.001, 0.01, LONG_DAYS)),
+            BOND_COL: 100 * np.cumprod(1 + rng.normal(0.0, 0.003, LONG_DAYS)),
+        }
+    )
+
+
+def _following_returns(committed, sign: float) -> pd.Series:
+    """An equity forecast whose signal is ``sign`` times the equity-minus-bond return
+    over the three days that follow: a skilful model, or a backwards one. The last
+    rows, with no such return yet, lean the same way."""
+    indexed = committed.set_index("Date")
+    forward = indexed.pct_change(3, fill_method=None).shift(-3)
+    following = (forward[EQUITY_COL] - forward[BOND_COL]).fillna(0.05)
+    return sign * following + 0.001
+
+
+def _flat_bond(committed) -> pd.Series:
+    return pd.Series(0.001, index=pd.DatetimeIndex(committed["Date"]))
+
+
 def test_switching_the_active_model_updates_the_weights_and_t_statistic():
-    committed = _committed()
-    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
-    _set_active(BOND, forecast=_leaning(committed, 0.0))
+    committed = _long_committed()
+    stamp = {"dataset_fingerprint": str(dataset_fingerprint(committed))}
+    _set_active(EQUITY, forecast=_following_returns(committed, +1), **stamp)
+    _set_active(BOND, forecast=_flat_bond(committed), **stamp)
     app = _page(committed)
     assert not app.exception
     before = _outputs(app)
 
     # Set on the Models page while this session stays open: the next rerun, not a
     # restart, picks it up.
-    _set_active(EQUITY, forecast=_leaning(committed, -0.05), name="Machine Learning")
+    _set_active(
+        EQUITY, forecast=_following_returns(committed, -1), name="Machine Learning", **stamp
+    )
     app.run()
 
     assert not app.exception
     after = _outputs(app)
     for output in before:
         assert after[output] != before[output], output
-    assert float(after["weights"][0].strip("%")) < float(before["weights"][0].strip("%"))
+
+
+UNRELIABLE = "the forecasts not used because they are not yet statistically reliable"
+
+
+def _t_against_no_forecasts(app) -> float:
+    row = next(m.value for m in app.markdown if "Did the forecasts add value?" in m.value)
+    return float(re.search(r"t = (-?\d+\.\d\d)", row).group(1))
+
+
+def test_an_oracle_forecast_beats_the_no_forecast_level_on_the_page():
+    committed = _long_committed()
+    stamp = {"dataset_fingerprint": str(dataset_fingerprint(committed))}
+    _set_active(EQUITY, forecast=_following_returns(committed, +1), **stamp)
+    _set_active(BOND, forecast=_flat_bond(committed), **stamp)
+
+    app = _page(committed)
+
+    assert not app.exception
+    assert _t_against_no_forecasts(app) > 0
+    assert UNRELIABLE not in _captions(app)
+
+
+def _noise_page() -> AppTest:
+    """Forecasts unrelated to what followed, over enough days for the gate to judge them."""
+    committed = _long_committed()
+    stamp = {"dataset_fingerprint": str(dataset_fingerprint(committed))}
+    _set_active(EQUITY, forecast=_forecast(committed, seed=1, n_dates=LONG_DAYS), **stamp)
+    _set_active(BOND, forecast=_flat_bond(committed), **stamp)
+    return _page(committed)
+
+
+def test_with_the_gate_shut_the_caption_says_the_forecasts_are_not_used():
+    app = _noise_page()
+
+    assert not app.exception
+    assert UNRELIABLE in _captions(app)
+
+
+def test_the_gate_caption_shows_no_trust_risk_aversion_or_t_value():
+    app = _noise_page()
+
+    caption = next(c.value for c in app.caption if c.value.startswith("How this was set"))
+    assert UNRELIABLE in caption
+    for hidden in ("β", "λ", "t-statistic", "t ="):
+        assert hidden not in caption
+
+
+def test_level_5_does_not_blame_the_forecasts_for_ignoring_them():
+    app = _noise_page()
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+
+    scale.set_value(5).run()
+
+    assert not app.exception
+    assert UNRELIABLE not in _captions(app)
+
+
+def test_too_little_history_is_not_called_unreliable():
+    assert UNRELIABLE not in _captions(_happy_page())
 
 
 def test_the_page_names_both_models_before_any_result():
@@ -644,7 +891,7 @@ def test_viewing_the_page_records_its_result_once_however_often_it_reruns():
 
 def test_a_new_setting_is_a_new_run_and_going_back_to_one_seen_adds_nothing():
     app = _happy_page()
-    (scale,) = [s for s in app.select_slider if s.label == "Risk aversion"]
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
 
     scale.set_value(5).run()
     assert _recorded() == 2
@@ -658,4 +905,4 @@ def test_a_recorded_run_names_the_data_and_settings_it_came_from():
 
     (run,) = portfolio_runs.list_portfolio_runs()
     assert run.dataset_sha256 == frame_sha256(_committed())
-    assert run.inputs["risk_aversion"] == 10.0 and run.inputs["bounds"] == [0.2, 0.8]
+    assert run.inputs["risk_level"] == 3 and run.inputs["bounds"] == [0.2, 0.8]

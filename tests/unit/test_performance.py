@@ -10,10 +10,12 @@ from forecasting_engine.portfolio.performance import (
     SIGNIFICANCE_CONFIDENCE,
     TRADING_DAYS_PER_YEAR,
     Significance,
+    drawdown,
     max_drawdown,
     newey_west_lags,
     performance,
     relative,
+    rolling_volatility,
     significance,
     spread_t_stat,
 )
@@ -92,6 +94,50 @@ def test_a_series_that_only_rises_has_no_drawdown():
     assert max_drawdown(_series([0.01, 0.02])) == 0.0
 
 
+def test_no_returns_have_no_drawdown():
+    assert max_drawdown(_series([])) == 0.0
+
+
+# --- FYP-258 / FYP-261: the drawdown series ----------------------------------
+
+
+def test_the_drawdown_series_matches_a_hand_worked_path():
+    # 1.0 -> 1.1 -> 0.88 -> 0.968 -> 1.1616: below the 1.1 peak until a new high.
+    dd = drawdown(_series([0.10, -0.20, 0.10, 0.20]))
+
+    np.testing.assert_allclose(dd, [0.0, -0.20, 0.968 / 1.1 - 1, 0.0], atol=1e-12)
+
+
+def test_a_loss_on_the_first_day_is_already_a_drawdown():
+    np.testing.assert_allclose(drawdown(_series([-0.10, 0.05])), [-0.10, -0.055])
+
+
+def test_a_series_that_only_rises_is_never_in_drawdown():
+    assert (drawdown(_series([0.01, 0.02, 0.005])) == 0.0).all()
+
+
+@pytest.mark.parametrize(
+    ("returns", "worst"),
+    [
+        ([0.10, -0.20, 0.10], -0.20),
+        ([-0.10, 0.05], -0.10),
+        ([0.10, -0.20, 0.50, -0.10], -0.20),  # a new peak, then a shallower fall
+        ([0.01, 0.02], 0.0),
+    ],
+)
+def test_the_deepest_point_of_the_drawdown_series_is_the_max_drawdown(returns, worst):
+    # Pinned to a hand-worked figure, so the chart and the table can't drift apart
+    # even if max_drawdown stops being derived from drawdown.
+    r = _series(returns)
+    assert drawdown(r).min() == pytest.approx(worst)
+    assert max_drawdown(r) == pytest.approx(worst)
+
+
+def test_the_drawdown_series_is_on_the_returns_dates():
+    r = _series([0.01, -0.03, 0.02])
+    assert drawdown(r).index.equals(r.index)
+
+
 def test_calmar_is_annual_return_over_the_size_of_the_worst_drawdown():
     r = _series([0.10, -0.20, 0.10] * 3)
     metrics = performance(r)
@@ -106,6 +152,33 @@ def test_a_series_with_no_drawdown_has_no_calmar():
 def test_annual_volatility_is_the_sample_deviation_scaled_to_a_year():
     r = _series([0.03, -0.01] * 2)
     assert performance(r).annual_volatility == pytest.approx(0.02 * math.sqrt(4 / 3) * ROOT_YEAR)
+
+
+# --- FYP-257: rolling volatility ---------------------------------------------
+
+
+def test_a_constant_return_has_exactly_zero_rolling_volatility():
+    assert (rolling_volatility(_series([0.004] * 8), window=3).dropna() == 0.0).all()
+    # A flat stretch after a varying one, where a running deviation leaves noise.
+    after_moves = rolling_volatility(_series([0.03, -0.02, 0.01, 0.07] + [0.004] * 4), window=3)
+    assert (after_moves.iloc[-2:] == 0.0).all()
+
+
+def test_rolling_volatility_matches_a_hand_worked_annualised_value():
+    vol = rolling_volatility(_series([0.01, 0.03, -0.01, 0.04]), window=3)
+
+    assert vol.iloc[:2].isna().all(), "no figure until a full window has passed"
+    # [0.01, 0.03, -0.01]: mean 0.01, deviations 0, ±0.02, sample variance 0.0008 / 2.
+    assert vol.iloc[2] == pytest.approx(0.02 * ROOT_YEAR)
+    # [0.03, -0.01, 0.04]: mean 0.02, deviations 0.01, -0.03, 0.02, variance 0.0014 / 2.
+    assert vol.iloc[3] == pytest.approx(math.sqrt(0.0007) * ROOT_YEAR)
+
+
+def test_rolling_volatility_over_the_whole_series_is_its_annual_volatility():
+    r = _series([0.03, -0.01, 0.02, -0.005, 0.01])
+    assert rolling_volatility(r, window=5).iloc[-1] == pytest.approx(
+        performance(r).annual_volatility
+    )
 
 
 # --- against the baseline ----------------------------------------------------

@@ -220,14 +220,14 @@ def test_each_distinct_portfolio_result_is_listed_once():
     inputs = PortfolioInputs(
         dataset_sha256=frame_sha256(DATA), equity_run_id=None, bond_run_id=None,
         equity_set_at=T0, bond_set_at=T0, horizon=20, train_window=504, test_window=20,
-        embargo=20, risk_aversion=10.0, bounds=(0.2, 0.8),
+        embargo=20, risk_level=3, bounds=(0.2, 0.8),
         costs_bps={"equity": 3.0, "bond": 5.0}, code_version="abc1234",
     )
     for _ in range(3):  # the page shown three times
         record_portfolio_run(inputs, result, schedule)
-    record_portfolio_run(replace(inputs, risk_aversion=30.0), result, schedule)
+    record_portfolio_run(replace(inputs, risk_level=5), result, schedule)
     app = _page()
 
     table = app.tabs[1].dataframe[0].value
-    assert sorted(table["Risk aversion λ"]) == [10.0, 30.0]
+    assert sorted(table["Risk level"]) == [3, 5]
     assert "2 distinct results" in _portfolio_tab(app)

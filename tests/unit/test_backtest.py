@@ -138,6 +138,16 @@ def test_a_cost_is_compounded_into_the_return_not_subtracted_from_it():
 # --- the baseline and like-for-like ------------------------------------------------
 
 
+def test_each_indexs_own_returns_are_kept_on_the_portfolios_days():
+    prices = _prices([0.01, -0.02, 0.03], [0.001, 0.002, -0.001])
+    result = run_backtest(prices, _schedule([prices[EQUITY].index[0]], [0.6]))
+
+    assert result.index_returns.index.equals(result.optimised.gross.index)
+    assert list(result.index_returns.columns) == [EQUITY, BOND]
+    np.testing.assert_allclose(result.index_returns[EQUITY], [0.01, -0.02, 0.03])
+    np.testing.assert_allclose(result.index_returns[BOND], [0.001, 0.002, -0.001])
+
+
 def test_both_portfolios_cover_exactly_the_same_days():
     rng = np.random.default_rng(0)
     prices = _prices(rng.normal(0, 0.01, 80), rng.normal(0, 0.003, 80))

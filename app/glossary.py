@@ -36,7 +36,7 @@ TERMS: Mapping[str, str] = {
         "under the same settings as every other model. Each gets its own row, "
         "named for which kind it is."
     ),
-    "Research model (fixed inputs)": (
+    "Polynomial – fixed economic inputs": (
         "The equity model the October 2026 model research chose: a degree-1 "
         "polynomial in HY OAS, IG OAS, VIX and the 2s10s slope, read as levels, "
         "each signed so a higher value means a higher expected return, with the "
@@ -180,9 +180,12 @@ TERMS: Mapping[str, str] = {
         "an interaction — the effect of one depends on the level of the other."
     ),
     "Feature attribution (SHAP)": (
-        "A boosted model has no equation to read, so each signal is scored by "
-        "how much it moved the predictions. Larger means more influential — it "
-        "says nothing about direction, only weight."
+        "Each signal scored by how much it moved the prediction, on the same "
+        "scale for every model family. A boosted model has no equation to "
+        "read, so this is sampled; a polynomial's is computed exactly from "
+        "its own terms, including its share of any square or interaction. "
+        "Larger means more influential — it says nothing about direction, "
+        "only weight."
     ),
     "Promotion gate": (
         "The bar every model but the naive baseline has to clear before it is "
@@ -196,31 +199,28 @@ TERMS: Mapping[str, str] = {
         "the prior one immediately. A model that failed both promotion gates "
         "can still be set active, but asks for confirmation first."
     ),
-    "Risk aversion": (
-        "How far the portfolio may stray from 50/50 on the strength of the "
-        "signals, on a scale of 1 (risk-loving) to 5 (risk-averse). The optimiser "
-        "starts at 50/50 and tilts: equity weight = 50% + (equity signal − bond "
-        "signal) / (λ × variance of the difference between the two indices' "
-        "returns), where a signal is what a model adds to its training-average "
-        "return. Risk is measured as distance from 50/50, so 1 (λ = 1) follows "
-        "the signals as far as the limits allow and 5 (λ = 100) barely moves. "
-        "Each step triples λ."
+    "Risk level": (
+        "The volatility the allocation aims for, on a scale of 1 (risk-loving) to 5 "
+        "(risk-averse). Level 5 is the lowest-risk mix the weight bounds allow and "
+        "level 1 the highest, with the levels between evenly spaced in volatility, so "
+        "each level's equity weight moves with recent risk. Forecasts tilt it from "
+        "there once they are statistically reliable, except at level 5, which ignores "
+        "them. Level 1 starts at the upper bound, so it can only tilt down. Level 3 is "
+        "not 50/50."
     ),
     "Weight bounds": (
         "The least either index may hold. Equity and bond always add up to "
         "100%, so a 20% floor on each also caps each at 80%. It stops a small, "
         "noisy difference between the two signals swinging the portfolio to "
-        "one extreme. The optimiser starts from 50/50 and tilts; the floor only "
-        "clips how far."
+        "one extreme, and it sets the range of mixes the risk levels are spaced across."
     ),
     "No-trade band": (
         "Between rebalances the portfolio drifts with the markets. At each "
         "rebalance it trades only if the new target is far enough from where it "
         "drifted to to be worth the trading cost: within the band it holds, and "
-        "outside it, it trades only as far as the band's edge. The band is the "
-        "cost of moving the equity weight by one (both indices' costs) over risk "
-        "aversion times the variance of the difference between the two indices' "
-        "returns, so it is narrower when the signals are acted on more."
+        "outside it, it trades only as far as the band's edge. The band grows with "
+        "the cost of moving the equity weight and with the risk level's appetite for "
+        "risk, so it is widest at level 1. Level 5 has none."
     ),
     "Directional P&L": (
         "What you would have earned by holding this index only when the model "
@@ -280,6 +280,19 @@ TERMS: Mapping[str, str] = {
         "It is the loss an investor who bought at the worst moment would have "
         "sat through, so a smaller (less negative) figure is better."
     ),
+    "Drawdown": (
+        "How far below its highest value so far a portfolio stands on each day, "
+        "back to zero whenever it reaches a new high. The lowest point of the line "
+        "is the max drawdown; how long the line stays below zero shows how long a "
+        "loss took to win back."
+    ),
+    "Rolling volatility": (
+        "How widely daily returns swung over the previous three months or so, "
+        "scaled to a year and recalculated every day. Drawn over the whole backtest "
+        "it shows when risk rose or fell, not just its average: a portfolio whose "
+        "line stays below the equity index's through a sell-off really was less "
+        "exposed when it mattered."
+    ),
     "Equal-weight benchmark": (
         "Half in the equity index and half in the bond index, reset to 50/50 on "
         "the last trading day of each month. The optimised portfolio has to beat "
@@ -291,6 +304,12 @@ TERMS: Mapping[str, str] = {
         "the edge is unlikely to be luck, at 95% confidence. It is adjusted (Newey-West) "
         "for neighbouring days moving together, which would otherwise make a lucky "
         "streak look reliable."
+    ),
+    "Forecast value t-statistic": (
+        "The same test, against the same risk level with no forecasts rather than "
+        "against the benchmark. The risk level's equity weight and the no-trade band are "
+        "on both sides, so the forecasts are the only difference. Beyond ±2, what the "
+        "forecasts changed is unlikely to be luck."
     ),
     "Historical tail risk": (
         "VaR and CVaR by method: how bad the worst days were, or could be. "
@@ -359,6 +378,28 @@ TERMS: Mapping[str, str] = {
     "Base-case forecast": (
         "The active model's function evaluated on the latest data, with no shock: what "
         "it forecasts for the next horizon today. A shock is measured against it."
+    ),
+    "Portfolio impact": (
+        "What the shock does to the optimised portfolio as a whole, not just to each "
+        "index's forecast. The Monte Carlo simulation is run twice with the same "
+        "weights and the same random paths, once centred on the base-case forecasts "
+        "and once on the shocked ones, so the difference is the shock's alone. The "
+        "weights are the latest optimised weights, held as they are, not re-solved."
+    ),
+    "Shocked return": (
+        "The portfolio's mean simulated return over the next horizon under the shocked "
+        "forecasts, against the base case. Lower means the shock would cost the "
+        "allocation held today."
+    ),
+    "Shocked volatility": (
+        "How widely the simulated horizon returns spread around their mean, as a "
+        "standard deviation. A shock that only shifts the forecasts leaves it close to "
+        "the base case, since the size of the daily moves comes from history."
+    ),
+    "Shocked drawdown": (
+        "The worst fall from a peak within the horizon that only 5% (or 1%) of paths "
+        "exceed, under the shocked forecasts. A lower forecast tilts every path down, "
+        "so the tail of drawdowns deepens."
     ),
     "Shocked forecast": (
         "The same function, not refitted, evaluated on the shocked inputs. It shows "

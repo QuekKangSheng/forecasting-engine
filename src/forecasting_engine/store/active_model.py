@@ -363,6 +363,27 @@ def get_active_model_signal(
     return pd.Series(values, index=pd.DatetimeIndex(dates), dtype=float)
 
 
+def get_active_model_baseline(
+    role: TargetRole, *, db_path: Path = DEFAULT_DB_PATH
+) -> pd.Series | None:
+    """The training-mean target taken off each of the currently active model's saved
+    forecasts to give its signal, indexed by date, or ``None`` if there is no active
+    model or it was set before baselines were captured."""
+    current = get_active_model(role, db_path=db_path)
+    if current is None:
+        return None
+    with connect(db_path, _CREATE_TABLES) as conn:
+        rows = conn.execute(
+            "SELECT date, baseline FROM active_model_forecasts "
+            "WHERE role = ? AND set_at = ? AND baseline IS NOT NULL ORDER BY date",
+            [role.value, current.set_at],
+        ).fetchall()
+    if not rows:
+        return None
+    dates, values = zip(*rows, strict=True)
+    return pd.Series(values, index=pd.DatetimeIndex(dates), dtype=float)
+
+
 def settings_match(a: ActiveModelRecord, b: ActiveModelRecord) -> bool:
     """Whether ``a`` and ``b`` were produced under the same horizon, test windows and
     dataset — the check a two-asset run needs before combining them. Their train

@@ -61,10 +61,12 @@ times. `store/portfolio_runs.py` records each **distinct** result once.
 - **A deterministic key.** `run_key` is the SHA-256 of everything the result depends
   on, as canonical JSON (sorted keys, no spaces, datetimes as ISO text): the data's
   content hash, both active models (their run ids and when they were set), the
-  windows, the risk aversion and limits, the trading costs and the code version.
+  windows, the risk level and limits, the trading costs and the code version.
   The same inputs give the same key on any machine. Leave out the code version, and a
   change in how results are computed would hide behind the first row stored for
-  those inputs.
+  those inputs. The forecast trust `β̂` and each level's risk aversion `λ` aren't
+  inputs: they follow from the data and the models already in the key. The **Run
+  history** page shows each run's **Risk level**.
 - **Idempotent writes.** The run is inserted with `ON CONFLICT DO NOTHING RETURNING
   run_key`. A new key comes back and its metrics and weight schedule are written in
   the same transaction; a repeat comes back empty and writes nothing. So recording on
@@ -191,7 +193,7 @@ ORDER BY a.role, s.role DESC, u.filename;
 Which portfolio settings beat the 50/50 benchmark after costs, best first:
 
 ```sql
-SELECT p.inputs ->> 'risk_aversion' AS risk_aversion,
+SELECT p.inputs ->> 'risk_level' AS risk_level,
        p.inputs -> 'bounds' ->> 0 AS min_weight,
        max(m.value) FILTER (WHERE m.portfolio = 'optimised') AS net_sharpe,
        max(m.value) FILTER (WHERE m.portfolio = 'baseline') AS baseline_net_sharpe

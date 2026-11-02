@@ -83,13 +83,14 @@ def select_signals(
     target_columns: Collection[str],
     sources: Mapping[str, ColumnSource],
 ) -> list[str]:
-    """The signal columns to model, one per security.
+    """The signal columns to model, one per security, sorted by name so a model
+    does not depend on the order the files were uploaded in.
 
     Every field of a target's security is left out, not only the target column
     itself: SPX's bid is SPX. Of a security's remaining fields, the total-return
     index is kept if there is one, otherwise ``PX_LAST``, otherwise its first
-    other field; bid and ask quotes never are. A column with no known source
-    stands alone.
+    other field by name; bid and ask quotes never are. A column with no known
+    source stands alone.
     """
     target_securities = {sources[c].security for c in target_columns if c in sources}
     by_security: dict[str, list[str]] = {}
@@ -110,8 +111,7 @@ def select_signals(
             return 0
         return 1 if source.field == _PRICE_FIELD else 2
 
-    kept = {min(group, key=rank) for group in by_security.values()}
-    return [c for c in columns if c in kept]
+    return sorted(min(group, key=lambda c: (rank(c), c)) for group in by_security.values())
 
 
 @dataclass(frozen=True)

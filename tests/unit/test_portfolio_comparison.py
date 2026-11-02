@@ -15,7 +15,10 @@ from forecasting_engine.reporting.portfolio_comparison import (
     NOT_RUN,
     comparison_rows,
     cumulative_paths,
+    drawdown_paths,
+    forecast_value_summary,
     monte_carlo_rows,
+    rolling_volatility_paths,
     significance_summary,
     tail_rows,
 )
@@ -96,6 +99,64 @@ def test_costs_lower_the_net_return_below_the_gross():
 
     assert list(gross.columns) == ["Optimised", "Equal-weight benchmark"]
     assert (net.iloc[-1] < gross.iloc[-1]).all()
+
+
+LABELS = {EQUITY: "S&P 500", BOND: "US Aggregate"}
+
+
+def test_rolling_volatility_has_a_column_for_each_index_and_the_optimised_portfolio():
+    result = _backtest()
+    vol = rolling_volatility_paths(result, "net", LABELS, window=20)
+
+    assert list(vol.columns) == ["S&P 500", "US Aggregate", "Optimised"]
+    # From the window's last day to the end of the backtest, on the portfolios' days.
+    assert vol.index.equals(result.optimised.net.index[19:])
+    assert (vol > 0).all().all()
+
+
+def test_rolling_volatility_of_the_portfolio_follows_the_basis_but_the_indices_dont():
+    result = _backtest()
+    net = rolling_volatility_paths(result, "net", LABELS, window=20)
+    gross = rolling_volatility_paths(result, "gross", LABELS, window=20)
+
+    indices = list(LABELS.values())
+    pd.testing.assert_frame_equal(net[indices], gross[indices])
+    assert not net["Optimised"].equals(gross["Optimised"])
+
+
+def test_a_backtest_shorter_than_the_window_has_no_rolling_volatility():
+    assert rolling_volatility_paths(_backtest(), "net", LABELS, window=1000).empty
+
+
+def test_drawdown_has_a_column_for_each_index_and_the_optimised_portfolio_every_day():
+    result = _backtest()
+    dd = drawdown_paths(result, "net", LABELS)
+
+    assert list(dd.columns) == ["S&P 500", "US Aggregate", "Optimised"]
+    assert dd.index.equals(result.optimised.net.index)
+    assert (dd <= 0).all().all()
+
+
+def test_drawdown_of_the_portfolio_follows_the_basis_but_the_indices_dont():
+    result = _backtest()
+    net = drawdown_paths(result, "net", LABELS)
+    gross = drawdown_paths(result, "gross", LABELS)
+
+    indices = list(LABELS.values())
+    pd.testing.assert_frame_equal(net[indices], gross[indices])
+    assert not net["Optimised"].equals(gross["Optimised"])
+
+
+@pytest.mark.parametrize("basis", ["gross", "net"])
+def test_the_portfolios_deepest_drawdown_is_its_max_drawdown(basis):
+    result = _backtest()
+    deepest = drawdown_paths(result, basis, LABELS)["Optimised"].min()
+    assert deepest == pytest.approx(result.metrics[("optimised", basis)].max_drawdown)
+
+
+def test_drawdown_refuses_an_unknown_basis():
+    with pytest.raises(ValueError):
+        drawdown_paths(_backtest(), "after tax", LABELS)
 
 
 def test_an_unknown_basis_is_refused():
@@ -352,3 +413,31 @@ def test_a_real_simulation_fills_the_monte_carlo_rows_of_the_tail_table():
     ]
     assert rows[0].optimised == f"{one_day[0].var * 100:.2f}%"
     assert rows[3].optimised == f"{one_day[1].cvar * 100:.2f}%"
+
+
+# --- did the forecasts add value? -------------------------------------------------------
+
+
+def test_the_forecast_value_test_compares_the_two_optimised_paths():
+    result, other = _backtest(0.8), _backtest(0.5)
+
+    summary = forecast_value_summary(result, other, "net")
+
+    assert summary.t != "—"
+    assert "optimised minus the same level with no forecasts" in summary.detail
+
+
+def test_with_no_difference_from_the_no_forecast_level_there_is_nothing_to_test():
+    result = _with_t(9.0)
+
+    summary = forecast_value_summary(result, result, "net")
+
+    assert summary.t == "—"
+    assert summary.label == "No forecast effect to test"
+    assert summary.tone == "neutral"
+    assert "never differ" in summary.detail
+
+
+def test_the_forecast_value_test_needs_a_known_basis():
+    with pytest.raises(ValueError, match="basis"):
+        forecast_value_summary(_backtest(), _backtest(), "nope")

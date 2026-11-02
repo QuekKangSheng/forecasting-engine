@@ -1,11 +1,12 @@
 """Portfolio Optimizer page: combine the active equity and bond models' saved
-signals into a 50/50-anchored weight schedule, then backtest that schedule
-against the equal-weight benchmark (FYP-19).
+signals into a weight schedule at the chosen risk level's target volatility,
+then backtest it against the equal-weight benchmark (FYP-19) and that level's
+no-forecast weights.
 
 Reads whichever settings (horizon, walk-forward windows) produced the active
 models on the Models page — it never lets the two be re-chosen here, since
 the forecasts were already fixed under those settings. Only the optimiser's
-own parameters (risk aversion, weight bounds) are configurable on this page.
+own parameters (risk level, weight bounds) are configurable on this page.
 """
 
 from __future__ import annotations
@@ -31,14 +32,19 @@ from forecasting_engine.portfolio.backtest import (
     BacktestDataError,
     run_backtest,
 )
+from forecasting_engine.portfolio.performance import ROLLING_VOL_WINDOW
 from forecasting_engine.reporting.factor_labels import labeller
+from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
 from forecasting_engine.reporting.portfolio_comparison import (
     NOT_RUN,
     PORTFOLIO_LABELS,
     comparison_rows,
     cumulative_paths,
+    drawdown_paths,
+    forecast_value_summary,
     monte_carlo_rows,
+    rolling_volatility_paths,
     significance_summary,
     tail_rows,
 )
@@ -54,9 +60,9 @@ ui.inject()
 
 st.title("Portfolio Optimizer")
 st.caption(
-    "A long-only, two-asset allocation that starts from 50/50 and tilts towards "
-    "whichever index the active models' signals favour, re-derived every forecast "
-    "horizon."
+    "A long-only, two-asset allocation that targets the chosen risk level's volatility "
+    "and tilts towards whichever index the active models' signals favour, re-derived "
+    "every forecast horizon."
 )
 
 equity_active = active_model.get_active_model(EQUITY)
@@ -133,6 +139,10 @@ if signals[EQUITY] is None or signals[BOND] is None:
         icon=":material/info:",
     )
     st.stop()
+baselines = {
+    EQUITY: active_model.get_active_model_baseline(EQUITY),
+    BOND: active_model.get_active_model_baseline(BOND),
+}
 
 equity_name = label(target_columns[EQUITY])
 bond_name = label(target_columns[BOND])
@@ -159,18 +169,13 @@ st.markdown(
 
 with st.expander("Settings"):
     risk_level = st.select_slider(
-        "Risk aversion",
-        options=list(optimize.RISK_AVERSION_SCALE),
+        "Risk level",
+        options=list(optimize.RISK_LEVELS),
         value=optimize.DEFAULT_RISK_LEVEL,
         format_func=lambda level: {1: "1 · risk-loving", 5: "5 · risk-averse"}.get(
             level, str(level)
         ),
-        help=glossary.term("Risk aversion"),
-    )
-    risk_aversion = optimize.risk_aversion_for(risk_level)
-    st.caption(
-        "1 follows the signals as far as the limits below allow; 5 stays close to "
-        f"50/50 whatever they say. Level {risk_level} is λ = {risk_aversion:g}."
+        help=glossary.term("Risk level"),
     )
     # Equity and bond always sum to 100%, so one floor bounds both: at least this
     # much in each means at most 100% minus it in the other.
@@ -184,18 +189,24 @@ with st.expander("Settings"):
         help=glossary.term("Weight bounds"),
     )
     upper = 1 - lower
-    st.caption(f"Each index stays between {lower:.0%} and {upper:.0%}.")
+    st.caption(
+        "Each level targets a volatility evenly spaced between the lowest-risk and "
+        "highest-risk mixes these limits allow, and the forecasts tilt from there."
+    )
 
+schedule_settings = {
+    "baselines": baselines,
+    "horizon": equity_active.horizon,
+    "train_window": TRAIN_WINDOW,
+    "test_window": equity_active.test_window,
+    "embargo": EMBARGO_DAYS,
+    "risk_level": risk_level,
+    "bounds": (lower, upper),
+}
 try:
-    breakdowns = optimize.schedule_breakdowns(
-        signals,
-        prices,
-        horizon=equity_active.horizon,
-        train_window=TRAIN_WINDOW,
-        test_window=equity_active.test_window,
-        embargo=EMBARGO_DAYS,
-        risk_aversion=risk_aversion,
-        bounds=(lower, upper),
+    breakdowns = optimize.schedule_breakdowns(signals, prices, **schedule_settings)
+    no_forecast_breakdowns = optimize.schedule_breakdowns(
+        signals, prices, trust=0.0, **schedule_settings
     )
 except BacktestDataError as exc:
     st.warning(f"The allocation could not be set: {exc}", icon=":material/warning:")
@@ -223,12 +234,23 @@ cap = (
     if breakdown.capped
     else ""
 )
+# Level 5 ignores forecasts whatever their record, so their record isn't why.
+unreliable = (
+    ", with the forecasts not used because they are not yet statistically reliable"
+    if risk_level != optimize.RISK_LEVELS[-1]
+    and optimize.forecast_gate_shut(
+        latest_date,
+        optimize.trust_pairs(signals, baselines, prices, horizon=equity_active.horizon),
+        horizon=equity_active.horizon,
+    )
+    else ""
+)
 st.caption(
-    f"How this was set: the benchmark holds {breakdown.anchor:.0%} {equity_name}. The "
-    f"signals — what each model adds to its training-mean return — ({equity_name} "
+    f"How this was set: level {risk_level} targets {breakdown.level_weight:.0%} {equity_name}. "
+    f"The signals — what each model adds to its training-mean return — ({equity_name} "
     f"{latest_signal[EQUITY]:+.2%}, {bond_name} {latest_signal[BOND]:+.2%} over "
-    f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%} at risk "
-    f"aversion {risk_level}, giving {breakdown.unconstrained:.0%}{cap}."
+    f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%}, giving "
+    f"{breakdown.unconstrained:.0%}{cap}{unreliable}."
 )
 if breakdown.held:
     st.caption(
@@ -276,7 +298,7 @@ chart = (
     )
     .properties(height=600)
 )
-st.altair_chart(chart, use_container_width=True)
+st.altair_chart(chart, width="stretch")
 
 
 # --- FYP-19: the optimised allocation against the equal-weight benchmark -----------
@@ -294,13 +316,17 @@ try:
         prices,
         schedule,
         active_models=(
-            f"{equity_name}: {equity_active.model_name}",
-            f"{bond_name}: {bond_active.model_name}",
+            f"{equity_name}: {display_model_name(equity_active.model_name)}",
+            f"{bond_name}: {display_model_name(bond_active.model_name)}",
         ),
     )
 except BacktestDataError as exc:
     st.warning(f"The allocation could not be backtested: {exc}", icon=":material/warning:")
     st.stop()
+
+# The same level and no-trade band with no forecasts, so what the forecasts added
+# can be read separately.
+no_forecast_backtest = run_backtest(prices, optimize.schedule_weights(no_forecast_breakdowns))
 
 st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
     dataset_fingerprint=str(dataset_fingerprint(merged)),
@@ -326,7 +352,7 @@ try:
             train_window=TRAIN_WINDOW,
             test_window=equity_active.test_window,
             embargo=EMBARGO_DAYS,
-            risk_aversion=risk_aversion,
+            risk_level=risk_level,
             bounds=(lower, upper),
             costs_bps={role.value: cost for role, cost in backtest.costs_bps.items()},
             code_version=run_history.code_version(),
@@ -364,14 +390,22 @@ def _metric_cell(metric: str) -> str:
     )
 
 
+NO_FORECAST_COL = f"Level {risk_level}, no forecasts"
 header = "".join(
     f"<th>{html.escape(h)}</th>"
-    for h in ("Metric", PORTFOLIO_LABELS["optimised"], PORTFOLIO_LABELS["baseline"], "Difference")
+    for h in (
+        "Metric",
+        PORTFOLIO_LABELS["optimised"],
+        PORTFOLIO_LABELS["baseline"],
+        NO_FORECAST_COL,
+        "Difference",
+    )
 )
+no_forecast_rows = comparison_rows(no_forecast_backtest, basis)
 body = "".join(
     f"<tr>{_metric_cell(row.metric)}<td>{row.optimised}</td><td>{row.baseline}</td>"
-    f"<td>{row.difference}</td></tr>"
-    for row in comparison_rows(backtest, basis)
+    f"<td>{level_row.optimised}</td><td>{row.difference}</td></tr>"
+    for row, level_row in zip(comparison_rows(backtest, basis), no_forecast_rows, strict=True)
 )
 st.markdown(
     f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{header}</tr></thead>'
@@ -379,12 +413,79 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption(
-    "Difference is optimised minus benchmark: positive favours the optimised portfolio "
+    f"{NO_FORECAST_COL} holds level {risk_level}'s target weight with no forecast, under the "
+    "same no-trade band, so the forecasts are the only difference between it and the "
+    "optimised portfolio. Difference is optimised minus benchmark: positive "
+    "favours the optimised portfolio "
     "on every row, drawdown included."
 )
 
-paths = cumulative_paths(backtest, basis) * 100
-st.line_chart(paths, x_label="Date", y_label="Cumulative return (%)")
+def _line_chart(paths: pd.DataFrame, value: str) -> alt.LayerChart:
+    """A line per column of ``paths`` on one time axis, in percent. Hovering or
+    tapping anywhere marks the nearest day on a line and shows its date and value."""
+    long = paths.rename_axis("date").reset_index().melt("date", var_name="Series", value_name=value)
+    nearest = alt.selection_point(nearest=True, on="pointerover", clear="pointerout", empty=False)
+    lines = alt.Chart(long).encode(
+        x=alt.X("date:T", title="Date", axis=alt.Axis(tickCount="year")),
+        y=alt.Y(f"{value}:Q", axis=alt.Axis(format="%")),
+        color=alt.Color("Series:N", legend=alt.Legend(title=None, orient="bottom", labelLimit=0)),
+    )
+    # Vega only shows a line's tooltip within a pixel or two of one of its days,
+    # too fine to tap; invisible points with a nearest-day selection catch any hover.
+    points = (
+        lines.mark_point(filled=True)
+        .encode(
+            opacity=alt.condition(nearest, alt.value(1), alt.value(0)),
+            tooltip=[
+                alt.Tooltip("date:T", title="Date", format="%d %b %Y"),
+                "Series:N",
+                alt.Tooltip(f"{value}:Q", format=".2%"),
+            ],
+        )
+        .add_params(nearest)
+    )
+    # Canvas, not Streamlit's default SVG: SVG makes every day's point a page element,
+    # thousands per chart, which stalls scrolling and every redraw.
+    canvas = {"embedOptions": {"renderer": "canvas"}}
+    return (lines.mark_line() + points).properties(usermeta=canvas)
+
+
+cumulative = cumulative_paths(backtest, basis)
+st.altair_chart(_line_chart(cumulative, "Cumulative return"), width="stretch")
+
+# --- FYP-254 / FYP-255: how risk has moved over the backtest ------------------------
+
+st.markdown(
+    ui.eyebrow("Rolling volatility", glossary.term("Rolling volatility")),
+    unsafe_allow_html=True,
+)
+index_names = {EQUITY: equity_name, BOND: bond_name}
+volatility = rolling_volatility_paths(backtest, basis, index_names, window=ROLLING_VOL_WINDOW)
+if len(volatility) < 2:  # a line needs two points
+    st.info(
+        f"Rolling volatility needs more than {ROLLING_VOL_WINDOW} trading days of returns, "
+        f"and this backtest has {len(backtest.optimised.gross)}, so there is no chart yet.",
+        icon=":material/info:",
+    )
+else:
+    st.altair_chart(_line_chart(volatility, "Rolling volatility"), width="stretch")
+    st.caption(
+        f"Annualised standard deviation of the previous {ROLLING_VOL_WINDOW} trading days' "
+        f"returns, at each day. Each index is held alone, with no trading costs; the "
+        f"optimised portfolio is {basis_label.lower()}, the same basis as the table above."
+    )
+
+# --- FYP-258 / FYP-259: how far below its peak each line has stood -------------------
+
+st.markdown(ui.eyebrow("Drawdown", glossary.term("Drawdown")), unsafe_allow_html=True)
+drawdowns = drawdown_paths(backtest, basis, index_names)
+st.altair_chart(_line_chart(drawdowns, "Drawdown"), width="stretch")
+st.caption(
+    "Fall from the highest value reached so far, at each day, counting the start of the "
+    "backtest as the first high. Each index is held alone, with no trading costs; the "
+    f"optimised portfolio is {basis_label.lower()}, and its lowest point is the max "
+    "drawdown in the table above."
+)
 
 # --- FYP-20 / FYP-52: is the outperformance more than noise? ------------------------
 
@@ -402,6 +503,22 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption(f"{significance.detail} {basis_label}, the same basis as the table above.")
+
+forecast_value = forecast_value_summary(backtest, no_forecast_backtest, basis)
+st.markdown(
+    ui.status_row(
+        f"Did the forecasts add value? Against level {risk_level}, no forecasts",
+        ui.lozenge(html.escape(forecast_value.label), forecast_value.tone),
+        f"t = {forecast_value.t}",
+    ),
+    unsafe_allow_html=True,
+)
+st.caption(
+    f"{forecast_value.detail} {basis_label}. The test above, against the benchmark, also "
+    f"reflects level {risk_level}'s equity weight. This one has that weight and the no-trade "
+    "band on both sides, so the forecasts are the only difference.",
+    help=glossary.term("Forecast value t-statistic"),
+)
 
 
 # --- FYP-56 / FYP-38: VaR and CVaR by method, beside max drawdown -------------------

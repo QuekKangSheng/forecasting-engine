@@ -8,10 +8,11 @@ with ``INSERT … ON CONFLICT DO NOTHING``: writing the same key again changes
 nothing. That makes recording **idempotent**, so it is safe on every page view.
 
 The key covers every input: the data's content hash, both active models (their
-run ids and when they were set), the windows, the risk aversion and bounds, the
+run ids and when they were set), the windows, the risk level and bounds, the
 trading costs, and the code version. Leaving the code version out would let a
 change in how results are computed hide behind the first row stored for those
-inputs.
+inputs. The forecast trust and each level's risk aversion are not inputs: they
+follow from the data and the models already in the key.
 
 ``DO NOTHING`` keeps the first write and never updates it, so the table stays
 append-only. An upsert (``DO UPDATE SET last_seen = …``) would record when a
@@ -88,7 +89,7 @@ class PortfolioInputs:
     train_window: int
     test_window: int
     embargo: int
-    risk_aversion: float
+    risk_level: int
     bounds: tuple[float, float]
     costs_bps: Mapping[str, float]
     code_version: str | None
@@ -190,7 +191,7 @@ def portfolio_runs_table(*, limit: int = 200, db_path: Path = DEFAULT_DB_PATH) -
         return conn.execute(
             """
             SELECT p.run_key, p.recorded_at, p.start_date, p.end_date,
-                   CAST(p.inputs ->> 'risk_aversion' AS DOUBLE) AS risk_aversion,
+                   CAST(p.inputs ->> 'risk_level' AS INTEGER) AS risk_level,
                    CAST(p.inputs -> 'bounds' ->> 0 AS DOUBLE) AS min_weight,
                    p.equity_run_id, p.bond_run_id, p.code_version,
                    max(m.value) FILTER (WHERE m.portfolio = 'optimised' AND m.basis = 'net'

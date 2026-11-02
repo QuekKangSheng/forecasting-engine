@@ -62,7 +62,7 @@ DEFAULT_SHARED = (5, 120, 20)
 DEFAULT_MODEL_SETTINGS = {
     POLY: 10,
     USER_POLY: ("", ()),
-    "Research model (fixed inputs)": "sign-ruled v1",
+    "Polynomial – fixed economic inputs": "sign-ruled v1",
 }
 NAIVE = "Naive (training mean)"
 
@@ -253,7 +253,7 @@ def test_the_model_checkboxes_default_to_every_family_and_none_is_compulsory():
     assert set(boxes) == {
         "Polynomial",
         "Fama-French 5",
-        "Research model (fixed inputs)",
+        "Polynomial – fixed economic inputs",
         "Machine learning",
     }
     assert all(box.value and not box.disabled for box in boxes.values())
@@ -953,6 +953,11 @@ def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch, stub_
     assert "Fama-French 5 · S&P 500" in _expander_labels(app)
     assert "Using the saved copy." in " ".join(w.value for w in app.warning)
     assert "10 target dates have no factor row" in _captions(app)
+    # User-supplied polynomial, FF5, and ML (stub_ml) each show a SHAP table
+    # beside their fitted terms (derived polynomial doesn't survive this
+    # fixture's small data, same as elsewhere on this page).
+    assert _markdown(app).count("Feature attribution (SHAP)") == 3
+    assert _stored_runs(app)["FF5 Benchmark"].shap.name == Origin.FAMA_FRENCH
 
 
 def test_a_blank_own_function_runs_no_polynomial_and_says_why(stub_ml):
@@ -1028,6 +1033,16 @@ def test_ml_results_show_shap(stub_ml):
     assert "Feature attribution (SHAP)" in _markdown(app)
 
 
+def test_the_user_supplied_polynomial_also_shows_shap(stub_ml):
+    app = _run_equity(_untick(_page(), "Fama-French 5"))
+
+    # User-supplied polynomial and ML (stub_ml) each show a SHAP table beside
+    # their fitted terms; derived polynomial's own coverage is in
+    # test_the_research_model_also_shows_feature_attribution_shap, where it
+    # reliably survives this fixture's small data.
+    assert _markdown(app).count("Feature attribution (SHAP)") == 2
+
+
 def test_ml_results_show_which_tune_each_fold_used_and_the_latest_settings(stub_ml):
     app = _run_equity(_untick(_page(), "Fama-French 5"))
 
@@ -1052,7 +1067,7 @@ def test_each_placeholder_gets_a_signal_dropdown_starting_with_the_first_signals
     app = _choose_own(_page())
     next(t for t in app.text_input if t.label.startswith("Function")).set_value("x - y ** 2").run()
 
-    assert _bindings(app) == {"x": VIX, "y": IG}
+    assert _bindings(app) == {"x": IG, "y": VIX}
 
 
 def test_a_placeholder_named_after_a_signal_defaults_to_that_signal():
@@ -1068,7 +1083,7 @@ def test_the_example_uses_the_first_two_real_signals():
     formula = next(t for t in app.text_input if t.label.startswith("Function"))
 
     assert formula.placeholder == "e.g. x - 0.5 * y ** 2"
-    assert "x and y would start as VIX and US IG credit spread" in _captions(app)
+    assert "x and y would start as US IG credit spread and VIX" in _captions(app)
 
 
 def test_the_signal_table_lists_every_signal_with_its_transform_and_lag():
@@ -1079,9 +1094,9 @@ def test_the_signal_table_lists_every_signal_with_its_transform_and_lag():
     app = _choose_own(_page(sources=sources))
 
     table = next(d.value for d in app.dataframe if "Latest value" in d.value.columns)
-    assert table["Column"].tolist() == [VIX, IG]
-    assert table["Signal"].tolist() == ["VIX", "US IG credit spread"]
-    assert table["Security"].tolist() == ["VIX Index", "LUACOAS Index"]
+    assert table["Column"].tolist() == [IG, VIX]
+    assert table["Signal"].tolist() == ["US IG credit spread", "VIX"]
+    assert table["Security"].tolist() == ["LUACOAS Index", "VIX Index"]
     assert table["Transform"].tolist() == ["level", "level"]
     assert set(table["Lag"]) == {"1 day"}
 
@@ -1089,11 +1104,11 @@ def test_the_signal_table_lists_every_signal_with_its_transform_and_lag():
 def test_running_binds_each_placeholder_to_its_chosen_signal(stub_ml):
     app = _untick(_page(), "Fama-French 5", "Machine learning")
     app = _run_equity(app, formula="2 * x + y")
-    next(s for s in app.selectbox if s.label == "y stands for").set_value(VIX).run()
+    next(s for s in app.selectbox if s.label == "y stands for").set_value(IG).run()
     app = _press_run(app)
 
     description = _stored_runs(app)[USER_POLY].description
-    assert description.terms == (f"2 * {VIX} + {VIX}",)
+    assert description.terms == (f"2 * {IG} + {IG}",)
     assert description.intercept is not None
 
 
@@ -1102,7 +1117,7 @@ def test_changing_a_placeholders_signal_clears_only_the_user_supplied_row():
     app = _choose_own(_page(tabs))
     next(t for t in app.text_input if t.label.startswith("Function")).set_value("x").run()
     app.session_state[model_runs.RUNS_KEY].tabs[EQUITY].runs[USER_POLY] = _polynomial_run()
-    next(s for s in app.selectbox if s.label == "x stands for").set_value(IG).run()
+    next(s for s in app.selectbox if s.label == "x stands for").set_value(VIX).run()
 
     assert set(_stored_runs(app)) == {POLY}
 
@@ -1373,7 +1388,7 @@ def test_a_run_without_saved_forecasts_shows_no_directional_check():
 
 # --- the research model (fixed inputs) ----------------------------------------------
 
-RESEARCH = "Research model (fixed inputs)"
+RESEARCH = "Polynomial – fixed economic inputs"
 RESEARCH_CAPTION = (
     "Inputs and signs chosen in the Oct 2026 model research on data overlapping this "
     "test period; treat its score as optimistic."
@@ -1429,6 +1444,20 @@ def test_the_research_model_runs_beside_the_derived_polynomial_on_the_same_dates
     assert f"**{RESEARCH}**: gate" in _markdown(app)
     assert f"{RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
     assert f"{RESEARCH} · S&P 500" in _expander_labels(app)
+
+
+def test_the_research_model_also_shows_feature_attribution_shap(stub_ml):
+    committed, sources = _with_research_inputs()
+    app = _page(committed=committed, sources=sources)
+    app = _press_run(_untick(app, "Fama-French 5", "Machine learning"))
+
+    assert not app.exception
+    # Derived polynomial and the research model each show a SHAP table beside
+    # their fitted terms; nothing else ran (user-supplied's formula is blank).
+    assert _markdown(app).count("Feature attribution (SHAP)") == 2
+    shap = _stored_runs(app)[RESEARCH].shap
+    assert set(shap.terms) == set(RESEARCH_INPUTS)
+    assert all(value > 0 for value in shap.coefficients)
 
 
 def test_unticking_the_research_model_runs_it_not(stub_ml):

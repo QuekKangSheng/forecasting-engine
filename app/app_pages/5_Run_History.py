@@ -19,6 +19,7 @@ import streamlit as st
 import glossary
 import ui
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.store import active_model, lineage, portfolio_runs, runs, uploads
 
 ui.inject()
@@ -55,7 +56,7 @@ def _model_fits() -> None:
             "Active": table["run_id"].map(in_use).fillna(""),
             "Started": table["started_at"],
             "Target": table["role"].str.title(),
-            "Model": table["model_name"],
+            "Model": table["model_name"].map(display_model_name),
             "Status": table["status"].str.title(),
             "Seconds": table["seconds"],
             "Signal Rank IC": table["signal_rank_ic"],
@@ -85,8 +86,9 @@ def _model_fits() -> None:
     )
 
     labels = {
-        row.run_id: f"{row.started_at:%d %b %Y %H:%M} · {row.role.title()} · {row.model_name} "
-        f"· {row.status}" + (" · active" if row.run_id in in_use else "")
+        row.run_id: f"{row.started_at:%d %b %Y %H:%M} · {row.role.title()} · "
+        f"{display_model_name(row.model_name)} · {row.status}"
+        + (" · active" if row.run_id in in_use else "")
         for row in table.itertuples()
     }
     chosen = st.selectbox("Open a run", list(labels), format_func=labels.get)
@@ -215,7 +217,7 @@ def _portfolio_runs() -> None:
         pd.DataFrame(
             {
                 "First shown": table["recorded_at"],
-                "Risk aversion λ": table["risk_aversion"],
+                "Risk level": table["risk_level"],
                 "Minimum in each": table["min_weight"],
                 "Net Sharpe": table["net_sharpe"],
                 "50/50 net Sharpe": table["baseline_net_sharpe"],
@@ -241,7 +243,7 @@ def _portfolio_runs() -> None:
     st.caption(
         "One row per distinct set of inputs, however many times the Portfolio page showed "
         "it: the key is the hash of the data, both active models, the windows, the risk "
-        "aversion and limits, the trading costs and the code version."
+        "level and limits, the trading costs and the code version."
     )
 
 

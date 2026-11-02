@@ -93,6 +93,14 @@ def expanding(splitter: PurgedWalkForward) -> PurgedWalkForward:
     )
 
 
+def last_fold_train_window(panel: FeaturePanel, splitter: PurgedWalkForward) -> pd.DatetimeIndex:
+    """The train dates the final walk-forward fold used — the rows a displayed
+    "most recent fold" fit was actually trained on, without refitting anything.
+    Empty if ``splitter`` has no fold over ``panel``."""
+    folds = list(splitter.split(panel))
+    return folds[-1][0] if folds else pd.DatetimeIndex([])
+
+
 def _first_label_reaching(
     label_end: pd.Series,
     index: pd.DatetimeIndex,

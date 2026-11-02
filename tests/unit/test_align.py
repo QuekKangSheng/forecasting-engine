@@ -223,6 +223,19 @@ def test_a_column_with_no_known_source_is_kept_as_its_own_signal():
     assert select_signals(["a", "b", "t"], ["t"], {}) == ["a", "b"]
 
 
+def test_two_column_orders_give_the_same_signal_list():
+    sources = {
+        **_sources(VIX_LAST="PX_LAST", SPX_TOT="TOT_RETURN_INDEX_GROSS_DVDS", DXY_LAST="PX_LAST"),
+        # Two fields of one security that rank equally: the kept one can't depend on order.
+        "USGG10YR_MID": ColumnSource("USGG10YR Index", "PX_MID"),
+        "USGG10YR_OPEN": ColumnSource("USGG10YR Index", "PX_OPEN"),
+    }
+    columns = [*sources, "unsourced"]
+    expected = ["DXY_LAST", "USGG10YR_MID", "VIX_LAST", "unsourced"]
+    assert select_signals(columns, ["SPX_TOT"], sources) == expected
+    assert select_signals(columns[::-1], ["SPX_TOT"], sources) == expected
+
+
 @pytest.mark.parametrize(
     ("ticker", "expected"),
     [

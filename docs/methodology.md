@@ -26,7 +26,7 @@ flowchart TD
     K["11. Selection<br/>validation/harness.select_best_candidate"] --> L
     L["12. Gates<br/>validation/gates"]
     J --> M["13. Naive baseline row<br/>models/naive"]
-    J --> Q["17. Optimiser: 50/50 tilted by the signals<br/>portfolio/optimize"]
+    J --> Q["17. Optimiser: risk level's target tilted by the signals<br/>portfolio/optimize"]
     Q --> N["14. Portfolio backtest vs 50/50<br/>portfolio/backtest, portfolio/performance"]
     N --> P
     J --> O["15. Directional P&L vs buy-and-hold<br/>portfolio/directional"]
@@ -96,8 +96,10 @@ a target is decided at ingestion, never inferred later.
   for both targets. The target securities come from the committed target
   assignment, never from a hard-coded list.
 - Each security contributes one column: its `TOT_RETURN_INDEX` field if there is
-  one, otherwise `PX_LAST` (`_PRICE_FIELD`), otherwise its first other field. Bid
-  and ask quotes (`_QUOTE_FIELDS`) are never used.
+  one, otherwise `PX_LAST` (`_PRICE_FIELD`), otherwise its first other field by
+  name. Bid and ask quotes (`_QUOTE_FIELDS`) are never used.
+- The kept signals are sorted by name, so a model does not depend on the order
+  the files were uploaded in.
 
 ## 4. Transform map
 
@@ -314,10 +316,10 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   - SHAP (mean |SHAP value| per signal) is computed once, for the winning
     library's last fold, refitted with that fold's tune.
 
-### 9.1 Research model (fixed inputs)
+### 9.1 Polynomial – fixed economic inputs
 
-`models/sign_ruled.run_sign_ruled_polynomial`, the row "Research model (fixed
-inputs)", Equity tab only, with its own checkbox. It is the model the October 2026
+`models/sign_ruled.run_sign_ruled_polynomial`, the row "Polynomial – fixed
+economic inputs", Equity tab only, with its own checkbox. It is the model the October 2026
 model research chose from about 300 trials, run exactly as origin/main ran it as
 its derived polynomial (`cbd1a64`): a shrinkage fit
 (`SignRuledPolynomial`) on four fixed inputs, `ECONOMIC_INPUTS` (HY OAS, IG OAS,
@@ -363,6 +365,40 @@ any model, so the optimiser can use either it or the derived polynomial. The
 active-model store saves its forecast and each date's baseline, its fold's
 training-mean target, so its signal is `forecast − baseline`
 (`harness.signal_forecasts`), as for every model.
+
+### 9.2 Feature attribution (SHAP) for polynomial models
+
+`reporting.shap_attribution.polynomial_shap`. Every polynomial-shaped row
+(derived, fixed-economic-inputs, user-supplied, and Fama-French) gets a mean
+|SHAP value| per signal, shown beside its fitted terms in the same table
+format the boosted models already use (§9's last bullet). Unlike a boosted
+model's sampled SHAP, a polynomial's is computed exactly, since its equation
+is known: each term's value decomposes across its distinct signals by the
+closed-form Shapley value for a product, relative to each factor's mean over
+the displayed fold's own training rows (`validation.splitters.
+last_fold_train_window`, so nothing is refitted). A plain linear term reduces
+to coefficient × (value − training mean); a power of one signal (`x²`)
+attributes wholly to that signal; an interaction splits between its signals so
+their shares always sum back to the term's own contribution. Terms sharing a
+signal (e.g. `x` and `x²`) are summed into one row. `None` where the function
+has no terms to attribute to a signal (a user formula that divides by a
+signal, or expands past 50 terms). `tests/unit/test_shap_attribution.py`
+checks the degree-1 case against the closed form directly and the interaction
+case's conservation property (the two signals' shares sum to the term's own).
+
+For a degree-1 term, mean |SHAP value| equals |coefficient| × the mean absolute
+deviation of the input over the fold's training rows, the input being as the
+function reads it (clipped, and standardised where the function is). So for
+degree-1 models it ranks signals almost the same way as standardised
+coefficients, which scale by the standard deviation instead: the two rankings
+can differ only through the ratio of those two spreads, which depends on the
+shape of each signal's distribution. Its added value is for degrees 2–3, where a
+signal appears in several terms, and for comparing polynomial models with the ML
+models in one table.
+
+SHAP explains the last fold's fitted function over that fold's training rows
+(the test window is too short to average over), the same convention the ML SHAP
+uses (`models.boosted._explain_last_fold`).
 
 ## 10. Metrics
 
@@ -484,8 +520,20 @@ same weights at every rebalance is the fixed-weight case.
      shortfall below the risk-free rate across *every* day (a gain counts as no
      shortfall), not across losing days alone;
    - maximum drawdown: the worst fall from a running peak of the compounded
-     path, with the starting value as the first peak;
+     path, with the starting value as the first peak. It is the deepest point of
+     the drawdown series (FYP-258), each day's fall below that running peak. The
+     Portfolio page charts it for each index, which carries no costs, and for the
+     optimised portfolio on the gross/net basis shown, recomputed whenever the
+     weight schedule changes (FYP-259, FYP-260);
    - Calmar: annual return over the size of the maximum drawdown;
+   - rolling volatility (FYP-254): at each day, the sample standard deviation of
+     the previous `ROLLING_VOL_WINDOW` days' returns times √`TRADING_DAYS_PER_YEAR`,
+     the annual volatility of that window alone, for each index and the optimised
+     portfolio. 63 days is about three months: long enough that one large day
+     doesn't swing it, short enough that a change of regime shows within weeks. A
+     window whose returns never vary is exactly zero. The indices carry no costs,
+     so only the portfolio's line follows the gross/net basis. The Portfolio page
+     charts it, recomputed whenever the weight schedule changes (FYP-255, FYP-256);
    - tracking error and information ratio of the optimised portfolio against the
      baseline, from the daily difference in their returns;
    - the spread t-statistic (FYP-52): a paired test of whether the mean daily
@@ -505,8 +553,9 @@ same weights at every rebalance is the fixed-weight case.
    is undefined rather than infinite.
 
 The result is one `BacktestResult`: both daily return paths, gross and net, each
-rebalance's weights, turnover and cost, every metric, the historical tail risk
-of §16, the period, the rebalance frequency and the active models. It is the
+index's own daily returns over the same days, each rebalance's weights, turnover
+and cost, every metric, the historical tail risk of §16, the period, the
+rebalance frequency and the active models. It is the
 input for display (FYP-19) and for the risk and significance checks (FYP-56,
 FYP-52).
 
@@ -591,48 +640,96 @@ signals into the weight schedule step 14 backtests.
    its forecast looks ahead; a 5-day forecast held 20 days says nothing about the
    last 15. With perfect foresight on the Sep 2026 data, rebalancing every 20
    days, a 5-day forecast reached a Sharpe of 1.15 and a 20-day one 1.91, against
-   0.83 for 50/50.
+   0.83 for 50/50, under the fixed-strength weight rule this section's steps 4 to 7
+   replaced.
 3. **Covariance.** Daily equity/bond return covariance over the
    `TRAIN_WINDOW` (504) dates ending `EMBARGO_DAYS` before the rebalance and purged like a
    training window, scaled to `h` days (`covariance_at_rebalance`).
-4. **Weights.** The benchmark-relative mean-variance problem: maximise
-   `a·s − λ/2 · a'Σa`, where `a` is the tilt from `BASELINE_WEIGHTS`, `s` the
-   two signals and `Σ` the covariance. With two assets,
-   `w_equity = 0.5 + (s_equity − s_bond) / (λ · D)`, with
-   `D = σ_e² − 2σ_eb + σ_b²`, then clipped to the bounds (default
-   `DEFAULT_WEIGHT_BOUNDS`, set on the page as a minimum in each index). Risk
-   is how far the portfolio strays from 50/50, so with no signal the portfolio is
-   the benchmark, and when `D` is zero the benchmark is kept.
-5. **Risk aversion.** Chosen on the sponsor's 1-5 scale, 1 most risk-loving and
-   5 most risk-averse, and mapped to `λ` by `RISK_AVERSION_SCALE` (default
-   `DEFAULT_RISK_LEVEL`). Each step roughly triples `λ`. A working calibration:
-   at a 10-day horizon and a 252-day window on the Sep 2026 data, level 1 sits at
-   a bound on most rebalances where a signal is present, and level 5 keeps nine
-   rebalances in ten within about 12 points of 50/50.
+4. **Risk level.** 1-5 (`RISK_LEVELS`), 1 risk-loving to 5 risk-averse. A level
+   fixes a target volatility, not a risk aversion. With `D = σ_e² − 2σ_eb + σ_b²`,
+   the variance of the difference between the two indices' returns, the
+   minimum-variance equity weight is `w_mv = (σ_b² − σ_eb) / D` and a portfolio
+   holding `w` in equity has variance `σ²(w) = σ_mv² + D·(w − w_mv)²` (Merton 1972).
+   The lowest-risk mix the bounds (`DEFAULT_WEIGHT_BOUNDS`, set on the page as a
+   minimum in each index) allow is `w_low`, `w_mv` clipped to them, and the highest
+   is their upper end, `w_high`. The levels are evenly spaced in volatility between
+   the two, `σ_L = σ(w_low) + (5 − L)/4 · (σ(w_high) − σ(w_low))`, and `w*_L`
+   (`level_weight`) is the weight on the `w ≥ w_mv` side with that volatility,
+   `w*_L = w_mv + √((σ_L² − σ_mv²) / D)`. Level 5 is `w_low` and level 1 is `w_high`.
+   If `w_mv ≥ w_high` every level holds `w_high`; if `D ≤ 0` every mix is equally
+   risky and every level holds the bounds' midpoint. So `w*_L` moves with the
+   covariance at every rebalance, and level 3 is not pinned to 50/50.
+   `BASELINE_WEIGHTS`, the fixed 50/50 the benchmark comparison uses, is separate
+   and never changes.
+5. **Long-run premium.** `π̄`, the mean daily equity-minus-bond return over every
+   day to date, scaled to `h` days (`long_run_premium`). A rebalance trades at its
+   day's close, so that day's own return counts.
+6. **Forecast trust.** `β̂` (`forecast_trust`), how much of the signal difference
+   `Δs = s_equity − s_bond` the models have earned trust for (Grinold 1994). Each
+   date with a stored forecast from both models gives a pair (`trust_pairs`): `x`
+   is that date's `Δs`, and `y` is the equity-minus-bond return over the horizon
+   starting that date, from the harness's own labels (`align_and_lag`), less the
+   same training-mean difference taken off the forecasts. At a rebalance only pairs
+   whose later label ended before it count, so no return the rebalance couldn't see
+   reaches it. `β̂` is the slope of an OLS of `y` on `x` with an intercept — a
+   Mincer-Zarnowitz regression of realised return on forecast (Mincer & Zarnowitz
+   1969) — over every such pair (expanding), clipped to `[0, 1]`. It is zero with fewer than
+   `MIN_TRUST_HISTORY` pairs, where `x` never varies, or where the slope's t-statistic
+   is not above `SIGNIFICANCE_T_GATE`. That t-statistic's standard error is Newey-West
+   over `h − 1` lags, for the overlap between neighbouring h-day labels, the same
+   choice as the Signal Rank IC's h-day standard error (§10). At 252 pairs a 20-day horizon holds only
+   about 13 independent observations, so early estimates are noisy. The t-statistic
+   gate was added after seeing the ungated result on the Sep 2026 data, so it is not
+   an independent test on that data;
+   [the optimiser calibration evidence](evidence/2026-11-01-optimiser-calibration.md)
+   reports both.
+7. **Weights.** The two-asset Markowitz solution is `w = w_mv + μ/(λ·D)`, with `μ` the
+   expected equity-minus-bond return over the horizon and `λ` the risk aversion
+   (Markowitz 1952). Each level's `λ_L` is the one at which, with no forecast
+   information (`μ = π̄`), the optimal portfolio is `w*_L`:
+   `λ_L = π̄ / (D·(w*_L − w_mv))`, reverse optimisation (Sharpe 1974; Black & Litterman
+   1992). The expected return used is `μ = π̄ + β̂·Δs`, the premium plus the part of
+   the signal difference that has earned trust (Grinold 1994; Black & Litterman 1992).
+   Substituting gives `w = w*_L + β̂·Δs·(w*_L − w_mv)/π̄` (`weight_breakdown`), then
+   clipped to the bounds. Level 5 is infinite risk aversion, so it ignores forecasts.
+   Level 1 sits at the upper bound and so can only tilt down, which follows from the
+   bounds, not a separate rule. The tilt scales with `1/π̄`, so a small premium makes a
+   large tilt.
 
-6. **No-trade band** (FYP-49). Between rebalances the portfolio drifts with the
+   **Limitation.** When `π̄ ≤ 0` the rule has no positive `λ_L`, so the tilt and
+   the no-trade band are both zero: it ignores even a perfect forecast until the
+   running premium is positive again.
+8. **No-trade band** (FYP-49). Between rebalances the portfolio drifts with the
    two indices' returns, exactly as the backtest drifts it (§14). At each
    rebalance after the first, with `c` the cost of moving the equity weight by 1
-   (equity's plus bond's `DEFAULT_COSTS_BPS`, over 10,000) and `D` as in step 4,
-   the band is `c / (λ · D)`. If the bounded target is within the band of the
-   drifted equity weight, the portfolio holds and trades nothing; otherwise it
-   moves to the band's near edge, `target − sign(target − drifted) × band`,
-   clipped to the bounds. If `D ≤ 0` it holds. Before any of that, if drift has
-   carried the equity weight outside the bounds, the rebalance trades back to the
-   nearest bound, whatever the band, and pays for it like any trade, so no
-   rebalance ever leaves the portfolio outside them. The first rebalance buys the
-   target from cash. With zero costs there is no band and the schedule is the
-   one step 4 gives. On the Sep 2026 data the band raised net Sharpe at
-   every horizon (h = 1 from 0.85 to 1.02, h = 20 from 0.80 to 0.85) and cut the
-   cost drag at h = 1 from 404 to 9 bp a year
-   ([evidence](evidence/2026-10-12-design-verification.md)). Directional P&L (§15) is unaffected and
-   stays gross.
+   (equity's plus bond's `DEFAULT_COSTS_BPS`, over 10,000), the band is
+   `c / (λ_L·D) = c·(w*_L − w_mv)/π̄`. It is zero at level 5, where `π̄ ≤ 0`, where
+   `D ≤ 0`, and where `w*_L` is not above `w_mv`. If the bounded target is within the
+   band of the drifted equity weight, the portfolio holds and trades nothing;
+   otherwise it moves to the band's near edge,
+   `target − sign(target − drifted) × band`, clipped to the bounds. Before any of
+   that, if drift has carried the equity weight outside the bounds, the rebalance
+   trades back to the nearest bound, whatever the band, and pays for it like any
+   trade, so no rebalance ever leaves the portfolio outside them. The first rebalance
+   buys the target from cash. With zero costs there is no band and the schedule is
+   the one step 7 gives. On the Sep 2026 data, under the fixed-strength weight rule
+   steps 4 to 7 replaced, the band raised net Sharpe at every horizon (h = 1 from 0.85
+   to 1.02, h = 20 from 0.80 to 0.85) and cut the cost drag at h = 1 from 404 to 9 bp
+   a year ([evidence](evidence/2026-10-12-design-verification.md)). Directional P&L
+   (§15) is unaffected and stays gross.
+9. **What the forecasts added.** "Level L, no forecasts" is the same schedule with
+   `β̂ = 0` and the same no-trade band, so the forecasts are the only difference from
+   the optimised portfolio. The page shows it as a column beside the optimised
+   portfolio and the benchmark, and runs §14's spread t-statistic against it as well
+   as against 50/50, which also reflects the level's equity weight. At level 5 the two
+   series are identical, so no verdict is shown.
 
 A rebalance whose signal is missing, or whose window can't support a covariance,
 is left out, and the portfolio drifts on through it. The Portfolio page shows,
-for the latest rebalance, the benchmark weight, the signals and the tilt they
-gave, the drifted weight and band, whether it held, and the share of rebalances
-the band held.
+for the latest rebalance, the level's target weight, the signals and the tilt they
+gave, why they were not used where the gate is shut, the drifted weight and band,
+whether it held, and the share of rebalances the band held. It never shows `β̂`, `λ`
+or `π̄`.
 
 ## 18. Signal shock scenarios
 
@@ -678,6 +775,41 @@ The Scenarios page shows each index's active model, base case, shocked forecast,
 the change in percentage points and as a % of the base case, the extrapolation
 flags, and what each model reads before and after the shock. An index with no
 stored function is listed with the reason.
+
+### Portfolio impact (FYP-33)
+
+`scenario/portfolio_impact` carries a scenario's forecasts through to the
+optimised portfolio: what the allocation held today would return, how widely its
+outcomes would spread, and how far it could fall, under the shock against the
+base case.
+
+1. **Two simulations, one difference.** The Monte Carlo simulation of §19 is
+   run twice with the same weights, the same history window, the same sampling
+   method, the same number of paths and the same `SEED`: once centred on each
+   index's base-case forecast and once on its shocked forecast. Everything but
+   the forecasts is identical, so the difference between the two results is the
+   shock's alone, and a zero shock reproduces the base case exactly.
+2. **Weights.** The latest optimised weights as the Portfolio page last solved
+   them (`app/portfolio_summary`), held as they are: they are not re-solved for
+   the shock. Re-optimising under the shock is a separate, explicit action
+   (FYP-246). The Portfolio page must have been opened on the committed data
+   for the weights to be known.
+3. **Forecasts.** An index the scenario evaluated contributes its own base-case
+   and shocked forecasts (`ScenarioResult`). An index it could not evaluate (no
+   stored function, or no active polynomial) contributes its active model's
+   latest saved forecast to both cases, so the shock leaves it unmoved and the
+   page says so. The horizon is the longest among the indices evaluated.
+4. **Measures**, each read off one portfolio's simulated outcomes
+   (`risk/monte_carlo.SimulatedTailRisk`):
+   - **return**: the mean simulated return over the horizon, the base case the
+     paths centre on;
+   - **volatility**: the standard deviation of the simulated horizon returns
+     across paths. A shock that only shifts the forecasts leaves it close to the
+     base case, since the size of the moves is set by history, not the forecast;
+   - **max drawdown** at each of `VAR_CONFIDENCES`: the drawdown only the worst
+     `1 − c` of paths exceed (§19), negative like §14's.
+   The page shows each beside its base case, with the change in percentage
+   points, and states the weights, the horizon, the paths and the method.
 
 ## 19. Monte Carlo VaR, CVaR and drawdown
 
@@ -809,14 +941,16 @@ Values are Python literals as the code holds them.
 | `TRADING_DAYS_PER_YEAR` | `forecasting_engine.portfolio.performance` | `252` |
 | `RISK_FREE_RATE` | `forecasting_engine.portfolio.performance` | `0.0` |
 | `SIGNIFICANCE_CONFIDENCE` | `forecasting_engine.portfolio.performance` | `0.95` |
+| `ROLLING_VOL_WINDOW` | `forecasting_engine.portfolio.performance` | `63` |
 | `BASELINE_WEIGHTS` | `forecasting_engine.portfolio.backtest` | `{"equity": 0.5, "bond": 0.5}` |
 | `DEFAULT_COSTS_BPS` | `forecasting_engine.portfolio.backtest` | `{"equity": 3.0, "bond": 5.0}` |
 | `REBALANCE_FREQUENCY` | `forecasting_engine.portfolio.backtest` | `"monthly"` |
 | `VAR_CONFIDENCES` | `forecasting_engine.risk.tail` | `(0.95, 0.99)` |
 | `VAR_WINDOW` | `forecasting_engine.risk.tail` | `252` |
-| `RISK_AVERSION_SCALE` | `forecasting_engine.portfolio.optimize` | `{1: 1.0, 2: 3.0, 3: 10.0, 4: 30.0, 5: 100.0}` |
+| `RISK_LEVELS` | `forecasting_engine.portfolio.optimize` | `(1, 2, 3, 4, 5)` |
 | `DEFAULT_RISK_LEVEL` | `forecasting_engine.portfolio.optimize` | `3` |
 | `DEFAULT_WEIGHT_BOUNDS` | `forecasting_engine.portfolio.optimize` | `(0.2, 0.8)` |
+| `MIN_TRUST_HISTORY` | `forecasting_engine.portfolio.optimize` | `252` |
 | `SAMPLING_METHODS` | `forecasting_engine.risk.monte_carlo` | `("bootstrap", "parametric")` |
 | `DEFAULT_PATHS` | `forecasting_engine.risk.monte_carlo` | `100_000` |
 | `MIN_PATHS` | `forecasting_engine.risk.monte_carlo` | `1_000` |
@@ -825,6 +959,8 @@ Values are Python literals as the code holds them.
 | `_CHUNK_PATHS` | `forecasting_engine.risk.monte_carlo` | `50_000` |
 | `MAX_RANGE_MULTIPLE` | `forecasting_engine.scenario.shock` | `10.0` |
 | `POSITIVE_TRANSFORMS` | `forecasting_engine.scenario.shock` | `frozenset({"level", "log return"})` |
+
+`MIN_TRUST_HISTORY` is a convention, not a derived value: about a year of daily pairs.
 
 ## Decisions and evidence
 

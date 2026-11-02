@@ -1,26 +1,36 @@
 """Turning each target's saved signal into rebalance dates, expected signals, the
-covariance each rebalance is sized against, and a tilt from the 50/50 benchmark."""
+covariance each rebalance is sized against, and a risk level's Markowitz weight."""
 
 import numpy as np
 import pandas as pd
 import pytest
+import statsmodels.api as sm
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.backtest import run_backtest
 from forecasting_engine.portfolio.optimize import (
     DEFAULT_RISK_LEVEL,
     DEFAULT_WEIGHT_BOUNDS,
-    RISK_AVERSION_SCALE,
+    MIN_TRUST_HISTORY,
+    RISK_LEVELS,
     OptimizeDataError,
     common_rebalance_dates,
     covariance_at_rebalance,
     expected_returns,
-    risk_aversion_for,
+    forecast_gate_shut,
+    forecast_trust,
+    level_weight,
+    long_run_premium,
+    pairs_known_by,
     schedule_breakdowns,
+    schedule_weights,
     solve_weights,
+    trust_pairs,
     weight_breakdown,
     weight_schedule,
 )
+from forecasting_engine.portfolio.performance import newey_west_lags
+from forecasting_engine.reporting.portfolio_comparison import forecast_value_summary
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 
@@ -231,7 +241,7 @@ def test_only_dates_both_targets_have_a_price_on_are_used():
     assert not cov.isna().any().any()
 
 
-# --- solve_weights ----------------------------------------------------------------
+# --- the weight at each risk level --------------------------------------------------
 
 
 def _covariance(var_equity, var_bond, cov_eb) -> pd.DataFrame:
@@ -240,114 +250,213 @@ def _covariance(var_equity, var_bond, cov_eb) -> pd.DataFrame:
     )
 
 
-def test_solve_weights_matches_the_analytic_equal_variance_formula():
-    """For equal-variance, uncorrelated assets the closed form reduces to
-    w_equity = 1/2 + (mu_equity - mu_bond) / (2 * risk_aversion * variance) —
-    the two-asset tangency solution FYP-202 checks against."""
-    mu = pd.Series({EQUITY: 0.03, BOND: 0.01})
-    variance = 0.04
-    covariance = _covariance(variance, variance, 0.0)
-
-    weights = solve_weights(mu, covariance, risk_aversion=4.0, bounds=(0.0, 1.0))
-
-    expected_equity = 0.5 + (mu[EQUITY] - mu[BOND]) / (2 * 4.0 * variance)
-    assert weights[EQUITY] == pytest.approx(expected_equity)
-    assert weights[BOND] == pytest.approx(1 - expected_equity)
+COVARIANCE = _covariance(0.0025, 0.0004, 0.00005)
+D = 0.0025 - 2 * 0.00005 + 0.0004
+W_MV = (0.0004 - 0.00005) / D  # 12.5%: below the default 20% floor, above a 0% one
+PREMIUM = 0.01
+NONE = pd.Series({EQUITY: 0.0, BOND: 0.0})
 
 
-def test_the_breakdown_is_the_benchmark_plus_the_signals_tilt():
-    covariance = _covariance(0.0005, 0.00002, 0.000001)
-    equal = pd.Series({EQUITY: 0.001, BOND: 0.001})
-    apart = pd.Series({EQUITY: 0.003, BOND: 0.001})
-
-    flat = weight_breakdown(equal, covariance, risk_aversion=4.0, bounds=(0.0, 1.0))
-    tilted = weight_breakdown(apart, covariance, risk_aversion=4.0, bounds=(0.0, 1.0))
-
-    # Agreeing signals leave the 50/50 benchmark, however much calmer bond is.
-    assert flat.forecast_tilt == 0.0
-    assert flat.anchor == 0.5 and flat.equity == 0.5
-    var_diff = 0.0005 - 2 * 0.000001 + 0.00002
-    assert tilted.forecast_tilt == pytest.approx(0.002 / (4.0 * var_diff))
-    assert tilted.unconstrained == pytest.approx(0.5 + tilted.forecast_tilt)
+def _signal(difference: float) -> pd.Series:
+    return pd.Series({EQUITY: difference, BOND: 0.0})
 
 
-def test_no_signal_means_the_benchmark_at_every_risk_level():
-    covariance = _covariance(0.0005, 0.00002, 0.000001)
-    none = pd.Series({EQUITY: 0.0, BOND: 0.0})
-
-    for level in RISK_AVERSION_SCALE:
-        weights = solve_weights(none, covariance, risk_aversion=risk_aversion_for(level))
-        assert weights[EQUITY] == 0.5 and weights[BOND] == 0.5
+def _vol(weight: float, covariance: pd.DataFrame = COVARIANCE) -> float:
+    held = np.array([weight, 1 - weight])
+    return float(np.sqrt(held @ covariance.to_numpy() @ held))
 
 
-def test_the_risk_scale_runs_from_1_risk_loving_to_5_risk_averse():
-    assert list(RISK_AVERSION_SCALE) == [1, 2, 3, 4, 5]
-    lambdas = [risk_aversion_for(level) for level in RISK_AVERSION_SCALE]
-    assert lambdas == sorted(lambdas) and len(set(lambdas)) == 5
+def test_the_risk_scale_runs_from_1_to_5_defaulting_to_the_middle():
+    assert list(RISK_LEVELS) == [1, 2, 3, 4, 5]
     assert DEFAULT_RISK_LEVEL == 3
-
-    covariance = _covariance(0.0005, 0.00002, 0.000001)
-    signal = pd.Series({EQUITY: 0.0005, BOND: 0.0})
-    tilts = [
-        abs(solve_weights(signal, covariance, risk_aversion=lam, bounds=(0.0, 1.0))[EQUITY] - 0.5)
-        for lam in lambdas
-    ]
-    assert tilts == sorted(tilts, reverse=True)
 
 
 @pytest.mark.parametrize("level", [0, 6])
 def test_a_risk_level_off_the_scale_is_refused(level):
     with pytest.raises(ValueError, match="1 to 5"):
-        risk_aversion_for(level)
+        level_weight(level, COVARIANCE)
 
 
-def test_the_breakdown_says_when_a_bound_capped_the_weight():
-    covariance = _covariance(0.0005, 0.00002, 0.000001)
-    mu = pd.Series({EQUITY: 0.003, BOND: 0.001})
+@pytest.mark.parametrize("level", list(RISK_LEVELS))
+def test_with_no_trust_every_level_holds_its_no_forecast_weight(level):
+    breakdown = weight_breakdown(
+        _signal(0.05), COVARIANCE, premium=PREMIUM, trust=0.0, risk_level=level
+    )
 
-    capped = weight_breakdown(mu, covariance, risk_aversion=4.0, bounds=(0.2, 0.8))
-
-    assert capped.unconstrained > 0.8
-    assert capped.capped and capped.equity == 0.8
-    assert solve_weights(mu, covariance, risk_aversion=4.0, bounds=(0.2, 0.8))[EQUITY] == 0.8
+    assert breakdown.forecast_tilt == 0.0
+    assert breakdown.equity == breakdown.level_weight == level_weight(level, COVARIANCE)
 
 
-def test_solve_weights_sums_to_one():
-    mu = pd.Series({EQUITY: 0.02, BOND: -0.01})
-    covariance = _covariance(0.05, 0.02, 0.01)
+@pytest.mark.parametrize("bounds", [(0.2, 0.8), (0.0, 1.0), (0.1, 0.9)])
+@pytest.mark.parametrize("difference", [0.0, 0.002, 0.05, -0.005, -0.01])
+@pytest.mark.parametrize("trust", [0.0, 0.5, 1.0])
+def test_equity_never_increases_from_level_1_to_5_while_the_expected_return_is_not_negative(
+    bounds, difference, trust
+):
+    assert PREMIUM + trust * difference >= 0
+    equities = [
+        weight_breakdown(
+            _signal(difference),
+            COVARIANCE,
+            premium=PREMIUM,
+            trust=trust,
+            risk_level=level,
+            bounds=bounds,
+        ).equity
+        for level in RISK_LEVELS
+    ]
 
-    weights = solve_weights(mu, covariance)
+    assert all(a >= b - 1e-12 for a, b in zip(equities, equities[1:], strict=False))
 
+
+def test_a_negative_expected_return_can_cut_a_riskier_level_below_a_safer_one():
+    """The ordering above stops at zero by design: with equity expected to lose,
+    the less risk-averse level acts on that harder. Markowitz, not a defect."""
+    weights = {
+        level: weight_breakdown(
+            _signal(-0.03),
+            COVARIANCE,
+            premium=PREMIUM,
+            trust=1.0,
+            risk_level=level,
+            bounds=(0.0, 1.0),
+        ).equity
+        for level in (1, 5)
+    }
+
+    assert weights[1] < weights[5]
+
+
+@pytest.mark.parametrize("bounds", [(0.2, 0.8), (0.0, 1.0), (0.05, 0.95)])
+@pytest.mark.parametrize("level", [1, 2, 3, 4])
+def test_each_levels_weight_has_its_target_volatility(bounds, level):
+    low = max(W_MV, bounds[0])
+    target = _vol(low) + (5 - level) / 4 * (_vol(bounds[1]) - _vol(low))
+
+    assert _vol(level_weight(level, COVARIANCE, bounds)) == pytest.approx(target, rel=1e-12)
+
+
+@pytest.mark.parametrize(
+    "bounds, lowest", [((0.2, 0.8), 0.2), ((0.0, 1.0), W_MV), ((0.05, 0.95), W_MV)]
+)
+def test_level_1_is_the_riskiest_mix_and_level_5_the_safest_the_bounds_allow(bounds, lowest):
+    assert level_weight(1, COVARIANCE, bounds) == bounds[1]
+    assert level_weight(5, COVARIANCE, bounds) == pytest.approx(lowest)
+
+
+def test_level_3_is_not_pinned_to_50_50():
+    assert level_weight(3, COVARIANCE, (0.2, 0.8)) != pytest.approx(0.5, abs=1e-3)
+
+
+def test_the_tilt_is_the_trusted_signal_over_the_premium_times_the_distance_from_min_variance():
+    breakdown = weight_breakdown(
+        _signal(0.002), COVARIANCE, premium=PREMIUM, trust=0.5, risk_level=3, bounds=(0.0, 1.0)
+    )
+
+    expected = 0.5 * 0.002 * (breakdown.level_weight - W_MV) / PREMIUM
+    assert breakdown.forecast_tilt == pytest.approx(expected)
+    assert breakdown.equity == pytest.approx(breakdown.level_weight + expected)
+    assert breakdown.unconstrained == pytest.approx(breakdown.equity)
+    assert not breakdown.capped
+
+
+@pytest.mark.parametrize("difference", [0.05, -0.05])
+def test_level_5_ignores_the_signal(difference):
+    flat = weight_breakdown(NONE, COVARIANCE, premium=PREMIUM, trust=1.0, risk_level=5)
+    signalled = weight_breakdown(
+        _signal(difference), COVARIANCE, premium=PREMIUM, trust=1.0, risk_level=5
+    )
+
+    assert signalled.forecast_tilt == 0.0
+    assert signalled.equity == flat.equity
+
+
+@pytest.mark.parametrize("premium", [0.0, -0.01])
+@pytest.mark.parametrize("level", list(RISK_LEVELS))
+def test_a_premium_at_or_below_zero_gives_no_tilt(premium, level):
+    breakdown = weight_breakdown(
+        _signal(0.05), COVARIANCE, premium=premium, trust=1.0, risk_level=level
+    )
+
+    assert breakdown.forecast_tilt == 0.0
+    assert breakdown.equity == breakdown.level_weight
+
+
+@pytest.mark.parametrize("level", list(RISK_LEVELS))
+@pytest.mark.parametrize("difference", [10.0, -10.0, 0.001])
+@pytest.mark.parametrize("bounds", [(0.2, 0.8), (0.0, 1.0), (0.45, 0.55), (0.5, 0.5)])
+def test_weights_always_stay_inside_the_bounds(level, difference, bounds):
+    weights = solve_weights(
+        _signal(difference),
+        COVARIANCE,
+        premium=PREMIUM,
+        trust=1.0,
+        risk_level=level,
+        bounds=bounds,
+    )
+
+    assert bounds[0] <= weights[EQUITY] <= bounds[1]
     assert weights[EQUITY] + weights[BOND] == pytest.approx(1.0)
 
 
-def test_solve_weights_is_clipped_to_bounds():
-    mu = pd.Series({EQUITY: 10.0, BOND: -10.0})  # an extreme, unrealistic spread
-    covariance = _covariance(0.01, 0.01, 0.0)
+def test_the_breakdown_says_when_a_bound_capped_the_weight():
+    capped = weight_breakdown(_signal(1.0), COVARIANCE, premium=PREMIUM, trust=1.0)
 
-    weights = solve_weights(mu, covariance, risk_aversion=0.1, bounds=(0.2, 0.8))
-
-    assert weights[EQUITY] == pytest.approx(0.8)
-    assert weights[BOND] == pytest.approx(0.2)
+    assert capped.unconstrained > 0.8
+    assert capped.capped and capped.equity == 0.8
 
 
-def test_solve_weights_keeps_the_benchmark_when_assets_are_indistinguishable():
-    mu = pd.Series({EQUITY: 0.05, BOND: 0.01})
-    identical = _covariance(0.04, 0.04, 0.04)  # perfectly correlated, equal variance
+@pytest.mark.parametrize("level", list(RISK_LEVELS))
+@pytest.mark.parametrize(
+    "covariance",
+    [_covariance(0.04, 0.04, 0.04), _covariance(0.04, 0.04, 0.04 + 1e-12)],
+    ids=["zero", "negative"],
+)
+def test_where_d_is_not_positive_every_level_holds_the_lowest_risk_weight(level, covariance):
+    breakdown = weight_breakdown(
+        _signal(0.05), covariance, premium=PREMIUM, trust=1.0, risk_level=level, bounds=(0.3, 0.5)
+    )
 
-    weights = solve_weights(mu, identical, bounds=(0.2, 0.8))
+    assert breakdown.equity == breakdown.level_weight == pytest.approx(0.4)
+    assert breakdown.forecast_tilt == 0.0
 
-    assert weights[EQUITY] == pytest.approx(0.5)
+
+@pytest.mark.parametrize("level", list(RISK_LEVELS))
+def test_a_minimum_variance_weight_at_or_above_the_upper_bound_holds_that_bound(level):
+    bond_riskier = _covariance(0.0001, 0.0025, 0.0)
+
+    breakdown = weight_breakdown(
+        _signal(-0.05), bond_riskier, premium=PREMIUM, trust=1.0, risk_level=level
+    )
+
+    assert breakdown.equity == breakdown.level_weight == 0.8
+    assert breakdown.forecast_tilt == 0.0
 
 
-def test_higher_risk_aversion_tilts_less_far_from_the_midpoint():
-    mu = pd.Series({EQUITY: 0.05, BOND: 0.01})
-    covariance = _covariance(0.04, 0.03, 0.01)
+# --- the long-run premium -------------------------------------------------------------
 
-    cautious = solve_weights(mu, covariance, risk_aversion=20.0, bounds=(0.0, 1.0))
-    bold = solve_weights(mu, covariance, risk_aversion=1.0, bounds=(0.0, 1.0))
 
-    assert abs(cautious[EQUITY] - 0.5) < abs(bold[EQUITY] - 0.5)
+def test_the_premium_is_the_horizon_scaled_mean_of_every_day_to_date():
+    dates = pd.bdate_range("2024-01-02", periods=30)
+    prices = _prices(dates, seed=5)
+    daily = prices[EQUITY].pct_change() - prices[BOND].pct_change()
+
+    premium = long_run_premium(prices, horizon=20)
+
+    assert premium[dates[15]] == pytest.approx(20 * daily.iloc[1:16].mean())
+    assert premium[dates[29]] == pytest.approx(20 * daily.iloc[1:].mean())
+
+
+def test_the_premium_never_reads_a_later_day():
+    dates = pd.bdate_range("2024-01-02", periods=30)
+    prices = _prices(dates, seed=6)
+    blown_up = prices[EQUITY].copy()
+    blown_up.iloc[16:] *= 100
+
+    before = long_run_premium(prices, horizon=20)
+    after = long_run_premium({**prices, EQUITY: blown_up}, horizon=20)
+
+    pd.testing.assert_series_equal(before.loc[: dates[15]], after.loc[: dates[15]])
 
 
 # --- weight_schedule ----------------------------------------------------------------
@@ -365,7 +474,17 @@ def _schedule_inputs(seed=0):
 
 # train_window=15, embargo=2, tuning_rows=0 (patched) -> test windows cover
 # positions 17 to 56; a rebalance every horizon (3) days: 17, 20, ..., 56.
-_SCHEDULE_KWARGS = {"horizon": 3, "train_window": 15, "test_window": 10, "embargo": 2}
+_NO_BASELINES = {
+    role: pd.Series(dtype=float, index=pd.DatetimeIndex([])) for role in (EQUITY, BOND)
+}
+_SCHEDULE_KWARGS = {
+    "baselines": _NO_BASELINES,
+    "horizon": 3,
+    "train_window": 15,
+    "test_window": 10,
+    "embargo": 2,
+}
+_FULLY_TRUSTED = {**_SCHEDULE_KWARGS, "trust": 1.0}
 
 
 def test_weight_schedule_has_one_row_per_rebalance_summing_to_one_within_bounds():
@@ -392,42 +511,113 @@ def test_weight_schedule_skips_a_rebalance_with_a_missing_forecast():
     assert len(schedule) == len(dates[17:57:3]) - 1
 
 
+def test_with_no_trust_yet_the_schedule_holds_each_levels_no_forecast_weight():
+    _dates, prices, forecasts = _schedule_inputs()
+    free = {EQUITY: 0.0, BOND: 0.0}
+
+    breakdowns = schedule_breakdowns(forecasts, prices, costs_bps=free, **_SCHEDULE_KWARGS)
+
+    assert all(b.forecast_tilt == 0.0 for b in breakdowns.values())
+    assert all(b.equity == b.level_weight for b in breakdowns.values())
+
+
 # --- FYP-49: the no-trade band ---------------------------------------------------------
+
+
+def _rising_prices(dates, seed) -> dict:
+    """A clearly positive equity premium, so the band and the tilt are both live."""
+    rng = np.random.default_rng(seed)
+    equity = pd.Series(100 * np.cumprod(1 + rng.normal(0.003, 0.01, len(dates))), index=dates)
+    bond = pd.Series(100 * np.cumprod(1 + rng.normal(0.0, 0.003, len(dates))), index=dates)
+    return {EQUITY: equity, BOND: bond}
 
 
 def _unbanded(forecasts, prices) -> pd.Series:
     """Each rebalance's bounded target on its own, as the optimiser set it before the band."""
     dates = common_rebalance_dates(prices, horizon=3, train_window=15, test_window=10, embargo=2)
     expected = expected_returns(dates, forecasts)
+    premiums = long_run_premium(prices, horizon=3)
     return pd.Series(
         {
             date: weight_breakdown(
                 expected.loc[date],
                 covariance_at_rebalance(date, prices, horizon=3, train_window=15, embargo=2),
-                risk_aversion=RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL],
+                premium=premiums[date],
+                trust=1.0,
             ).equity
             for date in dates
         }
     )
 
 
+def _expected_band(date, prices, level: int) -> float:
+    """``c·(w*_L − w_mv)/π̄``, worked out from the covariance and the premium."""
+    cov = covariance_at_rebalance(date, prices, horizon=3, train_window=15, embargo=2)
+    d = cov.loc[EQUITY, EQUITY] - 2 * cov.loc[EQUITY, BOND] + cov.loc[BOND, BOND]
+    w_mv = (cov.loc[BOND, BOND] - cov.loc[EQUITY, BOND]) / d
+    premium = long_run_premium(prices, horizon=3)[date]
+    return (3.0 + 5.0) / 1e4 * (level_weight(level, cov) - w_mv) / premium
+
+
 def test_zero_costs_reproduce_the_unbanded_schedule_exactly():
-    _dates, prices, forecasts = _schedule_inputs()
+    dates = pd.bdate_range("2024-01-02", periods=60)
+    prices = _rising_prices(dates, seed=0)
+    _, _, forecasts = _schedule_inputs()
     free = {EQUITY: 0.0, BOND: 0.0}
 
-    schedule = weight_schedule(forecasts, prices, costs_bps=free, **_SCHEDULE_KWARGS)
+    schedule = weight_schedule(forecasts, prices, costs_bps=free, **_FULLY_TRUSTED)
 
     pd.testing.assert_series_equal(
         schedule[EQUITY], _unbanded(forecasts, prices), check_names=False, check_freq=False
     )
-    breakdowns = schedule_breakdowns(forecasts, prices, costs_bps=free, **_SCHEDULE_KWARGS)
+    breakdowns = schedule_breakdowns(forecasts, prices, costs_bps=free, **_FULLY_TRUSTED)
     assert not any(b.held for b in breakdowns.values())
+
+
+@pytest.mark.parametrize("level", [1, 2, 3, 4])
+def test_the_band_is_the_cost_times_the_distance_from_min_variance_over_the_premium(level):
+    dates = pd.bdate_range("2024-01-02", periods=60)
+    prices = _rising_prices(dates, seed=0)
+    forecasts = {EQUITY: pd.Series(0.0, index=dates), BOND: pd.Series(0.0, index=dates)}
+
+    breakdowns = schedule_breakdowns(forecasts, prices, risk_level=level, **_SCHEDULE_KWARGS)
+
+    for date, breakdown in list(breakdowns.items())[1:]:
+        assert breakdown.band == pytest.approx(_expected_band(date, prices, level))
+        assert breakdown.band > 0
+
+
+def test_the_band_is_zero_at_level_5():
+    dates = pd.bdate_range("2024-01-02", periods=60)
+    prices = _rising_prices(dates, seed=0)
+    forecasts = {EQUITY: pd.Series(0.0, index=dates), BOND: pd.Series(0.0, index=dates)}
+
+    breakdowns = schedule_breakdowns(forecasts, prices, risk_level=5, **_SCHEDULE_KWARGS)
+
+    assert all(b.band == 0.0 for b in breakdowns.values())
+
+
+def test_a_premium_at_or_below_zero_gives_no_band():
+    dates = pd.bdate_range("2024-01-02", periods=60)
+    rng = np.random.default_rng(0)
+    prices = {
+        EQUITY: pd.Series(100 * np.cumprod(1 + rng.normal(-0.005, 0.01, 60)), index=dates),
+        BOND: pd.Series(100 * np.cumprod(1 + rng.normal(0.0, 0.003, 60)), index=dates),
+    }
+    forecasts = {EQUITY: pd.Series(0.05, index=dates), BOND: pd.Series(0.0, index=dates)}
+
+    breakdowns = schedule_breakdowns(forecasts, prices, **_FULLY_TRUSTED)
+
+    premiums = long_run_premium(prices, horizon=3)
+    assert (premiums[list(breakdowns)] <= 0).all()
+    assert all(b.band == 0.0 and b.forecast_tilt == 0.0 for b in breakdowns.values())
 
 
 def _band_inputs():
     """No signal at the first rebalance, a tiny one at the second, a large one at the
-    third: 50/50, then a change too small to pay for, then one that is."""
-    dates, prices, _ = _schedule_inputs()
+    third: the level's weight, then a change too small to pay for, then one that is."""
+    dates = pd.bdate_range("2024-01-02", periods=60)
+    prices = _rising_prices(dates, seed=0)
     equity = pd.Series(0.0, index=dates)
     equity.loc[dates[20] :] = 1e-6
     equity.loc[dates[23] :] = 0.05
@@ -436,16 +626,13 @@ def _band_inputs():
 
 def test_a_small_signal_change_is_held_and_a_large_one_moves_to_the_band_edge():
     dates, prices, forecasts = _band_inputs()
-    lam = RISK_AVERSION_SCALE[DEFAULT_RISK_LEVEL]
 
-    breakdowns = schedule_breakdowns(forecasts, prices, **_SCHEDULE_KWARGS)
+    breakdowns = schedule_breakdowns(forecasts, prices, **_FULLY_TRUSTED)
     first, small, large = (breakdowns[dates[i]] for i in (17, 20, 23))
 
-    assert (first.equity, first.drifted, first.held) == (0.5, None, False)
+    assert (first.equity, first.drifted, first.held) == (first.level_weight, None, False)
 
-    cov = covariance_at_rebalance(dates[20], prices, horizon=3, train_window=15, embargo=2)
-    d = cov.loc[EQUITY, EQUITY] - 2 * cov.loc[EQUITY, BOND] + cov.loc[BOND, BOND]
-    assert small.band == pytest.approx((3.0 + 5.0) / 1e4 / (lam * d))
+    assert small.band == pytest.approx(_expected_band(dates[20], prices, 3))
     assert abs(small.bounded - small.drifted) <= small.band
     assert small.held and small.equity == small.drifted
 
@@ -458,26 +645,26 @@ def test_a_small_signal_change_is_held_and_a_large_one_moves_to_the_band_edge():
 def test_a_held_rebalance_trades_nothing_in_the_backtest():
     dates, prices, forecasts = _band_inputs()
 
-    backtest = run_backtest(prices, weight_schedule(forecasts, prices, **_SCHEDULE_KWARGS))
+    backtest = run_backtest(prices, weight_schedule(forecasts, prices, **_FULLY_TRUSTED))
 
     assert backtest.optimised.turnover[dates[20]] == pytest.approx(0.0, abs=1e-12)
     assert backtest.optimised.turnover[dates[23]] > 0
 
 
 def test_drift_past_a_bound_is_traded_back_to_exactly_that_bound():
-    # Equity doubles while bond is flat, so 80/20 drifts to about 89% equity. The
-    # signals still ask for 80%, well within the band, but the bound wins.
+    # Equity rises while bond is flat, so 80/20 drifts to about 82% equity. The
+    # signals still ask for 80%, within the band, but the bound wins.
     dates = pd.bdate_range("2024-01-02", periods=60)
     rng = np.random.default_rng(3)
-    equity = 100 * np.cumprod(1 + rng.normal(0, 0.01, 60))
-    equity[18:21] = equity[17] * np.array([1.4, 1.7, 2.0])
+    equity = 100 * np.cumprod(1 + rng.normal(0.003, 0.01, 60))
+    equity[18:21] = equity[17] * np.array([1.05, 1.08, 1.1])
     prices = {
         EQUITY: pd.Series(equity, index=dates),
-        BOND: pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.01, 60)), index=dates),
+        BOND: pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.003, 60)), index=dates),
     }
     forecasts = {EQUITY: pd.Series(0.05, index=dates), BOND: pd.Series(0.0, index=dates)}
 
-    breakdowns = schedule_breakdowns(forecasts, prices, **_SCHEDULE_KWARGS)
+    breakdowns = schedule_breakdowns(forecasts, prices, **_FULLY_TRUSTED)
     first, second = breakdowns[dates[17]], breakdowns[dates[20]]
 
     assert first.equity == DEFAULT_WEIGHT_BOUNDS[1]
@@ -485,6 +672,372 @@ def test_drift_past_a_bound_is_traded_back_to_exactly_that_bound():
     assert abs(second.bounded - second.drifted) <= second.band  # the band alone would hold
     assert not second.held
     assert second.equity == DEFAULT_WEIGHT_BOUNDS[1]
-    backtest = run_backtest(prices, weight_schedule(forecasts, prices, **_SCHEDULE_KWARGS))
+    backtest = run_backtest(prices, weight_schedule(forecasts, prices, **_FULLY_TRUSTED))
     assert backtest.optimised.turnover[dates[20]] > 0
     assert backtest.optimised.costs[dates[20]] > 0
+
+
+# --- forecast trust --------------------------------------------------------------------
+
+
+def _trust_inputs(make_y, *, n=400, seed=0):
+    """A one-day horizon with bond flat, so each date's ``y`` is exactly equity's next
+    day's return, which ``make_y`` sets from that date's signal difference ``x``."""
+    dates = pd.bdate_range("2020-01-01", periods=n)
+    rng = np.random.default_rng(seed)
+    x = rng.normal(0, 0.01, n)
+    y = make_y(x, rng)
+    equity = 100 * np.cumprod(np.r_[1.0, 1 + y[:-1]])
+    prices = {EQUITY: pd.Series(equity, index=dates), BOND: pd.Series(100.0, index=dates)}
+    signals = {EQUITY: pd.Series(x, index=dates), BOND: pd.Series(0.0, index=dates)}
+    return dates, signals, prices
+
+
+def _zero_baselines(dates) -> dict:
+    return {EQUITY: pd.Series(0.0, index=dates), BOND: pd.Series(0.0, index=dates)}
+
+
+def _trust_at_the_end(make_y, **kwargs) -> float:
+    dates, signals, prices = _trust_inputs(make_y, **kwargs)
+    return forecast_trust(
+        dates[-1], trust_pairs(signals, _zero_baselines(dates), prices, horizon=1), horizon=1
+    )
+
+
+def test_returns_that_follow_the_signal_earn_a_trust_near_one():
+    trust = _trust_at_the_end(lambda x, rng: x + rng.normal(0, 0.002, len(x)))
+
+    assert trust == pytest.approx(1.0, abs=0.05)
+
+
+def test_returns_unrelated_to_the_signal_earn_a_trust_near_zero():
+    assert _trust_at_the_end(lambda x, rng: rng.normal(0, 0.01, len(x))) < 0.15
+
+
+def test_returns_against_the_signal_clip_the_trust_to_zero():
+    assert _trust_at_the_end(lambda x, rng: -x) == 0.0
+
+
+def test_the_trust_never_exceeds_one():
+    assert _trust_at_the_end(lambda x, rng: 3 * x) == 1.0
+
+
+def test_the_regression_has_an_intercept():
+    assert _trust_at_the_end(lambda x, rng: x + 0.005) == pytest.approx(1.0)
+
+
+def test_a_signal_that_never_varies_earns_no_trust():
+    dates, signals, prices = _trust_inputs(lambda x, rng: x)
+    constant = {EQUITY: pd.Series(0.01, index=dates), BOND: pd.Series(0.0, index=dates)}
+
+    pairs = trust_pairs(constant, _zero_baselines(dates), prices, horizon=1)
+
+    assert forecast_trust(dates[-1], pairs, horizon=1) == 0.0
+
+
+@pytest.mark.parametrize(("role", "share"), [(EQUITY, -0.5), (BOND, 0.5)])
+def test_the_realised_return_is_net_of_the_same_training_means_as_the_signal(role, share):
+    # y is half of x before the training means. Taking them off leaves y = x.
+    dates, signals, prices = _trust_inputs(lambda x, rng: 0.5 * x)
+    x = signals[EQUITY]
+    baselines = {**_zero_baselines(dates), role: share * x}
+
+    netted = forecast_trust(
+        dates[-1], trust_pairs(signals, baselines, prices, horizon=1), horizon=1
+    )
+    gross = forecast_trust(
+        dates[-1], trust_pairs(signals, _zero_baselines(dates), prices, horizon=1), horizon=1
+    )
+
+    assert netted == pytest.approx(1.0)
+    assert gross == pytest.approx(0.5)
+
+
+def test_a_pair_is_the_signal_difference_and_the_harness_label_less_the_training_means():
+    dates = pd.bdate_range("2020-01-01", periods=80)
+    prices = _prices(dates, seed=4)
+    signals = {EQUITY: pd.Series(0.03, index=dates), BOND: pd.Series(0.01, index=dates)}
+    baselines = {EQUITY: pd.Series(0.004, index=dates), BOND: pd.Series(0.001, index=dates)}
+
+    pairs = trust_pairs(signals, baselines, prices, horizon=20)
+
+    equity_return = prices[EQUITY].iloc[30] / prices[EQUITY].iloc[10] - 1
+    bond_return = prices[BOND].iloc[30] / prices[BOND].iloc[10] - 1
+    row = pairs.loc[dates[10]]
+    assert row["x"] == pytest.approx(0.02)
+    assert row["y"] == pytest.approx(equity_return - bond_return - 0.003)
+    assert row["label_end"] == dates[30]
+    assert len(pairs) == 60
+
+
+def test_a_pair_is_known_only_once_the_later_of_its_two_returns_is():
+    dates = pd.bdate_range("2020-01-01", periods=80)
+    prices = _prices(dates, seed=4)
+    prices[BOND] = prices[BOND].drop(dates[25])
+    zeros = _zero_baselines(dates)
+
+    pairs = trust_pairs(zeros, zeros, prices, horizon=20)
+
+    assert pairs.loc[dates[10], "label_end"] == dates[31]
+
+
+def test_a_pair_needs_a_stored_forecast_from_both_models():
+    dates = pd.bdate_range("2020-01-01", periods=80)
+    prices = _prices(dates, seed=4)
+    zeros = _zero_baselines(dates)
+    signals = {EQUITY: zeros[EQUITY], BOND: zeros[BOND].drop(dates[10])}
+
+    pairs = trust_pairs(signals, zeros, prices, horizon=20)
+
+    assert dates[10] not in pairs.index
+    assert dates[11] in pairs.index
+
+
+def _leakage_inputs():
+    """Twenty-day returns the signal partly predicts, so the trust is neither clipped
+    nor insensitive to any one return."""
+    dates = pd.bdate_range("2020-01-01", periods=400)
+    prices = _prices(dates, seed=5)
+    forward = (prices[EQUITY].shift(-20) / prices[EQUITY] - 1) - (
+        prices[BOND].shift(-20) / prices[BOND] - 1
+    )
+    rng = np.random.default_rng(6)
+    signal = forward.fillna(0.0) * 2 + rng.normal(0, 0.05, len(dates))
+    return dates, prices, {EQUITY: signal, BOND: pd.Series(0.0, index=dates)}
+
+
+def test_returns_ending_on_or_after_the_rebalance_never_change_the_trust():
+    dates, prices, signals = _leakage_inputs()
+    t = dates[350]
+    zeros = _zero_baselines(dates)
+    before = forecast_trust(t, trust_pairs(signals, zeros, prices, horizon=20), horizon=20)
+    assert 0 < before < 1
+
+    extreme = prices[EQUITY].copy()
+    extreme.loc[t:] *= 50
+    pairs = trust_pairs(signals, zeros, {**prices, EQUITY: extreme}, horizon=20)
+
+    assert pairs.loc[dates[330], "y"] > 10  # ends exactly on t, and is extreme
+    assert forecast_trust(t, pairs, horizon=20) == before
+
+
+def test_a_return_ending_the_day_before_the_rebalance_is_used():
+    dates, prices, signals = _leakage_inputs()
+    t = dates[350]
+    zeros = _zero_baselines(dates)
+    before = forecast_trust(t, trust_pairs(signals, zeros, prices, horizon=20), horizon=20)
+
+    moved = prices[EQUITY].copy()
+    moved.iloc[349] *= 1.5
+
+    assert (
+        forecast_trust(
+            t, trust_pairs(signals, zeros, {**prices, EQUITY: moved}, horizon=20), horizon=20
+        )
+        != before
+    )
+
+
+def test_no_weight_up_to_a_rebalance_depends_on_anything_after_it():
+    dates = pd.bdate_range("2020-01-01", periods=400)
+    prices = _rising_prices(dates, seed=7)
+    rng = np.random.default_rng(8)
+    signals = {
+        EQUITY: pd.Series(rng.normal(0, 0.02, 400), index=dates),
+        BOND: pd.Series(0.0, index=dates),
+    }
+    kwargs = {**_SCHEDULE_KWARGS, "baselines": _zero_baselines(dates)}
+    t = dates[350]
+    before = schedule_breakdowns(signals, prices, **kwargs)
+
+    extreme = prices[EQUITY].copy()
+    extreme.loc[extreme.index > t] *= 50
+    changed = signals[EQUITY].copy()
+    changed.loc[changed.index > t] = 0.5
+    after = schedule_breakdowns({**signals, EQUITY: changed}, {**prices, EQUITY: extreme}, **kwargs)
+
+    assert {d: b for d, b in before.items() if d <= t} == {d: b for d, b in after.items() if d <= t}
+    assert any(before[d] != after[d] for d in before if d > t)
+
+
+def test_below_the_minimum_history_the_trust_is_zero():
+    dates, signals, prices = _trust_inputs(lambda x, rng: x)
+    pairs = trust_pairs(signals, _zero_baselines(dates), prices, horizon=1)
+
+    # A one-day return from position i is known from position i + 1, so before
+    # position p there are p - 1 pairs known.
+    one_short, enough = dates[MIN_TRUST_HISTORY], dates[MIN_TRUST_HISTORY + 1]
+    assert len(pairs_known_by(one_short, pairs)) == MIN_TRUST_HISTORY - 1
+    assert forecast_trust(one_short, pairs, horizon=1) == 0.0
+    assert len(pairs_known_by(enough, pairs)) == MIN_TRUST_HISTORY
+    assert forecast_trust(enough, pairs, horizon=1) == pytest.approx(1.0)
+
+
+def _weak_slope(x, rng):
+    """A true slope of 0.05 with noise uncorrelated with ``x``, whatever the seed."""
+    noise = rng.normal(0, 0.01, len(x))
+    return 0.05 * x + noise - np.polyval(np.polyfit(x, noise, 1), x)
+
+
+def _strong_slope(x, rng):
+    return 0.5 * x + rng.normal(0, 0.01, len(x))
+
+
+def _gated_and_not(make_y) -> tuple[float, float]:
+    dates, signals, prices = _trust_inputs(make_y)
+    pairs = trust_pairs(signals, _zero_baselines(dates), prices, horizon=1)
+    return (
+        forecast_trust(dates[-1], pairs, horizon=1),
+        forecast_trust(dates[-1], pairs, horizon=1, gate=float("-inf")),
+    )
+
+
+def test_a_weak_noisy_slope_earns_no_trust():
+    gated, slope = _gated_and_not(_weak_slope)
+
+    assert slope > 0
+    assert gated == 0.0
+
+
+def test_a_strong_slope_keeps_its_value():
+    gated, slope = _gated_and_not(_strong_slope)
+
+    assert gated == pytest.approx(0.5, abs=0.1)
+    assert gated == slope
+
+
+def test_the_gate_reads_a_newey_west_t_over_h_minus_1_lags_and_is_strict():
+    dates, prices, signals = _leakage_inputs()
+    pairs = trust_pairs(signals, _zero_baselines(dates), prices, horizon=20)
+    known = pairs_known_by(dates[-1], pairs)
+    fit = sm.OLS(known["y"].to_numpy(), sm.add_constant(known["x"].to_numpy()))
+    t = fit.fit(cov_type="HAC", cov_kwds={"maxlags": 19}).tvalues[1]
+    spread_rule_t = fit.fit(
+        cov_type="HAC", cov_kwds={"maxlags": newey_west_lags(len(known))}
+    ).tvalues[1]
+    assert t != pytest.approx(spread_rule_t)
+
+    assert forecast_trust(dates[-1], pairs, horizon=20, gate=t - 1e-9) > 0
+    assert forecast_trust(dates[-1], pairs, horizon=20, gate=t) == 0.0
+
+
+def test_the_gate_is_shut_only_where_a_fit_fails_it():
+    weak_dates, weak_signals, weak_prices = _trust_inputs(_weak_slope)
+    weak = trust_pairs(weak_signals, _zero_baselines(weak_dates), weak_prices, horizon=1)
+    strong_dates, strong_signals, strong_prices = _trust_inputs(_strong_slope)
+    strong = trust_pairs(strong_signals, _zero_baselines(strong_dates), strong_prices, horizon=1)
+
+    assert forecast_gate_shut(weak_dates[-1], weak, horizon=1)
+    assert not forecast_gate_shut(strong_dates[-1], strong, horizon=1)
+    # Too little history is not the gate.
+    assert not forecast_gate_shut(weak_dates[MIN_TRUST_HISTORY], weak, horizon=1)
+
+
+def _weak_schedule_inputs():
+    dates, signals, prices = _trust_inputs(_weak_slope)
+    rising = _rising_prices(dates, seed=7)
+    rng = np.random.default_rng(8)
+    noise = pd.Series(rng.normal(0, 0.01, len(dates)), index=dates)
+    return (
+        rising,
+        {**signals, EQUITY: noise},
+        {**_SCHEDULE_KWARGS, "baselines": _zero_baselines(dates)},
+    )
+
+
+def test_a_schedule_with_a_rejected_slope_is_the_no_forecast_level():
+    prices, signals, kwargs = _weak_schedule_inputs()
+
+    breakdowns = schedule_breakdowns(signals, prices, **kwargs)
+    ungated = schedule_breakdowns(signals, prices, trust_gate=float("-inf"), **kwargs)
+
+    assert breakdowns == schedule_breakdowns(signals, prices, trust=0.0, **kwargs)
+    assert any(b.forecast_tilt != 0 for b in ungated.values())
+
+
+def test_the_no_forecast_level_keeps_the_no_trade_band():
+    prices, signals, kwargs = _weak_schedule_inputs()
+
+    breakdowns = list(schedule_breakdowns(signals, prices, trust=0.0, **kwargs).values())
+
+    assert all(b.forecast_tilt == 0 for b in breakdowns)
+    assert any(b.held for b in breakdowns)
+
+
+@pytest.mark.parametrize("bounds", [(0.2, 0.8), (0.1, 0.9)])
+def test_at_level_5_the_optimised_and_no_forecast_series_are_identical(bounds):
+    prices, signals, kwargs = _weak_schedule_inputs()
+    kwargs = {**kwargs, "risk_level": 5, "bounds": bounds}
+
+    optimised = run_backtest(
+        prices, schedule_weights(schedule_breakdowns(signals, prices, trust=1.0, **kwargs))
+    )
+    no_forecast = run_backtest(
+        prices, schedule_weights(schedule_breakdowns(signals, prices, trust=0.0, **kwargs))
+    )
+
+    pd.testing.assert_series_equal(optimised.optimised.net, no_forecast.optimised.net)
+    summary = forecast_value_summary(optimised, no_forecast, "net")
+    assert summary.t == "—"
+    assert summary.label == "No forecast effect to test"
+
+
+def test_the_pairs_used_never_fall_from_one_rebalance_to_the_next():
+    dates, signals, prices = _trust_inputs(lambda x, rng: x)
+    pairs = trust_pairs(signals, _zero_baselines(dates), prices, horizon=1)
+
+    counts = [len(pairs_known_by(date, pairs)) for date in dates[::20]]
+
+    assert counts == sorted(counts)
+    assert counts[-1] > counts[0]
+    assert pairs_known_by(dates[300], pairs).index[0] == dates[0]  # expanding, not rolling
+
+
+def _skilful_inputs():
+    """Signals equal to the three-day return that follows, so the trust is 1 as soon as
+    there is enough history."""
+    dates = pd.bdate_range("2020-01-01", periods=400)
+    prices = _rising_prices(dates, seed=9)
+    forward = (prices[EQUITY].shift(-3) / prices[EQUITY] - 1) - (
+        prices[BOND].shift(-3) / prices[BOND] - 1
+    )
+    signals = {EQUITY: forward.fillna(0.0), BOND: pd.Series(0.0, index=dates)}
+    return dates, prices, signals, {**_SCHEDULE_KWARGS, "baselines": _zero_baselines(dates)}
+
+
+def test_the_schedule_tilts_only_once_the_forecasts_have_earned_trust():
+    dates, prices, signals, kwargs = _skilful_inputs()
+    pairs = trust_pairs(signals, kwargs["baselines"], prices, horizon=3)
+
+    breakdowns = schedule_breakdowns(signals, prices, **kwargs)
+
+    for date, breakdown in breakdowns.items():
+        if len(pairs_known_by(date, pairs)) < MIN_TRUST_HISTORY:
+            assert breakdown.forecast_tilt == 0.0
+        elif signals[EQUITY][date] != 0:
+            assert breakdown.forecast_tilt != 0.0
+    assert any(b.forecast_tilt != 0.0 for b in breakdowns.values())
+    assert any(b.forecast_tilt == 0.0 for b in breakdowns.values())
+
+
+def test_a_trust_passed_in_replaces_the_estimate_at_every_rebalance():
+    _dates, prices, signals, kwargs = _skilful_inputs()
+
+    untrusted = schedule_breakdowns(signals, prices, trust=0.0, **kwargs)
+    trusted = schedule_breakdowns(signals, prices, trust=1.0, **kwargs)
+
+    assert all(b.forecast_tilt == 0.0 for b in untrusted.values())
+    assert next(iter(trusted.values())).forecast_tilt != 0.0
+
+
+def test_switching_an_equity_model_moves_the_weights_when_the_trust_is_given():
+    _dates, prices, signals, kwargs = _skilful_inputs()
+    kwargs = {**kwargs, "costs_bps": {EQUITY: 0.0, BOND: 0.0}}
+    up = {EQUITY: signals[EQUITY] * 0 + 0.005, BOND: signals[BOND]}
+    down = {EQUITY: signals[EQUITY] * 0 - 0.005, BOND: signals[BOND]}
+
+    higher = weight_schedule(up, prices, trust=1.0, **kwargs)
+    lower = weight_schedule(down, prices, trust=1.0, **kwargs)
+
+    assert (higher[EQUITY] >= lower[EQUITY]).all()
+    assert (higher[EQUITY] > lower[EQUITY]).any()

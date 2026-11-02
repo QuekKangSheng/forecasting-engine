@@ -1,6 +1,6 @@
 """Portfolio runs: one row per distinct set of inputs, however often it is computed."""
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import datetime
 
 import duckdb
@@ -30,7 +30,7 @@ INPUTS = PortfolioInputs(
     train_window=504,
     test_window=20,
     embargo=20,
-    risk_aversion=10.0,
+    risk_level=3,
     bounds=(0.2, 0.8),
     costs_bps={"equity": 3.0, "bond": 5.0},
     code_version="abc1234",
@@ -94,7 +94,7 @@ def test_the_key_does_not_depend_on_the_order_costs_were_given_in():
         {"train_window": 252},
         {"test_window": 10},
         {"embargo": 5},
-        {"risk_aversion": 30.0},
+        {"risk_level": 5},
         {"bounds": (0.3, 0.7)},
         {"costs_bps": {"equity": 3.0, "bond": 6.0}},
         {"code_version": "def5678"},
@@ -106,6 +106,13 @@ def test_any_one_input_changing_gives_another_key(change):
 
 
 # --- idempotent recording ----------------------------------------------------------------
+
+
+def test_what_follows_from_the_data_and_models_is_not_an_input():
+    inputs = {field.name for field in fields(PortfolioInputs)}
+
+    assert "risk_level" in inputs
+    assert not inputs & {"trust", "beta", "risk_aversion", "lambda", "premium", "tilt_strength"}
 
 
 def test_the_first_record_of_a_key_is_new_and_every_repeat_is_not(db):
@@ -129,7 +136,7 @@ def test_a_repeat_writes_no_metrics_or_weights_either(db):
 def test_new_inputs_are_a_new_run(db):
     _record(db)
 
-    assert _record(db, replace(INPUTS, risk_aversion=30.0)) is True
+    assert _record(db, replace(INPUTS, risk_level=5)) is True
     assert _count(db, "portfolio_runs") == 2
 
 
@@ -186,6 +193,6 @@ def test_the_table_pulls_the_inputs_that_vary_and_both_net_sharpes(db):
 
     (row,) = portfolio_runs_table(db_path=db).itertuples()
 
-    assert row.risk_aversion == 10.0 and row.min_weight == 0.2
+    assert row.risk_level == 3 and row.min_weight == 0.2
     assert row.net_sharpe == pytest.approx(RESULT.metrics[("optimised", "net")].sharpe)
     assert row.baseline_net_sharpe == pytest.approx(RESULT.metrics[("baseline", "net")].sharpe)
