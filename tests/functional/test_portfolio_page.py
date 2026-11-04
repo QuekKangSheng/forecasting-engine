@@ -1,6 +1,7 @@
 """The Portfolio Optimizer page, driven through the real Streamlit page script."""
 
 import html
+import json
 import re
 from pathlib import Path
 
@@ -54,6 +55,7 @@ def short_volatility_window(monkeypatch):
     """Rolling volatility needs a quarter's returns (63 days) before its first point,
     longer than this fixture's backtest."""
     monkeypatch.setattr("forecasting_engine.portfolio.performance.ROLLING_VOL_WINDOW", 5)
+    monkeypatch.setattr("forecasting_engine.portfolio.performance.ROLLING_SHARPE_WINDOW", 5)
 
 
 def _committed() -> pd.DataFrame:
@@ -398,9 +400,9 @@ def test_the_caption_explains_that_not_run_is_not_zero_risk():
 def test_the_cumulative_return_chart_is_drawn_beside_the_weights_chart():
     app = _happy_page()
 
-    # The weights bar chart, the cumulative-return, rolling volatility and drawdown
-    # line charts.
-    assert len(app.get("vega_lite_chart")) == 4
+    # The weights bar chart, the cumulative-return, rolling volatility, drawdown and
+    # rolling Sharpe line charts.
+    assert len(app.get("vega_lite_chart")) == 5
 
 
 # --- FYP-255 / FYP-256: the rolling volatility chart ---------------------------------
@@ -432,7 +434,7 @@ def test_rolling_volatility_is_charted_for_both_indices_and_the_optimised_portfo
     assert any("Rolling volatility" in m.value for m in app.markdown)
 
 
-@pytest.mark.parametrize("value", ["Rolling volatility", "Drawdown"])
+@pytest.mark.parametrize("value", ["Rolling volatility", "Drawdown", "Rolling Sharpe"])
 def test_the_risk_charts_are_recomputed_when_the_risk_level_changes(value):
     app = _happy_page()
     before = _line_data(app, value)
@@ -463,6 +465,56 @@ def test_a_backtest_no_longer_than_the_window_explains_why_there_is_no_volatilit
     assert not app.exception
     assert any(f"Rolling volatility needs more than {days}" in t for t in _infos(app))
     assert not [c for c in app.get("vega_lite_chart") if "Rolling volatility" in c.proto.spec]
+
+
+# --- FYP-280 / FYP-281: the rolling Sharpe chart -------------------------------------
+
+
+def test_rolling_sharpe_is_charted_for_both_indices_and_the_optimised_portfolio():
+    app = _happy_page()
+
+    assert not app.exception
+    data = _line_data(app, "Rolling Sharpe")
+    assert len(data.columns) == 3 and {"S&P 500", "Optimised"} <= set(data.columns)
+    assert any("Rolling Sharpe" in m.value for m in app.markdown)
+
+
+def test_the_rolling_sharpe_chart_states_its_window_and_shows_exact_values_on_hover():
+    app = _happy_page()
+
+    spec = json.loads(_line_chart(app, "Rolling Sharpe").proto.spec)
+    assert "5-day window" in json.dumps(spec), "the window is on the chart itself"
+    assert "%d %b %Y" in json.dumps(spec), "the tooltip gives the exact date"
+    # A ratio, not a percentage, unlike the other line charts.
+    assert '"format": ".2f"' in json.dumps(spec)
+    assert '"format": ".2%"' not in json.dumps(spec)
+    assert "previous 5 trading days' returns" in _captions(app)
+
+
+def test_the_rolling_sharpe_chart_follows_the_same_basis_as_the_table():
+    app = _happy_page()
+    assert "the optimised portfolio is after costs" in _rolling_sharpe_caption(app)
+    net = _line_data(app, "Rolling Sharpe")
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+
+    basis.set_value("Before costs").run()
+
+    assert "the optimised portfolio is before costs" in _rolling_sharpe_caption(app)
+    gross = _line_data(app, "Rolling Sharpe")
+    assert not np.allclose(gross["Optimised"], net["Optimised"])
+
+
+def _rolling_sharpe_caption(app: AppTest) -> str:
+    return next(c.value for c in app.caption if c.value.startswith("Annualised Sharpe"))
+
+
+def test_a_backtest_no_longer_than_the_window_explains_why_there_is_no_sharpe_chart(monkeypatch):
+    monkeypatch.setattr("forecasting_engine.portfolio.performance.ROLLING_SHARPE_WINDOW", 1000)
+    app = _happy_page()
+
+    assert not app.exception
+    assert any("Rolling Sharpe needs more than 1000" in t for t in _infos(app))
+    assert not [c for c in app.get("vega_lite_chart") if "Rolling Sharpe" in c.proto.spec]
 
 
 # --- FYP-259 / FYP-260: the drawdown chart -------------------------------------------

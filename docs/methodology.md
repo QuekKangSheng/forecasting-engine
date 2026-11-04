@@ -534,6 +534,18 @@ same weights at every rebalance is the fixed-weight case.
      window whose returns never vary is exactly zero. The indices carry no costs,
      so only the portfolio's line follows the gross/net basis. The Portfolio page
      charts it, recomputed whenever the weight schedule changes (FYP-255, FYP-256);
+   - rolling Sharpe (FYP-279): at each day, the Sharpe above of the previous
+     `ROLLING_SHARPE_WINDOW` days alone, for each index and the optimised portfolio.
+     252 days is chosen over 126 because a Sharpe rests on a mean return, which takes
+     far longer to pin down than a volatility: the standard error of an annualised
+     Sharpe is about √(252 / days) when daily returns are independent (Lo, 2002), so
+     about 1.0 over a year and 1.4 over six months. The shorter window's swings would
+     mostly be that noise, and even a year's line is worth reading for sustained moves
+     only. A window whose returns never vary has no Sharpe, as in the full-period
+     figure. The indices carry no costs, so only the portfolio's line follows the
+     gross/net basis: net by default, the same returns as the backtest table. The
+     Portfolio page charts it, recomputed whenever the weight schedule changes
+     (FYP-280, FYP-281);
    - tracking error and information ratio of the optimised portfolio against the
      baseline, from the daily difference in their returns;
    - the spread t-statistic (FYP-52): a paired test of whether the mean daily
@@ -942,6 +954,7 @@ Values are Python literals as the code holds them.
 | `RISK_FREE_RATE` | `forecasting_engine.portfolio.performance` | `0.0` |
 | `SIGNIFICANCE_CONFIDENCE` | `forecasting_engine.portfolio.performance` | `0.95` |
 | `ROLLING_VOL_WINDOW` | `forecasting_engine.portfolio.performance` | `63` |
+| `ROLLING_SHARPE_WINDOW` | `forecasting_engine.portfolio.performance` | `252` |
 | `BASELINE_WEIGHTS` | `forecasting_engine.portfolio.backtest` | `{"equity": 0.5, "bond": 0.5}` |
 | `DEFAULT_COSTS_BPS` | `forecasting_engine.portfolio.backtest` | `{"equity": 3.0, "bond": 5.0}` |
 | `REBALANCE_FREQUENCY` | `forecasting_engine.portfolio.backtest` | `"monthly"` |

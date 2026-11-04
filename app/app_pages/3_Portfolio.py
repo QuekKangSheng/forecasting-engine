@@ -32,7 +32,7 @@ from forecasting_engine.portfolio.backtest import (
     BacktestDataError,
     run_backtest,
 )
-from forecasting_engine.portfolio.performance import ROLLING_VOL_WINDOW
+from forecasting_engine.portfolio.performance import ROLLING_SHARPE_WINDOW, ROLLING_VOL_WINDOW
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
@@ -44,6 +44,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     drawdown_paths,
     forecast_value_summary,
     monte_carlo_rows,
+    rolling_sharpe_paths,
     rolling_volatility_paths,
     significance_summary,
     tail_rows,
@@ -420,14 +421,19 @@ st.caption(
     "on every row, drawdown included."
 )
 
-def _line_chart(paths: pd.DataFrame, value: str) -> alt.LayerChart:
-    """A line per column of ``paths`` on one time axis, in percent. Hovering or
-    tapping anywhere marks the nearest day on a line and shows its date and value."""
+def _line_chart(
+    paths: pd.DataFrame, value: str, *, percent: bool = True, title: str | None = None
+) -> alt.LayerChart:
+    """A line per column of ``paths`` on one time axis, in percent unless told it is a
+    ratio. Hovering or tapping anywhere marks the nearest day on a line and shows its
+    date and value."""
     long = paths.rename_axis("date").reset_index().melt("date", var_name="Series", value_name=value)
     nearest = alt.selection_point(nearest=True, on="pointerover", clear="pointerout", empty=False)
     lines = alt.Chart(long).encode(
         x=alt.X("date:T", title="Date", axis=alt.Axis(tickCount="year")),
-        y=alt.Y(f"{value}:Q", axis=alt.Axis(format="%")),
+        y=alt.Y(
+            f"{value}:Q", title=title or value, axis=alt.Axis(format="%" if percent else ".1f")
+        ),
         color=alt.Color("Series:N", legend=alt.Legend(title=None, orient="bottom", labelLimit=0)),
     )
     # Vega only shows a line's tooltip within a pixel or two of one of its days,
@@ -439,7 +445,7 @@ def _line_chart(paths: pd.DataFrame, value: str) -> alt.LayerChart:
             tooltip=[
                 alt.Tooltip("date:T", title="Date", format="%d %b %Y"),
                 "Series:N",
-                alt.Tooltip(f"{value}:Q", format=".2%"),
+                alt.Tooltip(f"{value}:Q", format=".2%" if percent else ".2f"),
             ],
         )
         .add_params(nearest)
@@ -486,6 +492,32 @@ st.caption(
     f"optimised portfolio is {basis_label.lower()}, and its lowest point is the max "
     "drawdown in the table above."
 )
+
+# --- FYP-279 / FYP-280: how risk-adjusted return has moved over the backtest ----------
+
+st.markdown(ui.eyebrow("Rolling Sharpe", glossary.term("Rolling Sharpe")), unsafe_allow_html=True)
+rolling_sharpes = rolling_sharpe_paths(backtest, basis, index_names, window=ROLLING_SHARPE_WINDOW)
+if len(rolling_sharpes) < 2:  # a line needs two points
+    st.info(
+        f"Rolling Sharpe needs more than {ROLLING_SHARPE_WINDOW} trading days of returns, and "
+        f"this backtest has {len(backtest.optimised.gross)}, so there is no chart yet.",
+        icon=":material/info:",
+    )
+else:
+    st.altair_chart(
+        _line_chart(
+            rolling_sharpes,
+            "Rolling Sharpe",
+            percent=False,
+            title=f"Rolling Sharpe, {ROLLING_SHARPE_WINDOW}-day window",
+        ),
+        width="stretch",
+    )
+    st.caption(
+        f"Annualised Sharpe of the previous {ROLLING_SHARPE_WINDOW} trading days' returns, at "
+        "each day. Each index is held alone, with no trading costs; the optimised portfolio "
+        f"is {basis_label.lower()}, the same basis as the table above."
+    )
 
 # --- FYP-20 / FYP-52: is the outperformance more than noise? ------------------------
 
