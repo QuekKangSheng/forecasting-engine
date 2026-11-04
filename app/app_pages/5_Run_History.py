@@ -36,9 +36,10 @@ st.caption(
 OPEN_RUN_KEY = "open_portfolio_run"
 RUNS_PER_PAGE = 20
 RUN_NAME_MAX_CHARS = 80
-#: Run, name, first shown, equity model, bond model, risk level, open.
-RUN_COLUMNS = [0.5, 2.2, 1.5, 1.5, 1.5, 0.6, 0.9]
-RUN_HEADINGS = ["Run", "Name", "First shown", "Equity model", "Bond model", "Risk", ""]
+#: Run, name, first shown, equity model, bond model, risk level. A row's buttons sit on
+#: a line of their own: beside these, the page's width leaves them too narrow to read.
+RUN_COLUMNS = [0.5, 2.4, 1.6, 1.6, 1.6, 0.7]
+RUN_HEADINGS = ["Run", "Name", "First shown", "Equity model", "Bond model", "Risk"]
 
 
 def _model_fits() -> None:
@@ -240,7 +241,8 @@ def _run_row(row) -> None:
     cols[3].text(_model_cell(row.equity_model))
     cols[4].text(_model_cell(row.bond_model))
     cols[5].text(f"{row.risk_level:.0f}" if pd.notna(row.risk_level) else "—")
-    cols[6].button(
+    buttons = st.container(horizontal=True, horizontal_alignment="right")
+    buttons.button(
         "Open",
         key=f"open_run_{row.run_key}",
         disabled=not row.has_results,
@@ -266,7 +268,10 @@ def _portfolio_runs() -> None:
         )
         return
     st.markdown(
-        ui.eyebrow(f"{len(table):,} distinct results", glossary.term("Portfolio run")),
+        ui.eyebrow(
+            f"{len(table):,} distinct result{'' if len(table) == 1 else 's'}",
+            glossary.term("Portfolio run"),
+        ),
         unsafe_allow_html=True,
     )
     pages = (len(table) - 1) // RUNS_PER_PAGE + 1
@@ -275,12 +280,13 @@ def _portfolio_runs() -> None:
         if pages > 1
         else 1
     )
-    header = st.columns(RUN_COLUMNS)
-    for col, heading in zip(header, RUN_HEADINGS, strict=True):
-        col.caption(heading)
-    start = (page - 1) * RUNS_PER_PAGE
-    for row in table.iloc[start : start + RUNS_PER_PAGE].itertuples():
-        _run_row(row)
+    with st.container(border=True):
+        header = st.columns(RUN_COLUMNS)
+        for col, heading in zip(header, RUN_HEADINGS, strict=True):
+            col.caption(heading)
+        start = (page - 1) * RUNS_PER_PAGE
+        for row in table.iloc[start : start + RUNS_PER_PAGE].itertuples():
+            _run_row(row)
 
     with st.expander("Compare runs"):
         _compare_runs(table)
