@@ -1169,6 +1169,12 @@ def test_the_report_is_offered_from_the_portfolio_page_and_each_run_row():
     assert row.proto.label == "Report"
 
 
+def _report_section(report: str, heading: str, basis: str) -> str:
+    """One basis's part of a report section, so a figure only counts under its basis."""
+    section = report.split(f"<h2>{heading}</h2>")[1].split("</section>")[0]
+    return section.split(f"<h3>{basis}</h3>")[1].split("<h3>")[0]
+
+
 def test_every_figure_in_the_report_matches_the_page_on_both_bases():
     app = _happy_page()
     (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
@@ -1180,13 +1186,19 @@ def test_every_figure_in_the_report_matches_the_page_on_both_bases():
     report = _report()
 
     for label, markdown in pages.items():
-        tables = [m for m in markdown if "<table" in m]
-        assert len(tables) == 2, "the comparison and tail tables"
-        for table in tables:
-            for cell in _cells(table):
-                assert cell in report, f"{label}: {cell}"
-        for row in (m for m in markdown if "t = " in m and "fe-row" in m):
-            assert re.search(r"t = (-?\d+\.\d\d|—)", row).group(1) in report
+        comparison, tail = [m for m in markdown if "<table" in m]
+        for heading, table in (("Backtest", comparison), ("VaR and CVaR", tail)):
+            shown = _report_section(report, heading, label)
+            for row in re.findall(r"<tr>(.*?)</tr>", table)[1:]:
+                figures = _cells(row)
+                assert "</td><td>".join(figures) in shown, f"{label}: {figures}"
+        statuses = [m for m in markdown if "t = " in m and "fe-row" in m]
+        tests = ("Against the equal-weight benchmark", "Did the forecasts add value?")
+        for test, status in zip(tests, statuses, strict=True):
+            t = re.search(r"t = (-?\d+\.\d\d|—)", status).group(1)
+            assert re.search(
+                rf"<td>{label}</td><td>{re.escape(test)}[^<]*</td><td>{re.escape(t)}</td>", report
+            ), f"{label}: {test} t = {t}"
     for weight in weights:
         assert weight in report
 

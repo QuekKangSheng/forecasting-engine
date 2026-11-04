@@ -96,6 +96,34 @@ def test_results_hold_the_pages_rows_for_both_bases():
         assert [r["metric"] for r in saved["tail"]] == [r.metric for r in tail]
 
 
+def test_each_basis_keeps_its_own_t_statistics():
+    # Heavy trading at a high cost, so before and after costs clearly differ.
+    weights = [0.8, 0.2] * (len(DATES) // 2) + [0.8] * (len(DATES) % 2)
+    swinging = pd.DataFrame(
+        {EQUITY: weights, BOND: [1 - w for w in weights]}, index=DATES
+    )
+    costs = {EQUITY: 100.0, BOND: 100.0}
+    backtest = run_backtest(PRICES, swinging, costs_bps=costs)
+    no_forecast = run_backtest(PRICES, _schedule(INDEX, 0.6), costs_bps=costs)
+
+    results = run_results(
+        backtest,
+        no_forecast,
+        names={EQUITY: "S&P 500", BOND: "US Aggregate"},
+        settings={},
+        latest_date=INDEX[-1],
+        latest_weights={EQUITY: 0.8, BOND: 0.2},
+        how_set=[],
+        windows={},
+    )
+
+    net, gross = results["bases"]["net"], results["bases"]["gross"]
+    assert net["significance"]["t"] != gross["significance"]["t"]
+    assert net["forecast_value"]["t"] != gross["forecast_value"]["t"]
+    assert net["significance"]["t"] == significance_summary(backtest, "net").t
+    assert gross["significance"]["t"] == significance_summary(backtest, "gross").t
+
+
 def test_a_simulation_survives_a_json_round_trip_unchanged():
     simulation = _simulation()
 
