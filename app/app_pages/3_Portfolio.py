@@ -14,11 +14,11 @@ from __future__ import annotations
 import html
 import traceback
 
-import altair as alt
 import pandas as pd
 import streamlit as st
 
 import bloomberg_extraction_panel
+import charts
 import glossary
 import portfolio_summary
 import ui
@@ -49,6 +49,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     significance_summary,
     tail_rows,
 )
+from forecasting_engine.reporting.run_results import run_results, simulation_results
 from forecasting_engine.risk import monte_carlo
 from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, TAIL_METHODS
 from forecasting_engine.store import active_model, portfolio_runs
@@ -246,35 +247,37 @@ unreliable = (
     )
     else ""
 )
-st.caption(
+how_set = [
     f"How this was set: level {risk_level} targets {breakdown.level_weight:.0%} {equity_name}. "
     f"The signals — what each model adds to its training-mean return — ({equity_name} "
     f"{latest_signal[EQUITY]:+.2%}, {bond_name} {latest_signal[BOND]:+.2%} over "
     f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%}, giving "
     f"{breakdown.unconstrained:.0%}{cap}{unreliable}."
-)
+]
+st.caption(how_set[0])
+no_trade_lines = []
 if breakdown.held:
-    st.caption(
+    no_trade_lines.append(
         f"Held: within the no-trade band. Since the last rebalance the portfolio had "
         f"drifted to {breakdown.drifted:.1%} {equity_name}, within the ±{breakdown.band:.1%} "
-        f"band around it, so it was left as it was rather than pay to trade.",
-        help=glossary.term("No-trade band"),
+        f"band around it, so it was left as it was rather than pay to trade."
     )
 elif breakdown.drifted is not None:
-    st.caption(
+    no_trade_lines.append(
         f"Since the last rebalance the portfolio had drifted to {breakdown.drifted:.1%} "
         f"{equity_name}. Trading costs set a no-trade band of ±{breakdown.band:.1%} around "
-        f"it, so it traded only to the band's edge, {breakdown.equity:.1%}.",
-        help=glossary.term("No-trade band"),
+        f"it, so it traded only to the band's edge, {breakdown.equity:.1%}."
     )
 after_first = list(breakdowns.values())[1:]
 if after_first:
     held = sum(b.held for b in after_first)
-    st.caption(
+    no_trade_lines.append(
         f"{held} of {len(after_first)} rebalances after the first ({held / len(after_first):.0%}) "
-        "were held by the no-trade band.",
-        help=glossary.term("No-trade band"),
+        "were held by the no-trade band."
     )
+for line in no_trade_lines:
+    st.caption(line, help=glossary.term("No-trade band"))
+how_set += no_trade_lines
 
 st.markdown(
     ui.eyebrow(
@@ -284,22 +287,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 renamed = schedule.rename(columns={EQUITY: equity_name, BOND: bond_name})
-long = renamed.rename_axis("date").reset_index().melt("date", var_name="Asset", value_name="Weight")
-chart = (
-    alt.Chart(long)
-    .mark_bar()
-    .encode(
-        # Ordinal, not temporal: rebalances are sparse relative to the full date
-        # range, so a time axis squeezes every bar into a sliver with long empty
-        # gaps between them. Each rebalance instead gets an equal-width slot.
-        x=alt.X("yearmonthdate(date):O", title="Rebalance date", axis=alt.Axis(labelAngle=-45)),
-        y=alt.Y("Weight:Q", stack="zero", axis=alt.Axis(format="%")),
-        color=alt.Color("Asset:N", legend=alt.Legend(title=None)),
-        tooltip=["date:T", "Asset:N", alt.Tooltip("Weight:Q", format=".0%")],
-    )
-    .properties(height=600)
-)
-st.altair_chart(chart, width="stretch")
+st.altair_chart(charts.weights_chart(renamed), width="stretch")
 
 
 # --- FYP-19: the optimised allocation against the equal-weight benchmark -----------
@@ -341,26 +329,51 @@ st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSum
 # Recorded once per distinct set of inputs (store/portfolio_runs): the key is the
 # hash of everything the result depends on, so recording on every view is safe,
 # and a failed write is reported without stopping the page.
+run_inputs = portfolio_runs.PortfolioInputs(
+    dataset_sha256=frame_sha256(merged),
+    equity_run_id=equity_active.run_id,
+    bond_run_id=bond_active.run_id,
+    equity_set_at=equity_active.set_at,
+    bond_set_at=bond_active.set_at,
+    horizon=equity_active.horizon,
+    train_window=TRAIN_WINDOW,
+    test_window=equity_active.test_window,
+    embargo=EMBARGO_DAYS,
+    risk_level=risk_level,
+    bounds=(lower, upper),
+    costs_bps={role.value: cost for role, cost in backtest.costs_bps.items()},
+    code_version=run_history.code_version(),
+)
 try:
-    portfolio_runs.record_portfolio_run(
-        portfolio_runs.PortfolioInputs(
-            dataset_sha256=frame_sha256(merged),
-            equity_run_id=equity_active.run_id,
-            bond_run_id=bond_active.run_id,
-            equity_set_at=equity_active.set_at,
-            bond_set_at=bond_active.set_at,
-            horizon=equity_active.horizon,
-            train_window=TRAIN_WINDOW,
-            test_window=equity_active.test_window,
-            embargo=EMBARGO_DAYS,
-            risk_level=risk_level,
-            bounds=(lower, upper),
-            costs_bps={role.value: cost for role, cost in backtest.costs_bps.items()},
-            code_version=run_history.code_version(),
-        ),
-        backtest,
-        schedule,
+    # FYP-275: built only the first time, since every later view of these inputs is the
+    # same run and would be thrown away.
+    results = (
+        None
+        if portfolio_runs.has_results(run_inputs.run_key)
+        else run_results(
+            backtest,
+            no_forecast_backtest,
+            names={EQUITY: equity_name, BOND: bond_name},
+            settings={
+                "risk_level": risk_level,
+                "bounds": [lower, upper],
+                "costs_bps": {role.value: cost for role, cost in backtest.costs_bps.items()},
+                "horizon": equity_active.horizon,
+                "train_window": TRAIN_WINDOW,
+                "test_window": equity_active.test_window,
+                "embargo": EMBARGO_DAYS,
+                "rebalance_frequency": REBALANCE_FREQUENCY,
+            },
+            latest_date=latest_date,
+            latest_weights={EQUITY: latest[EQUITY], BOND: latest[BOND]},
+            how_set=how_set,
+            windows={
+                "rolling_volatility": ROLLING_VOL_WINDOW,
+                "rolling_sharpe": ROLLING_SHARPE_WINDOW,
+            },
+        )
     )
+    portfolio_runs.record_portfolio_run(run_inputs, backtest, schedule, results=results)
 except Exception:  # noqa: BLE001 - a failed log must not stop the page
     traceback.print_exc()
 
@@ -421,43 +434,8 @@ st.caption(
     "on every row, drawdown included."
 )
 
-def _line_chart(
-    paths: pd.DataFrame, value: str, *, percent: bool = True, title: str | None = None
-) -> alt.LayerChart:
-    """A line per column of ``paths`` on one time axis, in percent unless told it is a
-    ratio. Hovering or tapping anywhere marks the nearest day on a line and shows its
-    date and value."""
-    long = paths.rename_axis("date").reset_index().melt("date", var_name="Series", value_name=value)
-    nearest = alt.selection_point(nearest=True, on="pointerover", clear="pointerout", empty=False)
-    lines = alt.Chart(long).encode(
-        x=alt.X("date:T", title="Date", axis=alt.Axis(tickCount="year")),
-        y=alt.Y(
-            f"{value}:Q", title=title or value, axis=alt.Axis(format="%" if percent else ".1f")
-        ),
-        color=alt.Color("Series:N", legend=alt.Legend(title=None, orient="bottom", labelLimit=0)),
-    )
-    # Vega only shows a line's tooltip within a pixel or two of one of its days,
-    # too fine to tap; invisible points with a nearest-day selection catch any hover.
-    points = (
-        lines.mark_point(filled=True)
-        .encode(
-            opacity=alt.condition(nearest, alt.value(1), alt.value(0)),
-            tooltip=[
-                alt.Tooltip("date:T", title="Date", format="%d %b %Y"),
-                "Series:N",
-                alt.Tooltip(f"{value}:Q", format=".2%" if percent else ".2f"),
-            ],
-        )
-        .add_params(nearest)
-    )
-    # Canvas, not Streamlit's default SVG: SVG makes every day's point a page element,
-    # thousands per chart, which stalls scrolling and every redraw.
-    canvas = {"embedOptions": {"renderer": "canvas"}}
-    return (lines.mark_line() + points).properties(usermeta=canvas)
-
-
 cumulative = cumulative_paths(backtest, basis)
-st.altair_chart(_line_chart(cumulative, "Cumulative return"), width="stretch")
+st.altair_chart(charts.line_chart(cumulative, "Cumulative return"), width="stretch")
 
 # --- FYP-254 / FYP-255: how risk has moved over the backtest ------------------------
 
@@ -474,7 +452,7 @@ if len(volatility) < 2:  # a line needs two points
         icon=":material/info:",
     )
 else:
-    st.altair_chart(_line_chart(volatility, "Rolling volatility"), width="stretch")
+    st.altair_chart(charts.line_chart(volatility, "Rolling volatility"), width="stretch")
     st.caption(
         f"Annualised standard deviation of the previous {ROLLING_VOL_WINDOW} trading days' "
         f"returns, at each day. Each index is held alone, with no trading costs; the "
@@ -485,7 +463,7 @@ else:
 
 st.markdown(ui.eyebrow("Drawdown", glossary.term("Drawdown")), unsafe_allow_html=True)
 drawdowns = drawdown_paths(backtest, basis, index_names)
-st.altair_chart(_line_chart(drawdowns, "Drawdown"), width="stretch")
+st.altair_chart(charts.line_chart(drawdowns, "Drawdown"), width="stretch")
 st.caption(
     "Fall from the highest value reached so far, at each day, counting the start of the "
     "backtest as the first high. Each index is held alone, with no trading costs; the "
@@ -505,7 +483,7 @@ if len(rolling_sharpes) < 2:  # a line needs two points
     )
 else:
     st.altair_chart(
-        _line_chart(
+        charts.line_chart(
             rolling_sharpes,
             "Rolling Sharpe",
             percent=False,
@@ -608,6 +586,10 @@ def _simulate() -> None:
         st.session_state[SIMULATION_ERROR_KEY] = str(exc)
         return
     st.session_state[SIMULATION_KEY] = (inputs, result)
+    try:
+        portfolio_runs.save_simulation(run_inputs.run_key, simulation_results(backtest, result))
+    except Exception:  # noqa: BLE001 - a failed log must not stop the page
+        traceback.print_exc()
 
 
 stored_simulation = st.session_state.get(SIMULATION_KEY)

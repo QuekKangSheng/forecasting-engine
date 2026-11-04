@@ -434,7 +434,8 @@ TERMS: Mapping[str, str] = {
         "One optimiser-and-backtest result, recorded the first time the Portfolio page "
         "showed it. Its key is a fingerprint of everything the result depends on, so "
         "viewing the same settings again records nothing new, and any change (a "
-        "slider, an active model, the data, the code) is a new row."
+        "slider, an active model, the data, the code) is a new, numbered run. Opening "
+        "one shows what was saved then, without refitting or changing the active models."
     ),
     "Config key": (
         "Runs with the same settings on the same data share a key. More than one means "

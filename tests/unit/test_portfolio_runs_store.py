@@ -10,13 +10,22 @@ import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.backtest import run_backtest
+from forecasting_engine.reporting.model_metrics import ModelRunResult
+from forecasting_engine.store.active_model import set_active_model
 from forecasting_engine.store.portfolio_runs import (
     PortfolioInputs,
+    get_saved_run,
+    has_results,
+    latest_simulation,
     list_portfolio_runs,
     portfolio_run_weights,
     portfolio_runs_table,
     record_portfolio_run,
+    rename_portfolio_run,
+    save_simulation,
+    saved_paths,
 )
+from forecasting_engine.validation.crash import CrashDiagnostics
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 
@@ -196,3 +205,148 @@ def test_the_table_pulls_the_inputs_that_vary_and_both_net_sharpes(db):
     assert row.risk_level == 3 and row.min_weight == 0.2
     assert row.net_sharpe == pytest.approx(RESULT.metrics[("optimised", "net")].sharpe)
     assert row.baseline_net_sharpe == pytest.approx(RESULT.metrics[("baseline", "net")].sharpe)
+
+
+# --- FYP-275: run numbers, names and saved results ---------------------------------
+
+
+RESULTS = {"bases": {"net": {"comparison": [{"metric": "Sharpe", "optimised": "1.10"}]}}}
+
+
+def _numbers(db):
+    table = portfolio_runs_table(db_path=db)
+    return dict(zip(table["run_key"], table["run_number"], strict=True))
+
+
+def test_runs_are_numbered_in_the_order_they_were_first_recorded(db):
+    second, third = replace(INPUTS, risk_level=5), replace(INPUTS, risk_level=1)
+    for inputs in (INPUTS, second, third):
+        _record(db, inputs)
+    _record(db, INPUTS)  # shown again: still run 1, and no number used up
+
+    assert _numbers(db) == {INPUTS.run_key: 1, second.run_key: 2, third.run_key: 3}
+    assert list(portfolio_runs_table(db_path=db)["run_number"]) == [3, 2, 1]
+
+
+def test_runs_recorded_before_there_were_numbers_get_them_oldest_first(db):
+    _record(db)
+    newer = replace(INPUTS, risk_level=5)
+    _record(db, newer)
+    with duckdb.connect(str(db)) as conn:
+        conn.execute("DROP TABLE portfolio_run_labels")
+
+    assert _numbers(db) == {INPUTS.run_key: 1, newer.run_key: 2}
+    third = replace(INPUTS, risk_level=1)
+    _record(db, third)
+    assert _numbers(db)[third.run_key] == 3
+
+
+def test_a_run_can_be_named_renamed_and_have_its_name_cleared(db):
+    _record(db)
+    assert portfolio_runs_table(db_path=db)["name"].isna().all()
+
+    rename_portfolio_run(INPUTS.run_key, "  Before the rate cut  ", db_path=db)
+    assert list(portfolio_runs_table(db_path=db)["name"]) == ["Before the rate cut"]
+
+    rename_portfolio_run(INPUTS.run_key, "Second try", db_path=db)
+    assert list(portfolio_runs_table(db_path=db)["name"]) == ["Second try"]
+
+    rename_portfolio_run(INPUTS.run_key, "   ", db_path=db)
+    assert portfolio_runs_table(db_path=db)["name"].isna().all()
+    assert _numbers(db) == {INPUTS.run_key: 1}, "a name is not part of a run's identity"
+
+
+def test_the_table_names_each_runs_models_even_after_others_are_set(db):
+    forecast = pd.Series([0.01], index=pd.bdate_range("2024-01-01", periods=1))
+    result = ModelRunResult(
+        ic=0.1,
+        oos_rank_ic=0.1,
+        rmse=0.1,
+        crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=1),
+        forecast=forecast,
+    )
+    settings = {
+        "high_risk": False,
+        "horizon": 20,
+        "train_window": 504,
+        "test_window": 20,
+        "dataset_fingerprint": "fp",
+        "db_path": db,
+    }
+    set_active_model(EQUITY, "Polynomial", result, set_at=INPUTS.equity_set_at, **settings)
+    set_active_model(BOND, "FF5 Benchmark", result, set_at=INPUTS.bond_set_at, **settings)
+    _record(db)
+    set_active_model(EQUITY, "Machine Learning", result, **settings)
+
+    (row,) = portfolio_runs_table(db_path=db).itertuples()
+    assert row.equity_model == "Polynomial"
+    assert row.bond_model == "FF5 Benchmark"
+
+
+def test_saved_results_come_back_whole_under_their_run(db):
+    assert not has_results(INPUTS.run_key, db_path=db)
+    record_portfolio_run(INPUTS, RESULT, SCHEDULE, results=RESULTS, db_path=db)
+
+    assert has_results(INPUTS.run_key, db_path=db)
+    run = get_saved_run(INPUTS.run_key, db_path=db)
+    assert run.results == RESULTS
+    assert (run.run_number, run.name, run.code_version) == (1, None, "abc1234")
+
+
+def test_a_run_recorded_before_results_were_saved_cannot_be_opened_until_shown_again(db):
+    _record(db)
+    assert get_saved_run(INPUTS.run_key, db_path=db) is None
+    assert not portfolio_runs_table(db_path=db)["has_results"].any()
+    assert saved_paths(INPUTS.run_key, db_path=db) is None
+
+    assert not record_portfolio_run(INPUTS, RESULT, SCHEDULE, results=RESULTS, db_path=db)
+
+    assert get_saved_run(INPUTS.run_key, db_path=db).results == RESULTS
+    assert portfolio_runs_table(db_path=db)["has_results"].all()
+
+
+def test_the_first_results_saved_for_a_run_are_kept(db):
+    record_portfolio_run(INPUTS, RESULT, SCHEDULE, results=RESULTS, db_path=db)
+    record_portfolio_run(INPUTS, RESULT, SCHEDULE, results={"other": 1}, db_path=db)
+
+    assert get_saved_run(INPUTS.run_key, db_path=db).results == RESULTS
+    assert _count(db, "portfolio_run_daily") == len(RESULT.optimised.gross)
+
+
+def test_saved_paths_give_back_exactly_the_returns_that_were_recorded(db):
+    record_portfolio_run(INPUTS, RESULT, SCHEDULE, results=RESULTS, db_path=db)
+
+    saved = saved_paths(INPUTS.run_key, db_path=db)
+
+    for basis in ("gross", "net"):
+        for portfolio in ("optimised", "baseline"):
+            mine, theirs = getattr(saved, portfolio), getattr(RESULT, portfolio)
+            np.testing.assert_array_equal(getattr(mine, basis), getattr(theirs, basis))
+    assert saved.optimised.net.index.equals(RESULT.optimised.net.index)
+    for role in (EQUITY, BOND):
+        np.testing.assert_array_equal(saved.index_returns[role], RESULT.index_returns[role])
+    assert saved.start == RESULT.start and saved.end == RESULT.end
+    np.testing.assert_allclose(saved.optimised.weights[EQUITY], SCHEDULE[EQUITY])
+
+
+def test_results_and_daily_returns_are_all_or_nothing(db):
+    with pytest.raises(TypeError):
+        record_portfolio_run(INPUTS, RESULT, SCHEDULE, results={"bad": object()}, db_path=db)
+
+    assert _count(db, "portfolio_runs") == 0
+    assert _count(db, "portfolio_run_labels") == 0
+    assert _count(db, "portfolio_run_daily") == 0
+
+
+def test_simulations_are_kept_per_method_and_paths_with_the_latest_returned(db):
+    _record(db)
+    assert latest_simulation(INPUTS.run_key, db_path=db) is None
+    first = {"method": "bootstrap", "paths": 1000, "rows": ["a"]}
+    second = {"method": "parametric", "paths": 1000, "rows": ["b"]}
+
+    save_simulation(INPUTS.run_key, first, recorded_at=datetime(2026, 10, 21), db_path=db)
+    save_simulation(INPUTS.run_key, second, recorded_at=datetime(2026, 10, 22), db_path=db)
+    save_simulation(INPUTS.run_key, first, recorded_at=datetime(2026, 10, 20), db_path=db)
+
+    assert latest_simulation(INPUTS.run_key, db_path=db) == second
+    assert _count(db, "portfolio_run_simulations") == 2

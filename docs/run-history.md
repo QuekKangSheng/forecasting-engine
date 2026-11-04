@@ -74,15 +74,33 @@ times. `store/portfolio_runs.py` records each **distinct** result once.
   moved and moved back adds one.
 - **Insert, not upsert.** `DO UPDATE SET last_seen = now()` would record when a result
   was last viewed, but by rewriting rows; `DO NOTHING` keeps the log append-only.
-- **Store what can't be recomputed.** Metrics and the weight schedule are kept; the
-  daily return paths (about 8,000 rows a run) follow from the inputs and the stored
-  data, so they aren't.
+- **A snapshot, not a recomputation.** Opening an old run (FYP-267) must not refit or
+  re-solve anything, and must show what the page showed. Recomputing from the inputs
+  needs the data file to still exist and gives today's code's answer, so a run keeps
+  what it showed: its rows on both bases as one JSON document, and its daily returns.
+  That reverses an earlier choice not to store the daily returns; one wide row a day
+  is about 2,000 rows a run, which DuckDB's columns compress well.
+- **A number and a name, kept apart.** Runs are numbered in the order first recorded.
+  The number's uniqueness is a real constraint (`UNIQUE`), and the same statement that
+  numbers a new run also numbered the runs recorded before numbers existed, oldest
+  first. The user-given name is the one thing here that can change, so it lives in
+  `portfolio_run_labels` and `portfolio_runs` stays append-only. A name is not an input:
+  renaming a run doesn't change its key.
+- **Which models.** A run stores when each active model was set, and `active_models` is
+  append-only, so joining on that time finds the models whichever are active now.
+- **Older runs.** A run recorded before results were saved is listed but can't be
+  opened. Its results are saved the next time the same inputs are shown, on the same
+  code; until then there is nothing to open, and they aren't guessed at.
 
 | Table | One row per | Key |
 |---|---|---|
 | `portfolio_runs` | distinct set of inputs | `run_key` |
 | `portfolio_run_metrics` | run × portfolio × basis × metric | `(run_key, portfolio, basis, metric)` |
 | `portfolio_run_weights` | run × rebalance | `(run_key, date)` |
+| `portfolio_run_labels` | run | `run_key`, with `run_number` unique |
+| `portfolio_run_results` | run | `run_key` |
+| `portfolio_run_daily` | run × day | `(run_key, date)` |
+| `portfolio_run_simulations` | run × method × paths | `(run_key, method, paths)` |
 
 ## Lineage
 

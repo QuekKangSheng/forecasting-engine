@@ -5,6 +5,7 @@ import json
 import re
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 import pytest
@@ -17,6 +18,7 @@ from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
+from forecasting_engine.reporting.portfolio_comparison import NOT_RUN
 from forecasting_engine.store import active_model, portfolio_runs
 from forecasting_engine.validation.crash import CrashDiagnostics
 
@@ -958,3 +960,179 @@ def test_a_recorded_run_names_the_data_and_settings_it_came_from():
     (run,) = portfolio_runs.list_portfolio_runs()
     assert run.dataset_sha256 == frame_sha256(_committed())
     assert run.inputs["risk_level"] == 3 and run.inputs["bounds"] == [0.2, 0.8]
+
+
+# --- FYP-275 to FYP-278: reopening a saved run from Run history -----------------------
+
+RUN_HISTORY = Path(__file__).resolve().parents[2] / "app" / "app_pages" / "5_Run_History.py"
+
+
+def _history() -> AppTest:
+    """Run history in a session of its own, as after a restart: only DuckDB carries over."""
+    return AppTest.from_file(str(RUN_HISTORY), default_timeout=30).run()
+
+
+def _open(history: AppTest, number: int = 1) -> AppTest:
+    table = portfolio_runs.portfolio_runs_table()
+    key = table.loc[table["run_number"] == number, "run_key"].item()
+    history.button(key=f"open_run_{key}").click().run()
+    assert not history.exception
+    return history
+
+
+def _saved_table(history: AppTest, column: str) -> pd.DataFrame:
+    return next(d.value for d in history.tabs[1].dataframe if column in d.value.columns)
+
+
+def _page_table(app: AppTest) -> str:
+    return next(m.value for m in app.markdown if "<th>Metric</th>" in m.value)
+
+
+def test_the_run_table_lists_number_name_timestamp_models_and_risk_level():
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0), name="FF5 Benchmark")
+    _page(committed)
+
+    tab = _history().tabs[1]
+
+    text = " ".join(t.value for t in tab.text)
+    assert "Polynomial" in text and "FF5 Benchmark" in text
+    assert [t.value for t in tab.text][-1] == "3", "the page's default risk level"
+    assert any(m.value == "**1**" for m in tab.markdown)
+    assert [c.value for c in tab.caption][:6] == [
+        "Run", "Name", "First shown", "Equity model", "Bond model", "Risk",
+    ]
+
+
+def test_each_new_setting_is_the_next_run_number():
+    app = _happy_page()
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+    scale.set_value(5).run()
+    scale.set_value(3).run()  # back to one already seen: no new number
+
+    table = portfolio_runs.portfolio_runs_table()
+    assert list(table["run_number"]) == [2, 1]
+    assert list(table["risk_level"]) == [5, 3]
+
+
+def test_a_run_name_can_be_edited_and_survives_a_restart():
+    _happy_page()
+    history = _history()
+    (name,) = history.tabs[1].text_input
+    assert name.value == ""
+
+    name.set_value("Before the rate cut").run()
+
+    assert not history.exception
+    (reloaded,) = _history().tabs[1].text_input
+    assert reloaded.value == "Before the rate cut"
+    assert list(portfolio_runs.portfolio_runs_table()["run_number"]) == [1]
+
+
+def test_opening_a_run_shows_the_figures_the_portfolio_page_showed():
+    app = _happy_page()
+    page_table = _page_table(app)
+    weights = [m.value for m in app.metric]
+    significance = _significance_text(app)
+
+    history = _open(_history())
+
+    tab = history.tabs[1]
+    assert [m.value for m in tab.metric] == weights
+    table = _saved_table(history, "Metric")
+    for row in table.itertuples(index=False):
+        for cell in row:
+            assert f">{cell}<" in page_table or cell in page_table
+    text = " ".join(m.value for m in tab.markdown)
+    for figure in significance:
+        assert figure in text
+    assert _saved_table(history, "Measure")["Measure"].str.contains("VaR").any()
+
+
+def _significance_text(app: AppTest) -> list[str]:
+    """Both t-statistics as the page words them: each status row's t and verdict."""
+    rows = [m.value for m in app.markdown if "t = " in m.value and "fe-row" in m.value]
+    assert len(rows) == 2
+    return [re.search(r"t = (-?\d+\.\d\d|—)", row).group(0) for row in rows]
+
+
+def test_an_opened_runs_charts_are_the_page_s_charts():
+    app = _happy_page()
+    history = _open(_history())
+
+    for value in ("Rolling volatility", "Drawdown", "Rolling Sharpe"):
+        saved = _line_data(history, value)
+        live = _line_data(app, value)
+        pd.testing.assert_frame_equal(saved, live, check_names=False, check_freq=False)
+
+
+def test_an_opened_run_follows_the_before_costs_toggle_with_its_saved_figures():
+    app = _happy_page()
+    (live_basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+    live_basis.set_value("Before costs").run()
+    page_table = _page_table(app)
+    history = _open(_history())
+    run_basis = next(c for c in history.tabs[1].segmented_control if c.label == "Returns")
+
+    run_basis.set_value("Before costs").run()
+
+    for sharpe in _saved_table(history, "Metric").iloc[:, 1]:
+        assert sharpe in page_table
+
+
+def test_opening_a_run_refits_nothing_and_leaves_the_active_models(monkeypatch):
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0))
+    _page(committed)
+    # A later switch: the old run must still open as it was, and not switch back.
+    _set_active(EQUITY, forecast=_leaning(committed, -0.05), name="Machine Learning")
+    before = active_model.get_active_model(EQUITY)
+
+    def refused(*_args, **_kwargs):
+        raise AssertionError("opening a saved run must not solve or backtest anything")
+
+    monkeypatch.setattr("forecasting_engine.portfolio.optimize.schedule_breakdowns", refused)
+    monkeypatch.setattr("forecasting_engine.portfolio.backtest.run_backtest", refused)
+    history = _open(_history())
+
+    assert any("Polynomial" in c.value for c in history.tabs[1].caption)
+    assert active_model.get_active_model(EQUITY) == before
+
+
+def test_a_simulated_run_opens_with_its_simulation():
+    app = _run_simulation(_happy_page())
+    assert _simulation_table(app)
+
+    history = _open(_history())
+
+    tail = _saved_table(history, "Method")
+    assert NOT_RUN not in set(tail["Optimised"])
+    assert any("100,000 paths" in c.value for c in history.tabs[1].caption)
+
+
+def test_an_unsimulated_run_opens_with_monte_carlo_not_run():
+    _happy_page()
+
+    tail = _saved_table(_open(_history()), "Method")
+
+    monte_carlo = tail[tail["Method"].str.startswith("Monte Carlo")]
+    assert len(monte_carlo) and set(monte_carlo["Optimised"]) == {NOT_RUN}
+
+
+def test_a_run_saved_before_results_were_kept_cannot_be_opened_but_can_be_listed():
+    app = _happy_page()
+    with duckdb.connect("data/forecasting.duckdb") as conn:
+        conn.execute("DELETE FROM portfolio_run_results")
+        conn.execute("DELETE FROM portfolio_run_daily")
+
+    tab = _history().tabs[1]
+
+    (button,) = [b for b in tab.button if b.label == "Open"]
+    assert button.disabled and "before results were saved" in button.proto.help
+    # Shown again, the same run gets its results rather than a new number.
+    app.run()
+    (button,) = [b for b in _history().tabs[1].button if b.label == "Open"]
+    assert not button.disabled
+    assert list(portfolio_runs.portfolio_runs_table()["run_number"]) == [1]
