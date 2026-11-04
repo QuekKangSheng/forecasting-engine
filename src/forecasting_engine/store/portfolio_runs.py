@@ -361,6 +361,19 @@ def save_simulation(
         )
 
 
+def saved_simulation(
+    run_key: str, method: str, paths: int, *, db_path: Path = DEFAULT_DB_PATH
+) -> Mapping | None:
+    """The run's simulation by this method and paths, or ``None`` if it wasn't run."""
+    with connect(db_path, _OPEN_TABLES) as conn:
+        row = conn.execute(
+            "SELECT results FROM portfolio_run_simulations "
+            "WHERE run_key = ? AND method = ? AND paths = ?",
+            [run_key, method, paths],
+        ).fetchone()
+    return None if row is None else json.loads(row[0])
+
+
 def latest_simulation(run_key: str, *, db_path: Path = DEFAULT_DB_PATH) -> Mapping | None:
     """The run's most recent simulation, or ``None`` if none was run."""
     with connect(db_path, _OPEN_TABLES) as conn:

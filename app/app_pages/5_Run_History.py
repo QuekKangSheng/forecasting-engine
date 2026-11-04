@@ -36,9 +36,9 @@ st.caption(
 OPEN_RUN_KEY = "open_portfolio_run"
 RUNS_PER_PAGE = 20
 RUN_NAME_MAX_CHARS = 80
-#: Run, name, first shown, equity model, bond model, risk level, open.
-RUN_COLUMNS = [0.5, 2.2, 1.5, 1.5, 1.5, 0.6, 0.9]
-RUN_HEADINGS = ["Run", "Name", "First shown", "Equity model", "Bond model", "Risk", ""]
+#: Run, name, first shown, equity model, bond model, risk level, open, report.
+RUN_COLUMNS = [0.5, 2.0, 1.4, 1.4, 1.4, 0.5, 0.9, 1.0]
+RUN_HEADINGS = ["Run", "Name", "First shown", "Equity model", "Bond model", "Risk", "", ""]
 
 
 def _model_fits() -> None:
@@ -248,6 +248,12 @@ def _run_row(row) -> None:
         on_click=_open_run,
         args=(row.run_key,),
     )
+    if row.has_results:
+        saved_run.report_button(cols[7], row.run_key, label="Report", number=row.run_number)
+    else:
+        cols[7].button(
+            "Report", key=f"no_report_{row.run_key}", disabled=True, help=NOT_SAVED
+        )
 
 
 NOT_SAVED = (

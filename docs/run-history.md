@@ -102,6 +102,28 @@ times. `store/portfolio_runs.py` records each **distinct** result once.
 | `portfolio_run_daily` | run × day | `(run_key, date)` |
 | `portfolio_run_simulations` | run × method × paths | `(run_key, method, paths)` |
 
+## Run report
+
+The Portfolio page and each Portfolio runs row on the **Run history** page offer a
+report of the run (FYP-266): one HTML file, which needs no connection to read and
+prints to PDF from any browser. `reporting/run_report.py` writes it only from what
+`store/portfolio_runs.py` saved for the run, so generating it solves nothing, and
+Streamlit runs it only when the button is clicked. Its tables are the Portfolio page's
+own rows on both bases; its charts come from the saved daily returns through the same
+functions as the page's charts, thinned to about 400 points a line, always keeping each
+line's highest and lowest day.
+
+Two things are saved with a run for it:
+
+- **The data quality summary and each active model**, when the run is first recorded:
+  gate results, the polynomial's terms and coefficients, and per-signal SHAP. SHAP is
+  stored with the model when it is set active (`active_model_attribution`). A model set
+  active before that says "not saved" rather than showing nothing or zero; setting it
+  active again saves it, which is a new active model and so a new run.
+- **Monte Carlo**, when a simulation is run. From the Portfolio page the report includes
+  only the simulation the page is showing, and otherwise says "Not run", so the two
+  agree. From Run history it includes the run's most recent simulation.
+
 ## Lineage
 
 Every figure on the Portfolio page can be traced back to the Bloomberg files behind it:

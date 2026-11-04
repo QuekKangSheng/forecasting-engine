@@ -511,6 +511,24 @@ def test_setting_machine_learning_active_stores_no_function():
     assert active_model.get_active_function(EQUITY) is None
 
 
+def test_setting_machine_learning_active_stores_its_attribution_for_the_run_report():
+    run = _ml_run()
+    app = _page({EQUITY: {"Machine Learning": run}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert active_model.get_active_attribution(EQUITY) == dict(
+        zip(run.description.terms, run.description.coefficients, strict=True)
+    )
+
+
+def test_setting_a_polynomial_active_stores_its_shap_for_the_run_report():
+    shap = ModelDescription(name="Derived", terms=("VIX_Index_PX_LAST",), coefficients=(0.002,))
+    app = _page({EQUITY: {POLY: replace(_polynomial_run(), shap=shap)}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert active_model.get_active_attribution(EQUITY) == {"VIX_Index_PX_LAST": 0.002}
+
+
 def test_setting_a_new_active_model_replaces_the_prior_one():
     app = _page({EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run()}})
     (select,) = app.selectbox

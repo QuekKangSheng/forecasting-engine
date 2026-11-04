@@ -1,11 +1,12 @@
 """One portfolio run opened from the Run history page: what the Portfolio page showed
 for it, read back from ``store/portfolio_runs``. Nothing here fits a model, solves the
-optimiser or sets an active model."""
+optimiser or sets an active model. The same saved results make its report."""
 
 from __future__ import annotations
 
 import html
 from collections.abc import Mapping, Sequence
+from functools import partial
 
 import pandas as pd
 import streamlit as st
@@ -21,10 +22,51 @@ from forecasting_engine.reporting.portfolio_comparison import (
     rolling_sharpe_paths,
     rolling_volatility_paths,
 )
+from forecasting_engine.reporting.run_report import report_html
 from forecasting_engine.reporting.run_results import BASIS_LABELS, tail_with_simulation
 from forecasting_engine.store import portfolio_runs
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
+
+
+def report_bytes(
+    run_key: str, *, simulation: tuple[str, int] | None = None, latest_saved: bool = True
+) -> bytes:
+    """A run's report, written from what was saved for it. ``simulation`` is the method
+    and paths to include; otherwise ``latest_saved`` says whether to use the run's most
+    recent simulation (Run history) or show Monte Carlo as not run (a Portfolio page
+    that isn't showing one)."""
+    run = portfolio_runs.get_saved_run(run_key)
+    if simulation is not None:
+        simulated = portfolio_runs.saved_simulation(run_key, *simulation)
+    else:
+        simulated = portfolio_runs.latest_simulation(run_key) if latest_saved else None
+    return report_html(run, portfolio_runs.saved_paths(run_key), simulated).encode("utf-8")
+
+
+def report_button(
+    container,
+    run_key: str,
+    *,
+    simulation: tuple[str, int] | None = None,
+    latest_saved: bool = True,
+    label: str = "Download run report",
+    number: int | None = None,
+) -> None:
+    """Generated on the click, not on every rerun of the page. ``on_click="ignore"``
+    since downloading changes nothing the page shows."""
+    if number is None:
+        number = portfolio_runs.get_saved_run(run_key).run_number
+    container.download_button(
+        label,
+        data=partial(report_bytes, run_key, simulation=simulation, latest_saved=latest_saved),
+        file_name=f"run-{number}-report.html",
+        mime="text/html",
+        key=f"report_{run_key}",
+        on_click="ignore",
+        icon=":material/download:",
+        help="One HTML file to read offline: open it in any browser, or print it to PDF.",
+    )
 
 
 def title(run: portfolio_runs.SavedRun) -> str:

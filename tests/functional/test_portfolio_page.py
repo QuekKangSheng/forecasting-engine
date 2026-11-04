@@ -14,10 +14,13 @@ from streamlit.testing.v1 import AppTest
 
 import bloomberg_extraction_panel
 import model_settings
+import saved_run
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest.align import Transform
 from forecasting_engine.ingest.upload import frame_sha256
+from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult
-from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
+from forecasting_engine.reporting.polynomial_function import Origin, dataset_fingerprint
 from forecasting_engine.reporting.portfolio_comparison import NOT_RUN
 from forecasting_engine.store import active_model, portfolio_runs
 from forecasting_engine.validation.crash import CrashDiagnostics
@@ -1136,3 +1139,122 @@ def test_a_run_saved_before_results_were_kept_cannot_be_opened_but_can_be_listed
     (button,) = [b for b in _history().tabs[1].button if b.label == "Open"]
     assert not button.disabled
     assert list(portfolio_runs.portfolio_runs_table()["run_number"]) == [1]
+
+
+# --- FYP-270 to FYP-274: the downloadable run report ----------------------------------
+
+
+def _run_key() -> str:
+    return portfolio_runs.portfolio_runs_table()["run_key"].item()
+
+
+def _cells(table: str) -> list[str]:
+    """Every cell of a page's hand-built table, its help icon left out."""
+    return [
+        html.unescape(re.sub(r"<span.*?</span>", "", cell))
+        for cell in re.findall(r"<td[^>]*>(.*?)</td>", table)
+    ]
+
+
+def _report() -> str:
+    return html.unescape(saved_run.report_bytes(_run_key(), latest_saved=False).decode("utf-8"))
+
+
+def test_the_report_is_offered_from_the_portfolio_page_and_each_run_row():
+    app = _happy_page()
+
+    (button,) = app.get("download_button")
+    assert button.proto.label == "Download run report"
+    (row,) = _history().tabs[1].get("download_button")
+    assert row.proto.label == "Report"
+
+
+def test_every_figure_in_the_report_matches_the_page_on_both_bases():
+    app = _happy_page()
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+    pages = {}
+    for label in ("After costs", "Before costs"):
+        basis.set_value(label).run()
+        pages[label] = [m.value for m in app.markdown]
+    weights = [m.value for m in app.metric]
+    report = _report()
+
+    for label, markdown in pages.items():
+        tables = [m for m in markdown if "<table" in m]
+        assert len(tables) == 2, "the comparison and tail tables"
+        for table in tables:
+            for cell in _cells(table):
+                assert cell in report, f"{label}: {cell}"
+        for row in (m for m in markdown if "t = " in m and "fe-row" in m):
+            assert re.search(r"t = (-?\d+\.\d\d|—)", row).group(1) in report
+    for weight in weights:
+        assert weight in report
+
+
+def test_the_report_repeats_how_the_page_said_the_weights_were_set():
+    app = _happy_page()
+    how_set = next(c.value for c in app.caption if c.value.startswith("How this was set"))
+
+    assert how_set in _report()
+
+
+def test_generating_the_report_refits_and_resolves_nothing(monkeypatch):
+    _happy_page()
+
+    def refused(*_args, **_kwargs):
+        raise AssertionError("a report must be written from the saved run")
+
+    monkeypatch.setattr("forecasting_engine.portfolio.optimize.schedule_breakdowns", refused)
+    monkeypatch.setattr("forecasting_engine.portfolio.backtest.run_backtest", refused)
+    monkeypatch.setattr("forecasting_engine.portfolio.backtest.chain", refused)
+
+    assert "Spread t-statistics" in _report()
+
+
+def test_a_page_not_showing_a_simulation_reports_monte_carlo_as_not_run():
+    app = _run_simulation(_happy_page())
+    (method,) = [c for c in app.segmented_control if c.label == "Sampling method"]
+    method.set_value("parametric").run()  # the saved bootstrap no longer answers the page
+
+    assert f"<h2>Monte Carlo</h2><p>{NOT_RUN}.</p>" in _report()
+
+
+def test_a_page_showing_a_simulation_reports_those_figures():
+    app = _run_simulation(_happy_page())
+    table = _simulation_table(app)
+
+    report = html.unescape(
+        saved_run.report_bytes(_run_key(), simulation=("bootstrap", 100_000)).decode("utf-8")
+    )
+
+    assert "100,000 paths" in report
+    for cell in _cells(table):
+        assert cell in report
+    assert f"<h2>Monte Carlo</h2><p>{NOT_RUN}" not in report
+
+
+def test_a_row_in_run_history_reports_its_latest_simulation():
+    _run_simulation(_happy_page())
+
+    assert "100,000 paths" in saved_run.report_bytes(_run_key()).decode("utf-8")
+
+
+def test_the_report_carries_the_data_quality_models_and_their_functions():
+    committed = _committed()
+    function = active_model.ActiveFunction(
+        Origin.DERIVED,
+        ModelDescription(name="Derived", terms=("SIGNAL",), coefficients=(0.0123,), intercept=0.01),
+        {"SIGNAL": Transform.LEVEL},
+    )
+    shap = ModelDescription(name="Derived", terms=("SIGNAL",), coefficients=(0.0045,))
+    _set_active(EQUITY, forecast=_leaning(committed, 0.05), function=function, attribution=shap)
+    _set_active(BOND, forecast=_leaning(committed, 0.0), name="Machine Learning")
+    _page(committed)
+
+    report = _report()
+
+    assert f"<td>Rows</td><td>{len(committed)}</td>" in report
+    assert "S&P 500: Polynomial" in report
+    assert "0.0123" in report and "0.004500" in report
+    assert "not a polynomial" in report
+    assert "Gate result not saved" in report, "these fixtures have no recorded run"

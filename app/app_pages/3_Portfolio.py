@@ -21,7 +21,9 @@ import bloomberg_extraction_panel
 import charts
 import glossary
 import portfolio_summary
+import saved_run
 import ui
+from forecasting_engine.extraction import validation
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.upload import frame_sha256
@@ -49,7 +51,12 @@ from forecasting_engine.reporting.portfolio_comparison import (
     significance_summary,
     tail_rows,
 )
-from forecasting_engine.reporting.run_results import run_results, simulation_results
+from forecasting_engine.reporting.run_results import (
+    data_quality_summary,
+    model_summary,
+    run_results,
+    simulation_results,
+)
 from forecasting_engine.risk import monte_carlo
 from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, TAIL_METHODS
 from forecasting_engine.store import active_model, portfolio_runs
@@ -168,6 +175,8 @@ st.markdown(
     ),
     unsafe_allow_html=True,
 )
+# FYP-273: filled at the end of the page, once the run and any simulation are known.
+report_slot = st.container()
 
 with st.expander("Settings"):
     risk_level = st.select_slider(
@@ -371,6 +380,30 @@ try:
                 "rolling_volatility": ROLLING_VOL_WINDOW,
                 "rolling_sharpe": ROLLING_SHARPE_WINDOW,
             },
+            data_quality=data_quality_summary(
+                st.session_state.get(bloomberg_extraction_panel.COMMITTED_REPORT_KEY)
+                or validation.validate(merged),
+                merged,
+                st.session_state.get(bloomberg_extraction_panel.COMMITTED_DROPPED_KEY, []),
+            ),
+            models=[
+                model_summary(
+                    name,
+                    record,
+                    display_name=display_model_name(record.model_name),
+                    signal_t=(
+                        run_history.run_metrics(record.run_id).get("signal_t")
+                        if record.run_id
+                        else None
+                    ),
+                    function=active_model.get_active_function(record.role),
+                    attribution=active_model.get_active_attribution(record.role),
+                    label=label,
+                    target=target_columns[record.role],
+                    columns=numeric_cols,
+                )
+                for name, record in ((equity_name, equity_active), (bond_name, bond_active))
+            ],
         )
     )
     portfolio_runs.record_portfolio_run(run_inputs, backtest, schedule, results=results)
@@ -776,4 +809,17 @@ else:
         f"({simulated.history_days} trading days). VaR and CVaR here are losses over the "
         f"whole {simulated.horizon} days; the one-day Monte Carlo rows above are the first "
         "day of these same paths. Both portfolios are simulated on the same paths."
+    )
+
+
+# --- FYP-273: the same run as a file to read offline -----------------------------------
+
+# Only once its results are saved: the report is written from them, not from this page,
+# so generating it solves nothing. A simulation counts only if the page is showing it.
+if portfolio_runs.has_results(run_inputs.run_key):
+    saved_run.report_button(
+        report_slot,
+        run_inputs.run_key,
+        simulation=None if simulated is None else (simulated.method, simulated.paths),
+        latest_saved=False,
     )
