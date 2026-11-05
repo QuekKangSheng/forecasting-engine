@@ -305,10 +305,17 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
     release; LightGBM's own documentation expects results to differ across
     systems and versions. So the same run on a laptop and on the hosted app can
     tune or fit slightly differently, and at the margin pick the other library.
-    The polynomial models, by contrast, reproduce across machines: their fits are
-    deterministic, and the shrinkage candidate's sampler is seeded, so the same data
-    and settings give the same equation on any machine, to within floating-point
-    rounding far below any digit shown.
+    The polynomial models, by contrast, reproduce across machines on the same
+    library versions. The lasso, elastic-net and least-squares fits are
+    deterministic, so the same data and settings give the same equation on any
+    machine, to within floating-point rounding far below any digit shown. The
+    shrinkage candidate and the fixed-economic-inputs polynomial draw their slopes
+    with a seeded Gibbs sampler: the same on any one machine, and on another the
+    same draws unless a rounding difference flips one of the sampler's
+    accept-or-reject steps, which would move a slope by Monte Carlo error (a
+    small fraction of its posterior spread, since thousands of draws are
+    averaged) rather than by rounding. A NumPy, SciPy or
+    scikit-learn upgrade can change any of these fits slightly.
   - The first tune uses the `TUNING_ROWS` rows before the first test window,
     with `N_TRIALS` trials.
   - A re-tune happens at the first fold whose test window opens `RETUNE_EVERY`
