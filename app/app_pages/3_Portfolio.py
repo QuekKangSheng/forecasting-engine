@@ -367,6 +367,7 @@ try:
                 "risk_level": risk_level,
                 "bounds": [lower, upper],
                 "costs_bps": {role.value: cost for role, cost in backtest.costs_bps.items()},
+                "risk_free_rate": backtest.risk_free_rate,
                 "horizon": equity_active.horizon,
                 "train_window": TRAIN_WINDOW,
                 "test_window": equity_active.test_window,

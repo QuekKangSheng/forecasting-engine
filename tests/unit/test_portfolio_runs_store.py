@@ -329,6 +329,20 @@ def test_saved_paths_give_back_exactly_the_returns_that_were_recorded(db):
     np.testing.assert_allclose(saved.optimised.weights[EQUITY], SCHEDULE[EQUITY])
 
 
+@pytest.mark.parametrize(
+    "settings, rate",
+    [({"risk_free_rate": 0.04}, 0.04), ({}, 0.0)],
+    ids=["kept with the run", "saved before it was kept"],
+)
+def test_saved_paths_carry_the_risk_free_rate_the_run_was_shown_with(db, settings, rate):
+    # The charts of an opened run are redrawn from its daily returns, and a rolling
+    # Sharpe depends on the rate: a later change to the app's rate must not redraw it.
+    results = {**RESULTS, "settings": settings}
+    record_portfolio_run(INPUTS, RESULT, SCHEDULE, results=results, db_path=db)
+
+    assert saved_paths(INPUTS.run_key, db_path=db).risk_free_rate == rate
+
+
 def test_results_and_daily_returns_are_all_or_nothing(db):
     with pytest.raises(TypeError):
         record_portfolio_run(INPUTS, RESULT, SCHEDULE, results={"bad": object()}, db_path=db)

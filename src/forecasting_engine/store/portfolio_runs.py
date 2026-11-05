@@ -124,6 +124,10 @@ WHERE run_key NOT IN (SELECT run_key FROM portfolio_run_labels);
 
 _OPEN_TABLES = _CREATE_TABLES + _NUMBER_NEW_RUNS
 
+#: The rate every run saved before the rate was kept with its results used: the app's
+#: only risk-free rate until then.
+_RISK_FREE_RATE_BEFORE_SAVED = 0.0
+
 
 @dataclass(frozen=True)
 class PortfolioInputs:
@@ -309,14 +313,23 @@ def get_saved_run(run_key: str, *, db_path: Path = DEFAULT_DB_PATH) -> SavedRun 
 def saved_paths(run_key: str, *, db_path: Path = DEFAULT_DB_PATH) -> BacktestResult | None:
     """The run's daily returns and weights in a ``BacktestResult``, so the charts are
     drawn by the same functions as the live page's. Paths only: its metrics, turnover
-    and costs are empty, since those are in the saved results. ``None`` without any."""
+    and costs are empty, since those are in the saved results. ``None`` without any.
+
+    It carries the risk-free rate the run was shown with, so its rolling Sharpe is
+    redrawn as it was even if the app's rate has changed since."""
     with connect(db_path, _OPEN_TABLES) as conn:
         daily = conn.execute(
             "SELECT * EXCLUDE (run_key) FROM portfolio_run_daily WHERE run_key = ? ORDER BY date",
             [run_key],
         ).df()
+        rate = conn.execute(
+            "SELECT CAST(results -> 'settings' ->> 'risk_free_rate' AS DOUBLE) "
+            "FROM portfolio_run_results WHERE run_key = ?",
+            [run_key],
+        ).fetchone()
     if daily.empty:
         return None
+    risk_free_rate = _RISK_FREE_RATE_BEFORE_SAVED if rate is None or rate[0] is None else rate[0]
     daily.index = pd.to_datetime(daily.pop("date"))
     weights = portfolio_run_weights(run_key, db_path=db_path)
     schedule = pd.DataFrame({TargetRole.EQUITY: weights, TargetRole.BOND: 1 - weights})
@@ -336,6 +349,7 @@ def saved_paths(run_key: str, *, db_path: Path = DEFAULT_DB_PATH) -> BacktestRes
         metrics={},
         relative={},
         costs_bps={},
+        risk_free_rate=risk_free_rate,
     )
 
 
