@@ -14,6 +14,7 @@ from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.reporting.polynomial_function import Origin
 from forecasting_engine.store.active_model import (
     ActiveFunction,
+    get_active_attribution,
     get_active_function,
     get_active_model,
     get_active_model_baseline,
@@ -404,3 +405,56 @@ def test_a_setting_that_fails_part_way_leaves_nothing_behind(db):
 
     # The model row was written first, in the same transaction, and rolled back too.
     assert get_active_model(TargetRole.EQUITY, db_path=db) is None
+
+
+# --- FYP-270: per-signal SHAP, kept for a run's report ----------------------------------
+
+
+ATTRIBUTION = ModelDescription(
+    name="Derived Function", terms=("VIX", "SPX"), coefficients=(0.004, 0.001)
+)
+
+
+def test_an_active_models_attribution_comes_back_in_the_order_it_was_given(db):
+    set_active_model(
+        TargetRole.EQUITY, "Polynomial", _result(), high_risk=False, attribution=ATTRIBUTION,
+        db_path=db, **SETTINGS,
+    )
+
+    assert list(get_active_attribution(TargetRole.EQUITY, db_path=db).items()) == [
+        ("VIX", 0.004),
+        ("SPX", 0.001),
+    ]
+    assert get_active_attribution(TargetRole.BOND, db_path=db) is None
+
+
+def test_a_model_without_attribution_does_not_inherit_the_previous_ones(db):
+    shared = {"high_risk": False, "db_path": db, **SETTINGS}
+    set_active_model(
+        TargetRole.EQUITY, "Polynomial", _result(), attribution=ATTRIBUTION,
+        set_at=datetime(2026, 1, 1), **shared,
+    )
+    set_active_model(
+        TargetRole.EQUITY, "Machine Learning", _result(), set_at=datetime(2026, 1, 2), **shared
+    )
+
+    assert get_active_attribution(TargetRole.EQUITY, db_path=db) is None
+
+
+def test_a_model_read_earlier_keeps_its_function_and_attribution_after_a_newer_one(db):
+    # The Portfolio page reads the active models, then saves their functions with the run.
+    # If another session sets a newer model in between, the run must keep the one it used.
+    common = {"high_risk": False, "db_path": db, **SETTINGS}
+    first = datetime(2026, 11, 1, 9, 0)
+    set_active_model(TargetRole.EQUITY, "Polynomial", _result(), function=DERIVED,
+                     attribution=ATTRIBUTION, set_at=first, **common)
+    set_active_model(TargetRole.EQUITY, "Polynomial", _result(), function=USER,
+                     set_at=datetime(2026, 11, 1, 9, 5), **common)
+
+    assert get_active_function(TargetRole.EQUITY, set_at=first, db_path=db) == DERIVED
+    assert get_active_attribution(TargetRole.EQUITY, set_at=first, db_path=db) == {
+        "VIX": 0.004,
+        "SPX": 0.001,
+    }
+    assert get_active_function(TargetRole.EQUITY, db_path=db) == USER
+    assert get_active_attribution(TargetRole.EQUITY, db_path=db) is None

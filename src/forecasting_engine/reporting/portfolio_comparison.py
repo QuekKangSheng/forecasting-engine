@@ -7,7 +7,7 @@ significant, as a figure and a plain-language label. FYP-36: the simulated tail
 over the next forecast horizon, as rows the same shape as the tail rows. FYP-254:
 each index's and the optimised portfolio's rolling volatility, as paths a chart
 can draw. FYP-258: the same three series' drawdown from their running peak,
-likewise."""
+likewise. FYP-279: the same three series' rolling Sharpe, likewise."""
 
 from __future__ import annotations
 
@@ -20,12 +20,14 @@ from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.backtest import ASSETS, BASES, BacktestResult
 from forecasting_engine.portfolio.directional import cumulative
 from forecasting_engine.portfolio.performance import (
+    ROLLING_SHARPE_WINDOW,
     ROLLING_VOL_WINDOW,
     SIGNIFICANCE_CONFIDENCE,
     PerformanceMetrics,
     Significance,
     drawdown,
     relative,
+    rolling_sharpe,
     rolling_volatility,
 )
 from forecasting_engine.risk.monte_carlo import MonteCarloResult
@@ -112,6 +114,27 @@ def rolling_volatility_paths(
     return pd.DataFrame(
         {name: rolling_volatility(r, window) for name, r in returns.items()}
     ).dropna()
+
+
+def rolling_sharpe_paths(
+    result: BacktestResult,
+    basis: str,
+    labels: Mapping[TargetRole, str],
+    *,
+    window: int = ROLLING_SHARPE_WINDOW,
+) -> pd.DataFrame:
+    """Rolling annualised Sharpe of each index, named by ``labels``, and of the
+    optimised portfolio on ``basis``, a column each, on the backtest's risk-free
+    rate. As with rolling volatility, only the portfolio follows ``basis`` and rows
+    start once ``window`` days have passed. A line can have no figure on a day (its
+    window never varied) without taking the other lines' figures with it."""
+    returns = _index_and_portfolio_returns(result, basis, labels)
+    return pd.DataFrame(
+        {
+            name: rolling_sharpe(r, window, risk_free_rate=result.risk_free_rate)
+            for name, r in returns.items()
+        }
+    ).dropna(how="all")
 
 
 def drawdown_paths(

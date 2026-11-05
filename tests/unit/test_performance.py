@@ -15,6 +15,7 @@ from forecasting_engine.portfolio.performance import (
     newey_west_lags,
     performance,
     relative,
+    rolling_sharpe,
     rolling_volatility,
     significance,
     spread_t_stat,
@@ -178,6 +179,41 @@ def test_rolling_volatility_over_the_whole_series_is_its_annual_volatility():
     r = _series([0.03, -0.01, 0.02, -0.005, 0.01])
     assert rolling_volatility(r, window=5).iloc[-1] == pytest.approx(
         performance(r).annual_volatility
+    )
+
+
+# --- FYP-279: rolling Sharpe -------------------------------------------------
+
+
+def test_rolling_sharpe_matches_the_closed_form_on_a_known_series():
+    # Alternating mean + d and mean - d: over an even window the mean is exactly
+    # ``mean`` and the sample standard deviation is d·√(n / (n - 1)).
+    mean, d, window = 0.001, 0.01, 4
+    r = _series([mean + d, mean - d] * 5)
+
+    closed_form = mean / (d * math.sqrt(window / (window - 1))) * ROOT_YEAR
+
+    sharpe = rolling_sharpe(r, window=window)
+    assert sharpe.iloc[: window - 1].isna().all(), "no figure until a full window has passed"
+    assert sharpe.iloc[window - 1 :].to_numpy() == pytest.approx(closed_form)
+
+
+def test_a_constant_return_has_no_rolling_sharpe():
+    # The closed form divides by a standard deviation of zero, so, as in performance(),
+    # there is no Sharpe rather than an infinite one.
+    assert rolling_sharpe(_series([0.004] * 8), window=3).isna().all()
+    assert np.isnan(performance(_series([0.004] * 8)).sharpe)
+    # A flat stretch after a varying one, where a running deviation leaves noise.
+    after_moves = rolling_sharpe(_series([0.03, -0.02, 0.01, 0.07] + [0.004] * 4), window=3)
+    assert after_moves.iloc[3:5].notna().all() and after_moves.iloc[-2:].isna().all()
+
+
+def test_rolling_sharpe_over_the_whole_series_is_its_sharpe():
+    r = _series([0.03, -0.01, 0.02, -0.005, 0.01])
+
+    assert rolling_sharpe(r, window=5).iloc[-1] == pytest.approx(performance(r).sharpe)
+    assert rolling_sharpe(r, window=5, risk_free_rate=0.04).iloc[-1] == pytest.approx(
+        performance(r, risk_free_rate=0.04).sharpe
     )
 
 

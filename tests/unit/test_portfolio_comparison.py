@@ -18,6 +18,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     drawdown_paths,
     forecast_value_summary,
     monte_carlo_rows,
+    rolling_sharpe_paths,
     rolling_volatility_paths,
     significance_summary,
     tail_rows,
@@ -126,6 +127,51 @@ def test_rolling_volatility_of_the_portfolio_follows_the_basis_but_the_indices_d
 
 def test_a_backtest_shorter_than_the_window_has_no_rolling_volatility():
     assert rolling_volatility_paths(_backtest(), "net", LABELS, window=1000).empty
+
+
+def test_rolling_sharpe_has_a_column_for_each_index_and_the_optimised_portfolio():
+    result = _backtest()
+    sharpe = rolling_sharpe_paths(result, "net", LABELS, window=20)
+
+    assert list(sharpe.columns) == ["S&P 500", "US Aggregate", "Optimised"]
+    assert sharpe.index.equals(result.optimised.net.index[19:])
+
+
+def test_rolling_sharpe_is_built_from_the_same_returns_as_the_backtest_table():
+    result = _backtest()
+    days = len(result.optimised.net)
+
+    for basis, path in (("net", result.optimised.net), ("gross", result.optimised.gross)):
+        whole = rolling_sharpe_paths(result, basis, LABELS, window=days)
+        assert whole["Optimised"].iloc[-1] == pytest.approx(
+            result.metrics[("optimised", basis)].sharpe
+        )
+        assert len(path) == days
+
+
+def test_rolling_sharpe_of_the_portfolio_follows_the_basis_but_the_indices_dont():
+    result = _backtest()
+    net = rolling_sharpe_paths(result, "net", LABELS, window=20)
+    gross = rolling_sharpe_paths(result, "gross", LABELS, window=20)
+
+    indices = list(LABELS.values())
+    pd.testing.assert_frame_equal(net[indices], gross[indices])
+    assert not net["Optimised"].equals(gross["Optimised"])
+
+
+def test_rolling_sharpe_keeps_a_day_only_one_line_has_no_figure_for():
+    result = _backtest()
+    flat = result.index_returns.copy()
+    flat[BOND] = 0.001  # a bond index that never varies has no Sharpe to draw
+
+    sharpe = rolling_sharpe_paths(replace(result, index_returns=flat), "net", LABELS, window=20)
+
+    assert sharpe["US Aggregate"].isna().all()
+    assert sharpe["Optimised"].notna().all() and len(sharpe) == len(flat) - 19
+
+
+def test_a_backtest_shorter_than_the_window_has_no_rolling_sharpe():
+    assert rolling_sharpe_paths(_backtest(), "net", LABELS, window=1000).empty
 
 
 def test_drawdown_has_a_column_for_each_index_and_the_optimised_portfolio_every_day():

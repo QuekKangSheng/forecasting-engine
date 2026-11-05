@@ -521,6 +521,12 @@ def _active_function(name: str, run: model_runs.ModelRun) -> active_model.Active
     )
 
 
+def _active_attribution(name: str, run: model_runs.ModelRun) -> ModelDescription | None:
+    """Mean |SHAP value| per signal, for a run report (FYP-270). The machine-learning
+    model's description already is its attribution, as its results table shows."""
+    return run.description if name == ML else run.shap
+
+
 def _recorder(
     role: TargetRole, price_col: str, settings: Mapping[str, object], keys: Mapping[str, str]
 ):
@@ -959,6 +965,7 @@ def _confirm_high_risk(
     failed: tuple[str, ...],
     target_name: str,
     function: active_model.ActiveFunction | None,
+    attribution: ModelDescription | None,
     run_id: str | None,
 ) -> None:
     failed_text = " and ".join(GATE_NAMES[g] for g in failed)
@@ -977,6 +984,7 @@ def _confirm_high_risk(
             result,
             high_risk=True,
             function=function,
+            attribution=attribution,
             run_id=run_id,
             **_active_settings(model_name),
         )
@@ -1036,6 +1044,7 @@ def _show_active_picker(
                 result,
                 high_risk=False,
                 function=_active_function(selected, runs[selected]),
+                attribution=_active_attribution(selected, runs[selected]),
                 run_id=_run_id(role, selected, settings),
                 **_active_settings(selected),
             )
@@ -1051,6 +1060,7 @@ def _show_active_picker(
             outcome.failed_gates,
             target_name,
             _active_function(pending, runs[pending]),
+            _active_attribution(pending, runs[pending]),
             _run_id(role, pending, settings),
         )
 

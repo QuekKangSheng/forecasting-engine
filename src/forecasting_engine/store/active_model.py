@@ -6,8 +6,9 @@ the active model for a role is simply its most recent row.
 A polynomial set active also stores its fitted function (FYP-32): the most
 recent fold's terms and coefficients, and per input its transform, clipping
 bounds and standardisation. A scenario can then evaluate the function again on
-shocked inputs without refitting. Every row of one setting is written in a
-single transaction, keyed by role and ``set_at``.
+shocked inputs without refitting. A model set active also stores its per-signal
+SHAP attribution, if it has one, so a run's report can show it (FYP-270). Every row
+of one setting is written in a single transaction, keyed by role and ``set_at``.
 """
 
 from __future__ import annotations
@@ -74,6 +75,13 @@ CREATE TABLE IF NOT EXISTS active_model_inputs (
     mean      DOUBLE,
     sd        DOUBLE
 );
+CREATE TABLE IF NOT EXISTS active_model_attribution (
+    role          TEXT      NOT NULL,
+    set_at        TIMESTAMP NOT NULL,
+    position      INTEGER   NOT NULL,
+    signal        TEXT      NOT NULL,
+    mean_abs_shap DOUBLE    NOT NULL
+);
 """
 
 
@@ -131,6 +139,7 @@ def set_active_model(
     test_window: int,
     dataset_fingerprint: str,
     function: ActiveFunction | None = None,
+    attribution: ModelDescription | None = None,
     run_id: str | None = None,
     db_path: Path = DEFAULT_DB_PATH,
     set_at: datetime | None = None,
@@ -140,9 +149,10 @@ def set_active_model(
     Also stores ``result.forecast`` (if present) as one row per date, with each
     date's ``result.baseline`` (its fold's training-mean target), so a later
     reader never has to re-run the model to get its predicted values or their
-    signal back; and ``function``, for a polynomial, so a scenario can evaluate
-    it again. All of it is one transaction: a reader never sees a model active
-    without its forecasts or function.
+    signal back; ``function``, for a polynomial, so a scenario can evaluate it
+    again; and ``attribution``, its mean |SHAP value| per signal, in the terms and
+    coefficients of a ``ModelDescription``. All of it is one transaction: a reader
+    never sees a model active without its forecasts or function.
     """
     record = ActiveModelRecord(
         role=role,
@@ -207,6 +217,16 @@ def set_active_model(
             )
         if function is not None:
             _insert_function(conn, record, function)
+        if attribution is not None and attribution.terms:
+            conn.executemany(
+                "INSERT INTO active_model_attribution VALUES (?, ?, ?, ?, ?)",
+                [
+                    (record.role.value, record.set_at, position, signal, float(value))
+                    for position, (signal, value) in enumerate(
+                        zip(attribution.terms, attribution.coefficients, strict=True)
+                    )
+                ],
+            )
         conn.execute("COMMIT")
     return record
 
@@ -244,15 +264,18 @@ def _insert_function(conn, record: ActiveModelRecord, function: ActiveFunction) 
 
 
 def get_active_function(
-    role: TargetRole, *, db_path: Path = DEFAULT_DB_PATH
+    role: TargetRole, *, set_at: datetime | None = None, db_path: Path = DEFAULT_DB_PATH
 ) -> ActiveFunction | None:
-    """The currently active model's fitted function, or ``None`` if there is no
-    active model, it is not a polynomial, or it was set before functions were
-    stored."""
-    current = get_active_model(role, db_path=db_path)
-    if current is None:
+    """The active model's fitted function, or ``None`` if there is no active model,
+    it is not a polynomial, or it was set before functions were stored.
+
+    ``set_at`` picks the model set active at that time rather than the current one: a
+    caller that read an active model earlier gets that model's function, even if
+    another session has set a newer one since."""
+    set_at = _set_at(role, set_at, db_path)
+    if set_at is None:
         return None
-    key = [role.value, current.set_at]
+    key = [role.value, set_at]
     with connect(db_path, _CREATE_TABLES) as conn:
         head = conn.execute(
             "SELECT origin, name, intercept FROM active_model_functions "
@@ -286,6 +309,32 @@ def get_active_function(
         ),
         transforms={s: Transform(t) for s, t, *_ in inputs},
     )
+
+
+def get_active_attribution(
+    role: TargetRole, *, set_at: datetime | None = None, db_path: Path = DEFAULT_DB_PATH
+) -> dict[str, float] | None:
+    """The active model's mean |SHAP value| per signal, or ``None`` if there is no
+    active model, it has no attribution, or it was set before these were stored.
+    ``set_at`` picks the model set at that time, as for ``get_active_function``."""
+    set_at = _set_at(role, set_at, db_path)
+    if set_at is None:
+        return None
+    with connect(db_path, _CREATE_TABLES) as conn:
+        rows = conn.execute(
+            "SELECT signal, mean_abs_shap FROM active_model_attribution "
+            "WHERE role = ? AND set_at = ? ORDER BY position",
+            [role.value, set_at],
+        ).fetchall()
+    return dict(rows) or None
+
+
+def _set_at(role: TargetRole, set_at: datetime | None, db_path: Path) -> datetime | None:
+    """``set_at`` itself, or when the current active model was set if it is ``None``."""
+    if set_at is not None:
+        return set_at
+    current = get_active_model(role, db_path=db_path)
+    return None if current is None else current.set_at
 
 
 def get_active_model(

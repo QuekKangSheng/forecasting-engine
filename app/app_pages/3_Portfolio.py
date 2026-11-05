@@ -14,14 +14,16 @@ from __future__ import annotations
 import html
 import traceback
 
-import altair as alt
 import pandas as pd
 import streamlit as st
 
 import bloomberg_extraction_panel
+import charts
 import glossary
 import portfolio_summary
+import saved_run
 import ui
+from forecasting_engine.extraction import validation
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.upload import frame_sha256
@@ -32,7 +34,7 @@ from forecasting_engine.portfolio.backtest import (
     BacktestDataError,
     run_backtest,
 )
-from forecasting_engine.portfolio.performance import ROLLING_VOL_WINDOW
+from forecasting_engine.portfolio.performance import ROLLING_SHARPE_WINDOW, ROLLING_VOL_WINDOW
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
@@ -44,9 +46,16 @@ from forecasting_engine.reporting.portfolio_comparison import (
     drawdown_paths,
     forecast_value_summary,
     monte_carlo_rows,
+    rolling_sharpe_paths,
     rolling_volatility_paths,
     significance_summary,
     tail_rows,
+)
+from forecasting_engine.reporting.run_results import (
+    data_quality_summary,
+    model_summary,
+    run_results,
+    simulation_results,
 )
 from forecasting_engine.risk import monte_carlo
 from forecasting_engine.risk.tail import HISTORICAL, MONTE_CARLO, TAIL_METHODS
@@ -166,6 +175,8 @@ st.markdown(
     ),
     unsafe_allow_html=True,
 )
+# FYP-273: filled at the end of the page, once the run and any simulation are known.
+report_slot = st.container()
 
 with st.expander("Settings"):
     risk_level = st.select_slider(
@@ -245,35 +256,37 @@ unreliable = (
     )
     else ""
 )
-st.caption(
+how_set = [
     f"How this was set: level {risk_level} targets {breakdown.level_weight:.0%} {equity_name}. "
     f"The signals — what each model adds to its training-mean return — ({equity_name} "
     f"{latest_signal[EQUITY]:+.2%}, {bond_name} {latest_signal[BOND]:+.2%} over "
     f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%}, giving "
     f"{breakdown.unconstrained:.0%}{cap}{unreliable}."
-)
+]
+st.caption(how_set[0])
+no_trade_lines = []
 if breakdown.held:
-    st.caption(
+    no_trade_lines.append(
         f"Held: within the no-trade band. Since the last rebalance the portfolio had "
         f"drifted to {breakdown.drifted:.1%} {equity_name}, within the ±{breakdown.band:.1%} "
-        f"band around it, so it was left as it was rather than pay to trade.",
-        help=glossary.term("No-trade band"),
+        f"band around it, so it was left as it was rather than pay to trade."
     )
 elif breakdown.drifted is not None:
-    st.caption(
+    no_trade_lines.append(
         f"Since the last rebalance the portfolio had drifted to {breakdown.drifted:.1%} "
         f"{equity_name}. Trading costs set a no-trade band of ±{breakdown.band:.1%} around "
-        f"it, so it traded only to the band's edge, {breakdown.equity:.1%}.",
-        help=glossary.term("No-trade band"),
+        f"it, so it traded only to the band's edge, {breakdown.equity:.1%}."
     )
 after_first = list(breakdowns.values())[1:]
 if after_first:
     held = sum(b.held for b in after_first)
-    st.caption(
+    no_trade_lines.append(
         f"{held} of {len(after_first)} rebalances after the first ({held / len(after_first):.0%}) "
-        "were held by the no-trade band.",
-        help=glossary.term("No-trade band"),
+        "were held by the no-trade band."
     )
+for line in no_trade_lines:
+    st.caption(line, help=glossary.term("No-trade band"))
+how_set += no_trade_lines
 
 st.markdown(
     ui.eyebrow(
@@ -283,22 +296,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 renamed = schedule.rename(columns={EQUITY: equity_name, BOND: bond_name})
-long = renamed.rename_axis("date").reset_index().melt("date", var_name="Asset", value_name="Weight")
-chart = (
-    alt.Chart(long)
-    .mark_bar()
-    .encode(
-        # Ordinal, not temporal: rebalances are sparse relative to the full date
-        # range, so a time axis squeezes every bar into a sliver with long empty
-        # gaps between them. Each rebalance instead gets an equal-width slot.
-        x=alt.X("yearmonthdate(date):O", title="Rebalance date", axis=alt.Axis(labelAngle=-45)),
-        y=alt.Y("Weight:Q", stack="zero", axis=alt.Axis(format="%")),
-        color=alt.Color("Asset:N", legend=alt.Legend(title=None)),
-        tooltip=["date:T", "Asset:N", alt.Tooltip("Weight:Q", format=".0%")],
-    )
-    .properties(height=600)
-)
-st.altair_chart(chart, width="stretch")
+st.altair_chart(charts.weights_chart(renamed), width="stretch")
 
 
 # --- FYP-19: the optimised allocation against the equal-weight benchmark -----------
@@ -340,26 +338,82 @@ st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSum
 # Recorded once per distinct set of inputs (store/portfolio_runs): the key is the
 # hash of everything the result depends on, so recording on every view is safe,
 # and a failed write is reported without stopping the page.
+run_inputs = portfolio_runs.PortfolioInputs(
+    dataset_sha256=frame_sha256(merged),
+    equity_run_id=equity_active.run_id,
+    bond_run_id=bond_active.run_id,
+    equity_set_at=equity_active.set_at,
+    bond_set_at=bond_active.set_at,
+    horizon=equity_active.horizon,
+    train_window=TRAIN_WINDOW,
+    test_window=equity_active.test_window,
+    embargo=EMBARGO_DAYS,
+    risk_level=risk_level,
+    bounds=(lower, upper),
+    costs_bps={role.value: cost for role, cost in backtest.costs_bps.items()},
+    code_version=run_history.code_version(),
+)
 try:
-    portfolio_runs.record_portfolio_run(
-        portfolio_runs.PortfolioInputs(
-            dataset_sha256=frame_sha256(merged),
-            equity_run_id=equity_active.run_id,
-            bond_run_id=bond_active.run_id,
-            equity_set_at=equity_active.set_at,
-            bond_set_at=bond_active.set_at,
-            horizon=equity_active.horizon,
-            train_window=TRAIN_WINDOW,
-            test_window=equity_active.test_window,
-            embargo=EMBARGO_DAYS,
-            risk_level=risk_level,
-            bounds=(lower, upper),
-            costs_bps={role.value: cost for role, cost in backtest.costs_bps.items()},
-            code_version=run_history.code_version(),
-        ),
-        backtest,
-        schedule,
+    # FYP-275: built only the first time, since every later view of these inputs is the
+    # same run and would be thrown away.
+    results = (
+        None
+        if portfolio_runs.has_results(run_inputs.run_key)
+        else run_results(
+            backtest,
+            no_forecast_backtest,
+            names={EQUITY: equity_name, BOND: bond_name},
+            settings={
+                "risk_level": risk_level,
+                "bounds": [lower, upper],
+                "costs_bps": {role.value: cost for role, cost in backtest.costs_bps.items()},
+                "risk_free_rate": backtest.risk_free_rate,
+                "horizon": equity_active.horizon,
+                "train_window": TRAIN_WINDOW,
+                "test_window": equity_active.test_window,
+                "embargo": EMBARGO_DAYS,
+                "rebalance_frequency": REBALANCE_FREQUENCY,
+            },
+            latest_date=latest_date,
+            latest_weights={EQUITY: latest[EQUITY], BOND: latest[BOND]},
+            how_set=how_set,
+            windows={
+                "rolling_volatility": ROLLING_VOL_WINDOW,
+                "rolling_sharpe": ROLLING_SHARPE_WINDOW,
+            },
+            data_quality=data_quality_summary(
+                st.session_state.get(bloomberg_extraction_panel.COMMITTED_REPORT_KEY)
+                or validation.validate(merged),
+                merged,
+                st.session_state.get(bloomberg_extraction_panel.COMMITTED_DROPPED_KEY, []),
+            ),
+            models=[
+                model_summary(
+                    name,
+                    record,
+                    display_name=display_model_name(record.model_name),
+                    signal_t=(
+                        run_history.run_metrics(record.run_id).get("signal_t")
+                        if record.run_id
+                        else None
+                    ),
+                    # By set_at: the models this page read, even if another session
+                    # has set a newer one since.
+                    function=active_model.get_active_function(
+                        record.role, set_at=record.set_at
+                    ),
+                    attribution=active_model.get_active_attribution(
+                        record.role, set_at=record.set_at
+                    ),
+                    label=label,
+                    target=target_columns[record.role],
+                    columns=numeric_cols,
+                )
+                for name, record in ((equity_name, equity_active), (bond_name, bond_active))
+            ],
+        )
     )
+    portfolio_runs.record_portfolio_run(run_inputs, backtest, schedule, results=results)
 except Exception:  # noqa: BLE001 - a failed log must not stop the page
     traceback.print_exc()
 
@@ -420,38 +474,8 @@ st.caption(
     "on every row, drawdown included."
 )
 
-def _line_chart(paths: pd.DataFrame, value: str) -> alt.LayerChart:
-    """A line per column of ``paths`` on one time axis, in percent. Hovering or
-    tapping anywhere marks the nearest day on a line and shows its date and value."""
-    long = paths.rename_axis("date").reset_index().melt("date", var_name="Series", value_name=value)
-    nearest = alt.selection_point(nearest=True, on="pointerover", clear="pointerout", empty=False)
-    lines = alt.Chart(long).encode(
-        x=alt.X("date:T", title="Date", axis=alt.Axis(tickCount="year")),
-        y=alt.Y(f"{value}:Q", axis=alt.Axis(format="%")),
-        color=alt.Color("Series:N", legend=alt.Legend(title=None, orient="bottom", labelLimit=0)),
-    )
-    # Vega only shows a line's tooltip within a pixel or two of one of its days,
-    # too fine to tap; invisible points with a nearest-day selection catch any hover.
-    points = (
-        lines.mark_point(filled=True)
-        .encode(
-            opacity=alt.condition(nearest, alt.value(1), alt.value(0)),
-            tooltip=[
-                alt.Tooltip("date:T", title="Date", format="%d %b %Y"),
-                "Series:N",
-                alt.Tooltip(f"{value}:Q", format=".2%"),
-            ],
-        )
-        .add_params(nearest)
-    )
-    # Canvas, not Streamlit's default SVG: SVG makes every day's point a page element,
-    # thousands per chart, which stalls scrolling and every redraw.
-    canvas = {"embedOptions": {"renderer": "canvas"}}
-    return (lines.mark_line() + points).properties(usermeta=canvas)
-
-
 cumulative = cumulative_paths(backtest, basis)
-st.altair_chart(_line_chart(cumulative, "Cumulative return"), width="stretch")
+st.altair_chart(charts.line_chart(cumulative, "Cumulative return"), width="stretch")
 
 # --- FYP-254 / FYP-255: how risk has moved over the backtest ------------------------
 
@@ -468,7 +492,7 @@ if len(volatility) < 2:  # a line needs two points
         icon=":material/info:",
     )
 else:
-    st.altair_chart(_line_chart(volatility, "Rolling volatility"), width="stretch")
+    st.altair_chart(charts.line_chart(volatility, "Rolling volatility"), width="stretch")
     st.caption(
         f"Annualised standard deviation of the previous {ROLLING_VOL_WINDOW} trading days' "
         f"returns, at each day. Each index is held alone, with no trading costs; the "
@@ -479,13 +503,39 @@ else:
 
 st.markdown(ui.eyebrow("Drawdown", glossary.term("Drawdown")), unsafe_allow_html=True)
 drawdowns = drawdown_paths(backtest, basis, index_names)
-st.altair_chart(_line_chart(drawdowns, "Drawdown"), width="stretch")
+st.altair_chart(charts.line_chart(drawdowns, "Drawdown"), width="stretch")
 st.caption(
     "Fall from the highest value reached so far, at each day, counting the start of the "
     "backtest as the first high. Each index is held alone, with no trading costs; the "
     f"optimised portfolio is {basis_label.lower()}, and its lowest point is the max "
     "drawdown in the table above."
 )
+
+# --- FYP-279 / FYP-280: how risk-adjusted return has moved over the backtest ----------
+
+st.markdown(ui.eyebrow("Rolling Sharpe", glossary.term("Rolling Sharpe")), unsafe_allow_html=True)
+rolling_sharpes = rolling_sharpe_paths(backtest, basis, index_names, window=ROLLING_SHARPE_WINDOW)
+if len(rolling_sharpes) < 2:  # a line needs two points
+    st.info(
+        f"Rolling Sharpe needs more than {ROLLING_SHARPE_WINDOW} trading days of returns, and "
+        f"this backtest has {len(backtest.optimised.gross)}, so there is no chart yet.",
+        icon=":material/info:",
+    )
+else:
+    st.altair_chart(
+        charts.line_chart(
+            rolling_sharpes,
+            "Rolling Sharpe",
+            percent=False,
+            title=f"Rolling Sharpe, {ROLLING_SHARPE_WINDOW}-day window",
+        ),
+        width="stretch",
+    )
+    st.caption(
+        f"Annualised Sharpe of the previous {ROLLING_SHARPE_WINDOW} trading days' returns, at "
+        "each day. Each index is held alone, with no trading costs; the optimised portfolio "
+        f"is {basis_label.lower()}, the same basis as the table above."
+    )
 
 # --- FYP-20 / FYP-52: is the outperformance more than noise? ------------------------
 
@@ -576,6 +626,10 @@ def _simulate() -> None:
         st.session_state[SIMULATION_ERROR_KEY] = str(exc)
         return
     st.session_state[SIMULATION_KEY] = (inputs, result)
+    try:
+        portfolio_runs.save_simulation(run_inputs.run_key, simulation_results(backtest, result))
+    except Exception:  # noqa: BLE001 - a failed log must not stop the page
+        traceback.print_exc()
 
 
 stored_simulation = st.session_state.get(SIMULATION_KEY)
@@ -762,4 +816,17 @@ else:
         f"({simulated.history_days} trading days). VaR and CVaR here are losses over the "
         f"whole {simulated.horizon} days; the one-day Monte Carlo rows above are the first "
         "day of these same paths. Both portfolios are simulated on the same paths."
+    )
+
+
+# --- FYP-273: the same run as a file to read offline -----------------------------------
+
+# Only once its results are saved: the report is written from them, not from this page,
+# so generating it solves nothing. A simulation counts only if the page is showing it.
+if portfolio_runs.has_results(run_inputs.run_key):
+    saved_run.report_button(
+        report_slot,
+        run_inputs.run_key,
+        simulation=None if simulated is None else (simulated.method, simulated.paths),
+        latest_saved=False,
     )

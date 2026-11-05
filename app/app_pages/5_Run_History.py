@@ -1,11 +1,13 @@
 """Run history page: every model fit recorded in DuckDB (``store/runs``), newest
 first, and any one opened to see its settings, metrics and forecasts, and the data
 it was fitted on; and every distinct optimiser-and-backtest result the Portfolio
-page has shown (``store/portfolio_runs``), once each.
+page has shown (``store/portfolio_runs``), once each, numbered, nameable and opened
+from its saved results.
 
-Reads the log only: nothing here fits a model. The Models page's tables show the
-latest result per setting; this page keeps every fit, including the ones that
-failed and the ones whose settings have since changed.
+Reads the log only: nothing here fits a model, solves the optimiser or sets an active
+model. The Models page's tables show the latest result per setting; this page keeps
+every fit, including the ones that failed and the ones whose settings have since
+changed.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import pandas as pd
 import streamlit as st
 
 import glossary
+import saved_run
 import ui
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.reporting.model_metrics import display_model_name
@@ -29,6 +32,14 @@ st.caption(
     "Every model fit and every distinct portfolio result, newest first: when it ran, on "
     "which data, under which settings, and what came out. Nothing here refits a model."
 )
+
+OPEN_RUN_KEY = "open_portfolio_run"
+RUNS_PER_PAGE = 20
+RUN_NAME_MAX_CHARS = 80
+#: Run, name, first shown, equity model, bond model, risk level. A row's buttons sit on
+#: a line of their own: beside these, the page's width leaves them too narrow to read.
+RUN_COLUMNS = [0.5, 2.4, 1.6, 1.6, 1.6, 0.7]
+RUN_HEADINGS = ["Run", "Name", "First shown", "Equity model", "Bond model", "Risk"]
 
 
 def _model_fits() -> None:
@@ -200,6 +211,57 @@ def _model_fits() -> None:
         st.altair_chart(chart, use_container_width=True)
 
 
+def _rename_run(run_key: str, widget: str) -> None:
+    portfolio_runs.rename_portfolio_run(run_key, st.session_state[widget])
+
+
+def _open_run(run_key: str) -> None:
+    st.session_state[OPEN_RUN_KEY] = run_key
+
+
+def _model_cell(name: object) -> str:
+    return display_model_name(name) if pd.notna(name) else "—"
+
+
+def _run_row(row) -> None:
+    cols = st.columns(RUN_COLUMNS, vertical_alignment="center")
+    cols[0].markdown(f"**{row.run_number}**")
+    widget = f"run_name_{row.run_key}"
+    cols[1].text_input(
+        "Run name",
+        value=row.name if pd.notna(row.name) else "",
+        max_chars=RUN_NAME_MAX_CHARS,
+        key=widget,
+        placeholder="Add a name",
+        label_visibility="collapsed",
+        on_change=_rename_run,
+        args=(row.run_key, widget),
+    )
+    cols[2].text(f"{row.recorded_at:%d %b %Y %H:%M}")
+    cols[3].text(_model_cell(row.equity_model))
+    cols[4].text(_model_cell(row.bond_model))
+    cols[5].text(f"{row.risk_level:.0f}" if pd.notna(row.risk_level) else "—")
+    buttons = st.container(horizontal=True, horizontal_alignment="right")
+    buttons.button(
+        "Open",
+        key=f"open_run_{row.run_key}",
+        disabled=not row.has_results,
+        help=None if row.has_results else NOT_SAVED,
+        on_click=_open_run,
+        args=(row.run_key,),
+    )
+    if row.has_results:
+        saved_run.report_button(buttons, row.run_key, label="Report", number=row.run_number)
+    else:
+        buttons.button("Report", key=f"no_report_{row.run_key}", disabled=True, help=NOT_SAVED)
+
+
+NOT_SAVED = (
+    "Recorded before results were saved. Show the same settings on the Portfolio page, on "
+    "the same code, and they are saved under this run."
+)
+
+
 def _portfolio_runs() -> None:
     table = portfolio_runs.portfolio_runs_table()
     if table.empty:
@@ -210,12 +272,41 @@ def _portfolio_runs() -> None:
         )
         return
     st.markdown(
-        ui.eyebrow(f"{len(table):,} distinct results", glossary.term("Portfolio run")),
+        ui.eyebrow(
+            f"{len(table):,} distinct result{'' if len(table) == 1 else 's'}",
+            glossary.term("Portfolio run"),
+        ),
         unsafe_allow_html=True,
     )
+    pages = (len(table) - 1) // RUNS_PER_PAGE + 1
+    page = (
+        st.number_input("Page", min_value=1, max_value=pages, value=1, width=120)
+        if pages > 1
+        else 1
+    )
+    with st.container(border=True):
+        header = st.columns(RUN_COLUMNS)
+        for col, heading in zip(header, RUN_HEADINGS, strict=True):
+            col.caption(heading)
+        start = (page - 1) * RUNS_PER_PAGE
+        for row in table.iloc[start : start + RUNS_PER_PAGE].itertuples():
+            _run_row(row)
+
+    with st.expander("Compare runs"):
+        _compare_runs(table)
+
+    run_key = st.session_state.get(OPEN_RUN_KEY)
+    run = None if run_key is None else portfolio_runs.get_saved_run(run_key)
+    if run is not None:
+        st.divider()
+        saved_run.render(run)
+
+
+def _compare_runs(table: pd.DataFrame) -> None:
     st.dataframe(
         pd.DataFrame(
             {
+                "Run": table["run_number"],
                 "First shown": table["recorded_at"],
                 "Risk level": table["risk_level"],
                 "Minimum in each": table["min_weight"],
