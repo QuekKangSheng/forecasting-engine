@@ -51,7 +51,7 @@ import pandas as pd
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.backtest import BacktestResult, PortfolioPath
-from forecasting_engine.store._db import DEFAULT_DB_PATH, connect
+from forecasting_engine.store._db import DEFAULT_DB_PATH, connect, retry_on_conflict
 from forecasting_engine.store.active_model import _CREATE_TABLES as _CREATE_ACTIVE_MODELS
 
 _CREATE_TABLES = """
@@ -111,8 +111,8 @@ CREATE TABLE IF NOT EXISTS portfolio_run_simulations (
 """
 
 #: Numbers every run without one, oldest first, after the highest number so far. Run
-#: whenever the tables are opened too, which numbers runs recorded before there were
-#: numbers, once.
+#: when the tables are first opened in a process too, which numbers runs recorded
+#: before there were numbers, once.
 _NUMBER_NEW_RUNS = """
 INSERT INTO portfolio_run_labels (run_key, run_number)
 SELECT run_key,
@@ -201,7 +201,23 @@ def record_portfolio_run(
     new) are its number, metrics and weights written, so a repeat writes nothing at
     all. ``results`` and the daily returns are written with their own ``DO NOTHING``,
     so a run recorded before results were saved gets them the next time it is shown.
-    The caller can leave ``results`` out once ``has_results`` says they are there."""
+    The caller can leave ``results`` out once ``has_results`` says they are there.
+
+    Two sessions recording new runs at once both take the next number; DuckDB fails
+    the later, which is then tried again and numbered after the first."""
+    return retry_on_conflict(
+        lambda: _record(inputs, result, weights, results, recorded_at, db_path)
+    )
+
+
+def _record(
+    inputs: PortfolioInputs,
+    result: BacktestResult,
+    weights: pd.DataFrame,
+    results: Mapping[str, object] | None,
+    recorded_at: datetime | None,
+    db_path: Path,
+) -> bool:
     key = inputs.run_key
     equity = weights.columns[0]
     with connect(db_path, _OPEN_TABLES) as conn:
@@ -362,17 +378,23 @@ def save_simulation(
 ) -> None:
     """Attach a Monte Carlo simulation to its run. The same method and paths again
     gives the same seeded figures, so a repeat keeps the first."""
-    with connect(db_path, _OPEN_TABLES) as conn:
-        conn.execute(
-            "INSERT INTO portfolio_run_simulations VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-            [
-                run_key,
-                results["method"],
-                results["paths"],
-                recorded_at or datetime.now(),
-                json.dumps(results, sort_keys=True, default=_iso),
-            ],
-        )
+    row = [
+        run_key,
+        results["method"],
+        results["paths"],
+        recorded_at or datetime.now(),
+        json.dumps(results, sort_keys=True, default=_iso),
+    ]
+
+    def write() -> None:
+        with connect(db_path, _OPEN_TABLES) as conn:
+            conn.execute(
+                "INSERT INTO portfolio_run_simulations VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT DO NOTHING",
+                row,
+            )
+
+    retry_on_conflict(write)
 
 
 def saved_simulation(

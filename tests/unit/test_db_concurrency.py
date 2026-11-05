@@ -1,0 +1,117 @@
+"""Several Streamlit sessions are threads of one process, all opening the same DuckDB
+file. Opening it must not make them fail each other."""
+
+import threading
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.portfolio.backtest import run_backtest
+from forecasting_engine.store import _db
+from forecasting_engine.store.portfolio_runs import (
+    PortfolioInputs,
+    list_portfolio_runs,
+    portfolio_runs_table,
+    record_portfolio_run,
+)
+
+SESSIONS = 8
+EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
+
+
+def _inputs(risk_level: int) -> PortfolioInputs:
+    return PortfolioInputs(
+        dataset_sha256="a" * 64,
+        equity_run_id="run-e",
+        bond_run_id="run-b",
+        equity_set_at=datetime(2026, 11, 1, 9),
+        bond_set_at=datetime(2026, 11, 1, 9, 5),
+        horizon=20,
+        train_window=504,
+        test_window=20,
+        embargo=20,
+        risk_level=risk_level,
+        bounds=(0.2, 0.8),
+        costs_bps={"equity": 3.0, "bond": 5.0},
+        code_version="abc1234",
+    )
+
+
+def _backtest():
+    idx = pd.bdate_range("2024-01-31", periods=60)
+    rng = np.random.default_rng(0)
+    prices = {
+        role: pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.01, len(idx))), index=idx)
+        for role in (EQUITY, BOND)
+    }
+    schedule = pd.DataFrame({EQUITY: 0.5, BOND: 0.5}, index=idx[::20])
+    return run_backtest(prices, schedule), schedule
+
+
+RESULT, SCHEDULE = _backtest()
+
+
+@pytest.fixture
+def db(tmp_path):
+    return tmp_path / "data" / "test.duckdb"
+
+
+def _all_at_once(work) -> list[BaseException]:
+    """Run ``work(i)`` in ``SESSIONS`` threads released together; their exceptions."""
+    start = threading.Barrier(SESSIONS)
+    errors: list[BaseException] = []
+
+    def session(i: int) -> None:
+        start.wait()
+        try:
+            work(i)
+        except BaseException as exc:  # noqa: BLE001 - collected for the assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=session, args=(i,)) for i in range(SESSIONS)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return errors
+
+
+def test_sessions_reading_at_once_do_not_fail_each_other(db):
+    list_portfolio_runs(db_path=db)  # the file exists, as it does once the app has run
+
+    for _ in range(3):
+        assert _all_at_once(lambda _: list_portfolio_runs(db_path=db)) == []
+
+
+def test_sessions_recording_runs_at_once_each_get_their_own_number(db):
+    list_portfolio_runs(db_path=db)
+    inputs = [_inputs(i) for i in range(SESSIONS)]
+
+    errors = _all_at_once(lambda i: record_portfolio_run(inputs[i], RESULT, SCHEDULE, db_path=db))
+
+    assert errors == []
+    numbers = portfolio_runs_table(db_path=db)["run_number"]
+    assert sorted(numbers) == list(range(1, SESSIONS + 1))
+
+
+def test_a_database_deleted_while_the_app_runs_has_its_tables_made_again(db):
+    list_portfolio_runs(db_path=db)
+    db.unlink()
+
+    assert list_portfolio_runs(db_path=db) == []
+
+
+def test_a_conflict_that_persists_is_raised_not_swallowed(monkeypatch):
+    calls = []
+
+    def always_conflicts():
+        calls.append(1)
+        raise _db.duckdb.TransactionException("write-write conflict")
+
+    monkeypatch.setattr(_db, "_BACKOFF_SECONDS", 0.0)
+    with pytest.raises(_db.duckdb.TransactionException):
+        _db.retry_on_conflict(always_conflicts)
+    assert len(calls) == _db.WRITE_ATTEMPTS
