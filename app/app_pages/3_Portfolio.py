@@ -396,8 +396,14 @@ try:
                         if record.run_id
                         else None
                     ),
-                    function=active_model.get_active_function(record.role),
-                    attribution=active_model.get_active_attribution(record.role),
+                    # By set_at: the models this page read, even if another session
+                    # has set a newer one since.
+                    function=active_model.get_active_function(
+                        record.role, set_at=record.set_at
+                    ),
+                    attribution=active_model.get_active_attribution(
+                        record.role, set_at=record.set_at
+                    ),
                     label=label,
                     target=target_columns[record.role],
                     columns=numeric_cols,

@@ -439,3 +439,22 @@ def test_a_model_without_attribution_does_not_inherit_the_previous_ones(db):
     )
 
     assert get_active_attribution(TargetRole.EQUITY, db_path=db) is None
+
+
+def test_a_model_read_earlier_keeps_its_function_and_attribution_after_a_newer_one(db):
+    # The Portfolio page reads the active models, then saves their functions with the run.
+    # If another session sets a newer model in between, the run must keep the one it used.
+    common = {"high_risk": False, "db_path": db, **SETTINGS}
+    first = datetime(2026, 11, 1, 9, 0)
+    set_active_model(TargetRole.EQUITY, "Polynomial", _result(), function=DERIVED,
+                     attribution=ATTRIBUTION, set_at=first, **common)
+    set_active_model(TargetRole.EQUITY, "Polynomial", _result(), function=USER,
+                     set_at=datetime(2026, 11, 1, 9, 5), **common)
+
+    assert get_active_function(TargetRole.EQUITY, set_at=first, db_path=db) == DERIVED
+    assert get_active_attribution(TargetRole.EQUITY, set_at=first, db_path=db) == {
+        "VIX": 0.004,
+        "SPX": 0.001,
+    }
+    assert get_active_function(TargetRole.EQUITY, db_path=db) == USER
+    assert get_active_attribution(TargetRole.EQUITY, db_path=db) is None
