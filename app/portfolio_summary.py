@@ -1,5 +1,6 @@
 """The Portfolio Optimizer page's last result, kept in session state so Home can
-say where the pipeline stands without re-running the optimiser or the backtest.
+say where the pipeline stands, and the Scenarios page can carry a shock through to
+the portfolio, without re-running the optimiser or the backtest.
 """
 
 from __future__ import annotations
@@ -8,7 +9,9 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-#: Session-state key the Portfolio page writes and Home reads.
+from forecasting_engine.portfolio.optimize import SolveInputs
+
+#: Session-state key the Portfolio page writes and Home and Scenarios read.
 SUMMARY_KEY = "portfolio_summary"
 
 
@@ -24,3 +27,6 @@ class PortfolioSummary:
     """The optimised portfolio's Sharpe ratio after trading costs."""
     baseline_net_sharpe: float
     """The 50/50 benchmark's, over the same days."""
+    solve_inputs: SolveInputs | None = None
+    """What the latest rebalance's target was solved from, so the Scenarios page can
+    re-solve it on shocked forecasts (FYP-246). ``None`` where it couldn't be rebuilt."""

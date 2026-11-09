@@ -402,6 +402,12 @@ TERMS: Mapping[str, str] = {
         "standard deviation. A shock that only shifts the forecasts leaves it close to "
         "the base case, since the size of the daily moves comes from history."
     ),
+    "Re-optimise under shock": (
+        "Solve the latest rebalance's weights again as if the shocked forecasts were the "
+        "real ones, with the same risk level, weight limits, covariance and forecast "
+        "trust. Off, the weights you hold are kept. On, a separate column shows the "
+        "re-solved weights and how they fare under the shock, on the same paths."
+    ),
     "Shocked drawdown": (
         "The worst fall from a peak within the horizon that only 5% (or 1%) of paths "
         "exceed, under the shocked forecasts. A lower forecast tilts every path down, "

@@ -13,6 +13,7 @@ from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import Transform
 from forecasting_engine.models.base import ModelDescription
+from forecasting_engine.portfolio.optimize import SolveInputs
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.reporting.polynomial_function import Origin, dataset_fingerprint
@@ -330,8 +331,9 @@ def _long_committed(n: int = 540) -> pd.DataFrame:
     )
 
 
-def _impact_page(shock_value="25", small_paths=True):
-    """Both indices active, the equity shocked, the latest weights known."""
+def _impact_page(shock_value="25", small_paths=True, solve_inputs=None):
+    """Both indices active, the equity shocked, the latest weights known, and the
+    latest rebalance's solve inputs if given."""
     import portfolio_summary
 
     committed = _long_committed()
@@ -349,6 +351,7 @@ def _impact_page(shock_value="25", small_paths=True):
         bond_weight=0.4,
         net_sharpe=0.9,
         baseline_net_sharpe=0.8,
+        solve_inputs=solve_inputs,
     )
     if small_paths:
         app.session_state["monte_carlo_paths"] = 2_000
@@ -378,7 +381,7 @@ def test_the_shocked_portfolio_is_shown_beside_the_base_case():
 
     table = _impact_table(app)
     assert table is not None
-    for heading in ("Base case", "Shocked", "Change"):
+    for heading in ("Base case", "Shocked, weights held", "Change"):
         assert f"<th>{heading}</th>" in table
     for metric in ("Return", "Volatility", "Max drawdown 95%", "Max drawdown 99%"):
         assert f">{metric}<span" in table
@@ -399,7 +402,8 @@ def test_a_zero_shock_shows_no_change_in_any_portfolio_metric():
     app = _impact_page(shock_value="20")  # VIX's last observed value
 
     table = _impact_table(app)
-    assert table.count("+0.00 pts") == 4
+    # The equity weight's row, held, and the four metrics.
+    assert table.count("+0.00 pts") == 5
 
 
 def test_an_index_without_a_scenario_result_still_lets_the_portfolio_be_simulated():
@@ -438,3 +442,84 @@ def test_an_index_without_a_scenario_result_still_lets_the_portfolio_be_simulate
 
     assert _impact_table(app) is not None
     assert any("had no scenario result" in c.value for c in app.caption)
+
+
+# --- FYP-246: re-optimising under the shock ----------------------------------------
+
+REOPTIMISED = "Shocked, re-optimised"
+
+
+def _solve_inputs(trust=1.0, risk_level=3) -> SolveInputs:
+    """A latest rebalance whose forecasts are fully trusted, its target 60% equity."""
+    roles = [EQUITY, BOND]
+    return SolveInputs(
+        date=pd.Timestamp(_long_committed()["Date"].iloc[-1]),
+        signal=pd.Series({EQUITY: 0.0, BOND: 0.0}),
+        covariance=pd.DataFrame([[0.0016, 0.0001], [0.0001, 0.0004]], index=roles, columns=roles),
+        premium=0.01,
+        trust=trust,
+        risk_level=risk_level,
+        bounds=(0.2, 0.8),
+    )
+
+
+def _reoptimise(app, on=True):
+    """Flip the switch; the scenario's stored result stays, so nothing is rerun."""
+    app.toggle(key="scenario_reoptimise").set_value(on).run()
+    assert not app.exception
+    return app
+
+
+def test_re_optimise_is_off_by_default_so_the_weights_are_held():
+    app = _impact_page(solve_inputs=_solve_inputs())
+
+    toggle = app.toggle(key="scenario_reoptimise")
+    assert toggle.label == "Re-optimise under shock"
+    assert toggle.value is False
+    table = _impact_table(app)
+    assert REOPTIMISED not in table
+    assert ">S&amp;P 500 weight</th><td>60.00%</td><td>60.00%</td><td>+0.00 pts</td>" in table
+
+
+def test_re_optimising_adds_a_clearly_labelled_column_with_re_solved_weights():
+    app = _reoptimise(_impact_page(solve_inputs=_solve_inputs()))
+
+    table = _impact_table(app)
+    assert f">{REOPTIMISED}<span" in table
+    # Held weights are untouched; the re-solved equity weight is in its own column.
+    weight_row = table.split(">S&amp;P 500 weight</th>")[1].split("</tr>")[0]
+    cells = [c.split("</td>")[0] for c in weight_row.split("<td>")[1:]]
+    assert cells[:2] == ["60.00%", "60.00%"]
+    # The equity forecast fell, so trusted forecasts move weight out of equity.
+    assert float(cells[3].rstrip("%")) < 60.0
+    captions = " ".join(c.value for c in app.caption)
+    assert "solves the" in captions and "rebalance again" in captions
+    assert "the weights on the Portfolio Optimizer page don't change" in captions
+
+
+def test_switching_re_optimise_off_brings_back_the_held_weights_only():
+    app = _reoptimise(_reoptimise(_impact_page(solve_inputs=_solve_inputs())), on=False)
+
+    assert REOPTIMISED not in _impact_table(app)
+
+
+def test_a_zero_shock_re_optimises_to_the_rebalance_target():
+    app = _reoptimise(_impact_page(shock_value="20", solve_inputs=_solve_inputs()))
+
+    weight_row = _impact_table(app).split(">S&amp;P 500 weight</th>")[1].split("</tr>")[0]
+    target = _solve_inputs().solve().equity
+    assert f"<td>{target * 100:.2f}%</td></tr>" in weight_row + "</tr>"
+
+
+def test_untrusted_forecasts_say_why_re_optimising_moves_nothing():
+    app = _reoptimise(_impact_page(solve_inputs=_solve_inputs(trust=0.0)))
+
+    captions = " ".join(c.value for c in app.caption)
+    assert "aren't yet statistically reliable" in captions
+
+
+def test_without_the_latest_rebalance_inputs_re_optimise_is_disabled():
+    app = _impact_page(solve_inputs=None)
+
+    assert app.toggle(key="scenario_reoptimise").disabled
+    assert any("can't be re-optimised" in c.value for c in app.caption)

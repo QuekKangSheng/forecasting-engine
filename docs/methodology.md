@@ -822,7 +822,7 @@ base case.
 2. **Weights.** The latest optimised weights as the Portfolio page last solved
    them (`app/portfolio_summary`), held as they are: they are not re-solved for
    the shock. Re-optimising under the shock is a separate, explicit action
-   (FYP-246). The Portfolio page must have been opened on the committed data
+   (FYP-246, below). The Portfolio page must have been opened on the committed data
    for the weights to be known.
 3. **Forecasts.** An index the scenario evaluated contributes its own base-case
    and shocked forecasts (`ScenarioResult`). An index it could not evaluate (no
@@ -840,6 +840,38 @@ base case.
      `1 − c` of paths exceed (§19), negative like §14's.
    The page shows each beside its base case, with the change in percentage
    points, and states the weights, the horizon, the paths and the method.
+
+### Re-optimise under shock (FYP-246)
+
+An optional switch on the page, off by default, so the held weights are always
+what is seen first. On, the latest rebalance's target is solved again as if the
+shocked forecasts were the real ones, and shown in its own clearly labelled
+column, *Shocked, re-optimised*.
+
+1. **Same solve, one input changed.** The Portfolio page keeps what its latest
+   rebalance was solved from (`portfolio/optimize.SolveInputs`, built by
+   `solve_inputs_at`): the signal as of that date, the covariance over its
+   training window, the long-run premium `π̄`, the forecast trust `β̂`, the risk
+   level and the weight limits (§17). Re-optimising runs §17's rule
+   (`weight_breakdown`) on those inputs with only the signal changed.
+2. **Shocked signal.** A signal is the forecast less its fold's training mean,
+   and a shock leaves the training mean alone, so each index's signal moves by
+   exactly as much as the shock moved its forecast:
+   `shocked signal = signal + (shocked forecast − base-case forecast)`
+   (`scenario/portfolio_impact.shocked_signal`). An index the scenario did not
+   evaluate keeps its signal.
+3. **Target, not trade.** The result is the target before §17's no-trade band:
+   a re-optimisation is a what-if, not a trade from the drifted weights. A zero
+   shock therefore gives the rebalance's target, which can differ from the
+   weights held when the band held the portfolio; the page says so.
+4. **Simulated on the same paths.** The re-optimised weights are simulated under
+   the shocked forecasts in the same run as the held weights, so both see the
+   same paths and the held weights' figures are unchanged by asking.
+5. **When it can't move anything.** At risk level 5, or while the forecasts have
+   earned no trust (`β̂ = 0`), §17's rule ignores the signal, so re-optimising
+   returns the target unchanged; the page says which applies.
+
+The weights on the Portfolio page are never changed by it.
 
 ## 19. Monte Carlo VaR, CVaR and drawdown
 

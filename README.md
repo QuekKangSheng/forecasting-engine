@@ -145,6 +145,11 @@ hosting step is needed.
   portfolio at its latest weights, held as they are: return, volatility and
   max drawdown over the next horizon beside the base case, from the same Monte
   Carlo paths, so the difference is the shock's alone.
+- **Re-optimise under shock** — an optional switch that solves the latest
+  allocation again from the shocked forecasts, with the same risk level, limits,
+  covariance and forecast trust, and shows the re-solved weights and their
+  simulated results in a separate, clearly labelled column. The held weights and
+  the Portfolio page are left as they are.
 
 ## Interface
 
