@@ -39,6 +39,13 @@ quarter of ``TRADING_DAYS_PER_YEAR``. Long enough that one large day doesn't swi
 the estimate on its own, short enough that a change of regime, such as entering a
 crisis, shows within weeks rather than being averaged away over a year."""
 
+ROLLING_SHARPE_WINDOW: int = 252
+"""Trading days behind each point of a rolling Sharpe: a year. A Sharpe rests on a
+mean return, which takes far longer to pin down than a volatility: the standard
+error of an annualised Sharpe is about √(252 / days) (Lo, 2002), so about 1.0 over
+252 days and 1.4 over 126. The shorter window's swings would mostly be that noise,
+when the chart is read for when the strategy really improved or deteriorated."""
+
 SIGNIFICANCE_CONFIDENCE: float = 0.95
 """The confidence a significant verdict states. The cut-off itself is the sponsor's
 t-statistic bar, ``validation.gates.SIGNIFICANCE_T_GATE`` (2), the one every model
@@ -149,6 +156,22 @@ def rolling_volatility(
     returns never vary is exactly zero: pandas counts the repeated values rather
     than leaving the rounding error ``performance()`` has to guard against."""
     return returns.astype(float).rolling(window).std(ddof=1) * math.sqrt(periods_per_year)
+
+
+def rolling_sharpe(
+    returns: pd.Series,
+    window: int = ROLLING_SHARPE_WINDOW,
+    *,
+    risk_free_rate: float = RISK_FREE_RATE,
+    periods_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> pd.Series:
+    """Annualised Sharpe of the ``window`` days to each date, what ``performance``
+    gives for those days alone. NaN until ``window`` days have passed, and for a
+    window whose returns never vary, which has no Sharpe rather than an infinite one."""
+    daily_rf = (1 + risk_free_rate) ** (1 / periods_per_year) - 1
+    rolling = (returns.astype(float) - daily_rf).rolling(window)
+    sd = rolling.std(ddof=1)
+    return rolling.mean() / sd.where(sd > 0) * math.sqrt(periods_per_year)
 
 
 def relative(

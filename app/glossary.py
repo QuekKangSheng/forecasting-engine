@@ -293,6 +293,12 @@ TERMS: Mapping[str, str] = {
         "line stays below the equity index's through a sell-off really was less "
         "exposed when it mattered."
     ),
+    "Rolling Sharpe": (
+        "The Sharpe ratio of the previous year of daily returns, recalculated every "
+        "day. Drawn over the whole backtest it shows when return per unit of risk "
+        "improved or deteriorated, not just its average. A year is a short sample for "
+        "a Sharpe, so read sustained moves and not every wiggle."
+    ),
     "Equal-weight benchmark": (
         "Half in the equity index and half in the bond index, reset to 50/50 on "
         "the last trading day of each month. The optimised portfolio has to beat "
@@ -428,7 +434,8 @@ TERMS: Mapping[str, str] = {
         "One optimiser-and-backtest result, recorded the first time the Portfolio page "
         "showed it. Its key is a fingerprint of everything the result depends on, so "
         "viewing the same settings again records nothing new, and any change (a "
-        "slider, an active model, the data, the code) is a new row."
+        "slider, an active model, the data, the code) is a new, numbered run. Opening "
+        "one shows what was saved then, without refitting or changing the active models."
     ),
     "Config key": (
         "Runs with the same settings on the same data share a key. More than one means "

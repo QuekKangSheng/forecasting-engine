@@ -1,9 +1,11 @@
 """The Portfolio Optimizer page, driven through the real Streamlit page script."""
 
 import html
+import json
 import re
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 import pytest
@@ -12,10 +14,14 @@ from streamlit.testing.v1 import AppTest
 
 import bloomberg_extraction_panel
 import model_settings
+import saved_run
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest.align import Transform
 from forecasting_engine.ingest.upload import frame_sha256
+from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult
-from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
+from forecasting_engine.reporting.polynomial_function import Origin, dataset_fingerprint
+from forecasting_engine.reporting.portfolio_comparison import NOT_RUN
 from forecasting_engine.store import active_model, portfolio_runs
 from forecasting_engine.validation.crash import CrashDiagnostics
 
@@ -54,6 +60,7 @@ def short_volatility_window(monkeypatch):
     """Rolling volatility needs a quarter's returns (63 days) before its first point,
     longer than this fixture's backtest."""
     monkeypatch.setattr("forecasting_engine.portfolio.performance.ROLLING_VOL_WINDOW", 5)
+    monkeypatch.setattr("forecasting_engine.portfolio.performance.ROLLING_SHARPE_WINDOW", 5)
 
 
 def _committed() -> pd.DataFrame:
@@ -398,9 +405,9 @@ def test_the_caption_explains_that_not_run_is_not_zero_risk():
 def test_the_cumulative_return_chart_is_drawn_beside_the_weights_chart():
     app = _happy_page()
 
-    # The weights bar chart, the cumulative-return, rolling volatility and drawdown
-    # line charts.
-    assert len(app.get("vega_lite_chart")) == 4
+    # The weights bar chart, the cumulative-return, rolling volatility, drawdown and
+    # rolling Sharpe line charts.
+    assert len(app.get("vega_lite_chart")) == 5
 
 
 # --- FYP-255 / FYP-256: the rolling volatility chart ---------------------------------
@@ -432,7 +439,7 @@ def test_rolling_volatility_is_charted_for_both_indices_and_the_optimised_portfo
     assert any("Rolling volatility" in m.value for m in app.markdown)
 
 
-@pytest.mark.parametrize("value", ["Rolling volatility", "Drawdown"])
+@pytest.mark.parametrize("value", ["Rolling volatility", "Drawdown", "Rolling Sharpe"])
 def test_the_risk_charts_are_recomputed_when_the_risk_level_changes(value):
     app = _happy_page()
     before = _line_data(app, value)
@@ -463,6 +470,56 @@ def test_a_backtest_no_longer_than_the_window_explains_why_there_is_no_volatilit
     assert not app.exception
     assert any(f"Rolling volatility needs more than {days}" in t for t in _infos(app))
     assert not [c for c in app.get("vega_lite_chart") if "Rolling volatility" in c.proto.spec]
+
+
+# --- FYP-280 / FYP-281: the rolling Sharpe chart -------------------------------------
+
+
+def test_rolling_sharpe_is_charted_for_both_indices_and_the_optimised_portfolio():
+    app = _happy_page()
+
+    assert not app.exception
+    data = _line_data(app, "Rolling Sharpe")
+    assert len(data.columns) == 3 and {"S&P 500", "Optimised"} <= set(data.columns)
+    assert any("Rolling Sharpe" in m.value for m in app.markdown)
+
+
+def test_the_rolling_sharpe_chart_states_its_window_and_shows_exact_values_on_hover():
+    app = _happy_page()
+
+    spec = json.loads(_line_chart(app, "Rolling Sharpe").proto.spec)
+    assert "5-day window" in json.dumps(spec), "the window is on the chart itself"
+    assert "%d %b %Y" in json.dumps(spec), "the tooltip gives the exact date"
+    # A ratio, not a percentage, unlike the other line charts.
+    assert '"format": ".2f"' in json.dumps(spec)
+    assert '"format": ".2%"' not in json.dumps(spec)
+    assert "previous 5 trading days' returns" in _captions(app)
+
+
+def test_the_rolling_sharpe_chart_follows_the_same_basis_as_the_table():
+    app = _happy_page()
+    assert "the optimised portfolio is after costs" in _rolling_sharpe_caption(app)
+    net = _line_data(app, "Rolling Sharpe")
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+
+    basis.set_value("Before costs").run()
+
+    assert "the optimised portfolio is before costs" in _rolling_sharpe_caption(app)
+    gross = _line_data(app, "Rolling Sharpe")
+    assert not np.allclose(gross["Optimised"], net["Optimised"])
+
+
+def _rolling_sharpe_caption(app: AppTest) -> str:
+    return next(c.value for c in app.caption if c.value.startswith("Annualised Sharpe"))
+
+
+def test_a_backtest_no_longer_than_the_window_explains_why_there_is_no_sharpe_chart(monkeypatch):
+    monkeypatch.setattr("forecasting_engine.portfolio.performance.ROLLING_SHARPE_WINDOW", 1000)
+    app = _happy_page()
+
+    assert not app.exception
+    assert any("Rolling Sharpe needs more than 1000" in t for t in _infos(app))
+    assert not [c for c in app.get("vega_lite_chart") if "Rolling Sharpe" in c.proto.spec]
 
 
 # --- FYP-259 / FYP-260: the drawdown chart -------------------------------------------
@@ -906,3 +963,310 @@ def test_a_recorded_run_names_the_data_and_settings_it_came_from():
     (run,) = portfolio_runs.list_portfolio_runs()
     assert run.dataset_sha256 == frame_sha256(_committed())
     assert run.inputs["risk_level"] == 3 and run.inputs["bounds"] == [0.2, 0.8]
+
+
+# --- FYP-275 to FYP-278: reopening a saved run from Run history -----------------------
+
+RUN_HISTORY = Path(__file__).resolve().parents[2] / "app" / "app_pages" / "5_Run_History.py"
+
+
+def _history() -> AppTest:
+    """Run history in a session of its own, as after a restart: only DuckDB carries over."""
+    return AppTest.from_file(str(RUN_HISTORY), default_timeout=30).run()
+
+
+def _open(history: AppTest, number: int = 1) -> AppTest:
+    table = portfolio_runs.portfolio_runs_table()
+    key = table.loc[table["run_number"] == number, "run_key"].item()
+    history.button(key=f"open_run_{key}").click().run()
+    assert not history.exception
+    return history
+
+
+def _saved_table(history: AppTest, column: str) -> pd.DataFrame:
+    return next(d.value for d in history.tabs[1].dataframe if column in d.value.columns)
+
+
+def _page_table(app: AppTest) -> str:
+    return next(m.value for m in app.markdown if "<th>Metric</th>" in m.value)
+
+
+def test_the_run_table_lists_number_name_timestamp_models_and_risk_level():
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0), name="FF5 Benchmark")
+    _page(committed)
+
+    tab = _history().tabs[1]
+
+    text = " ".join(t.value for t in tab.text)
+    assert "Polynomial" in text and "FF5 Benchmark" in text
+    assert [t.value for t in tab.text][-1] == "3", "the page's default risk level"
+    assert any(m.value == "**1**" for m in tab.markdown)
+    assert [c.value for c in tab.caption][:6] == [
+        "Run", "Name", "First shown", "Equity model", "Bond model", "Risk",
+    ]
+
+
+def test_each_new_setting_is_the_next_run_number():
+    app = _happy_page()
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+    scale.set_value(5).run()
+    scale.set_value(3).run()  # back to one already seen: no new number
+
+    table = portfolio_runs.portfolio_runs_table()
+    assert list(table["run_number"]) == [2, 1]
+    assert list(table["risk_level"]) == [5, 3]
+
+
+def test_a_run_name_can_be_edited_and_survives_a_restart():
+    _happy_page()
+    history = _history()
+    (name,) = history.tabs[1].text_input
+    assert name.value == ""
+
+    name.set_value("Before the rate cut").run()
+
+    assert not history.exception
+    (reloaded,) = _history().tabs[1].text_input
+    assert reloaded.value == "Before the rate cut"
+    assert list(portfolio_runs.portfolio_runs_table()["run_number"]) == [1]
+
+
+def test_opening_a_run_shows_the_figures_the_portfolio_page_showed():
+    app = _happy_page()
+    page_table = _page_table(app)
+    weights = [m.value for m in app.metric]
+    significance = _significance_text(app)
+
+    history = _open(_history())
+
+    tab = history.tabs[1]
+    assert [m.value for m in tab.metric] == weights
+    table = _saved_table(history, "Metric")
+    for row in table.itertuples(index=False):
+        for cell in row:
+            assert f">{cell}<" in page_table or cell in page_table
+    text = " ".join(m.value for m in tab.markdown)
+    for figure in significance:
+        assert figure in text
+    assert _saved_table(history, "Measure")["Measure"].str.contains("VaR").any()
+
+
+def _significance_text(app: AppTest) -> list[str]:
+    """Both t-statistics as the page words them: each status row's t and verdict."""
+    rows = [m.value for m in app.markdown if "t = " in m.value and "fe-row" in m.value]
+    assert len(rows) == 2
+    return [re.search(r"t = (-?\d+\.\d\d|—)", row).group(0) for row in rows]
+
+
+def test_an_opened_runs_charts_are_the_page_s_charts():
+    app = _happy_page()
+    history = _open(_history())
+
+    for value in ("Rolling volatility", "Drawdown", "Rolling Sharpe"):
+        saved = _line_data(history, value)
+        live = _line_data(app, value)
+        pd.testing.assert_frame_equal(saved, live, check_names=False, check_freq=False)
+
+
+def test_an_opened_run_follows_the_before_costs_toggle_with_its_saved_figures():
+    app = _happy_page()
+    (live_basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+    live_basis.set_value("Before costs").run()
+    page_table = _page_table(app)
+    history = _open(_history())
+    run_basis = next(c for c in history.tabs[1].segmented_control if c.label == "Returns")
+
+    run_basis.set_value("Before costs").run()
+
+    for sharpe in _saved_table(history, "Metric").iloc[:, 1]:
+        assert sharpe in page_table
+
+
+def test_opening_a_run_refits_nothing_and_leaves_the_active_models(monkeypatch):
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0))
+    _page(committed)
+    # A later switch: the old run must still open as it was, and not switch back.
+    _set_active(EQUITY, forecast=_leaning(committed, -0.05), name="Machine Learning")
+    before = active_model.get_active_model(EQUITY)
+
+    def refused(*_args, **_kwargs):
+        raise AssertionError("opening a saved run must not solve or backtest anything")
+
+    monkeypatch.setattr("forecasting_engine.portfolio.optimize.schedule_breakdowns", refused)
+    monkeypatch.setattr("forecasting_engine.portfolio.backtest.run_backtest", refused)
+    history = _open(_history())
+
+    assert any("Polynomial" in c.value for c in history.tabs[1].caption)
+    assert active_model.get_active_model(EQUITY) == before
+
+
+def test_a_simulated_run_opens_with_its_simulation():
+    app = _run_simulation(_happy_page())
+    assert _simulation_table(app)
+
+    history = _open(_history())
+
+    tail = _saved_table(history, "Method")
+    assert NOT_RUN not in set(tail["Optimised"])
+    assert any("100,000 paths" in c.value for c in history.tabs[1].caption)
+
+
+def test_an_unsimulated_run_opens_with_monte_carlo_not_run():
+    _happy_page()
+
+    tail = _saved_table(_open(_history()), "Method")
+
+    monte_carlo = tail[tail["Method"].str.startswith("Monte Carlo")]
+    assert len(monte_carlo) and set(monte_carlo["Optimised"]) == {NOT_RUN}
+
+
+def test_a_run_saved_before_results_were_kept_cannot_be_opened_but_can_be_listed():
+    app = _happy_page()
+    with duckdb.connect("data/forecasting.duckdb") as conn:
+        conn.execute("DELETE FROM portfolio_run_results")
+        conn.execute("DELETE FROM portfolio_run_daily")
+
+    tab = _history().tabs[1]
+
+    (button,) = [b for b in tab.button if b.label == "Open"]
+    assert button.disabled and "before results were saved" in button.proto.help
+    # Shown again, the same run gets its results rather than a new number.
+    app.run()
+    (button,) = [b for b in _history().tabs[1].button if b.label == "Open"]
+    assert not button.disabled
+    assert list(portfolio_runs.portfolio_runs_table()["run_number"]) == [1]
+
+
+# --- FYP-270 to FYP-274: the downloadable run report ----------------------------------
+
+
+def _run_key() -> str:
+    return portfolio_runs.portfolio_runs_table()["run_key"].item()
+
+
+def _cells(table: str) -> list[str]:
+    """Every cell of a page's hand-built table, its help icon left out."""
+    return [
+        html.unescape(re.sub(r"<span.*?</span>", "", cell))
+        for cell in re.findall(r"<td[^>]*>(.*?)</td>", table)
+    ]
+
+
+def _report() -> str:
+    return html.unescape(saved_run.report_bytes(_run_key(), latest_saved=False).decode("utf-8"))
+
+
+def test_the_report_is_offered_from_the_portfolio_page_and_each_run_row():
+    app = _happy_page()
+
+    (button,) = app.get("download_button")
+    assert button.proto.label == "Download run report"
+    (row,) = _history().tabs[1].get("download_button")
+    assert row.proto.label == "Report"
+
+
+def _report_section(report: str, heading: str, basis: str) -> str:
+    """One basis's part of a report section, so a figure only counts under its basis."""
+    section = report.split(f"<h2>{heading}</h2>")[1].split("</section>")[0]
+    return section.split(f"<h3>{basis}</h3>")[1].split("<h3>")[0]
+
+
+def test_every_figure_in_the_report_matches_the_page_on_both_bases():
+    app = _happy_page()
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+    pages = {}
+    for label in ("After costs", "Before costs"):
+        basis.set_value(label).run()
+        pages[label] = [m.value for m in app.markdown]
+    weights = [m.value for m in app.metric]
+    report = _report()
+
+    for label, markdown in pages.items():
+        comparison, tail = [m for m in markdown if "<table" in m]
+        for heading, table in (("Backtest", comparison), ("VaR and CVaR", tail)):
+            shown = _report_section(report, heading, label)
+            for row in re.findall(r"<tr>(.*?)</tr>", table)[1:]:
+                figures = _cells(row)
+                assert "</td><td>".join(figures) in shown, f"{label}: {figures}"
+        statuses = [m for m in markdown if "t = " in m and "fe-row" in m]
+        tests = ("Against the equal-weight benchmark", "Did the forecasts add value?")
+        for test, status in zip(tests, statuses, strict=True):
+            t = re.search(r"t = (-?\d+\.\d\d|—)", status).group(1)
+            assert re.search(
+                rf"<td>{label}</td><td>{re.escape(test)}[^<]*</td><td>{re.escape(t)}</td>", report
+            ), f"{label}: {test} t = {t}"
+    for weight in weights:
+        assert weight in report
+
+
+def test_the_report_repeats_how_the_page_said_the_weights_were_set():
+    app = _happy_page()
+    how_set = next(c.value for c in app.caption if c.value.startswith("How this was set"))
+
+    assert how_set in _report()
+
+
+def test_generating_the_report_refits_and_resolves_nothing(monkeypatch):
+    _happy_page()
+
+    def refused(*_args, **_kwargs):
+        raise AssertionError("a report must be written from the saved run")
+
+    monkeypatch.setattr("forecasting_engine.portfolio.optimize.schedule_breakdowns", refused)
+    monkeypatch.setattr("forecasting_engine.portfolio.backtest.run_backtest", refused)
+    monkeypatch.setattr("forecasting_engine.portfolio.backtest.chain", refused)
+
+    assert "Spread t-statistics" in _report()
+
+
+def test_a_page_not_showing_a_simulation_reports_monte_carlo_as_not_run():
+    app = _run_simulation(_happy_page())
+    (method,) = [c for c in app.segmented_control if c.label == "Sampling method"]
+    method.set_value("parametric").run()  # the saved bootstrap no longer answers the page
+
+    assert f"<h2>Monte Carlo</h2><p>{NOT_RUN}.</p>" in _report()
+
+
+def test_a_page_showing_a_simulation_reports_those_figures():
+    app = _run_simulation(_happy_page())
+    table = _simulation_table(app)
+
+    report = html.unescape(
+        saved_run.report_bytes(_run_key(), simulation=("bootstrap", 100_000)).decode("utf-8")
+    )
+
+    assert "100,000 paths" in report
+    for cell in _cells(table):
+        assert cell in report
+    assert f"<h2>Monte Carlo</h2><p>{NOT_RUN}" not in report
+
+
+def test_a_row_in_run_history_reports_its_latest_simulation():
+    _run_simulation(_happy_page())
+
+    assert "100,000 paths" in saved_run.report_bytes(_run_key()).decode("utf-8")
+
+
+def test_the_report_carries_the_data_quality_models_and_their_functions():
+    committed = _committed()
+    function = active_model.ActiveFunction(
+        Origin.DERIVED,
+        ModelDescription(name="Derived", terms=("SIGNAL",), coefficients=(0.0123,), intercept=0.01),
+        {"SIGNAL": Transform.LEVEL},
+    )
+    shap = ModelDescription(name="Derived", terms=("SIGNAL",), coefficients=(0.0045,))
+    _set_active(EQUITY, forecast=_leaning(committed, 0.05), function=function, attribution=shap)
+    _set_active(BOND, forecast=_leaning(committed, 0.0), name="Machine Learning")
+    _page(committed)
+
+    report = _report()
+
+    assert f"<td>Rows</td><td>{len(committed)}</td>" in report
+    assert "S&P 500: Polynomial" in report
+    assert "0.0123" in report and "0.004500" in report
+    assert "not a polynomial" in report
+    assert "Gate result not saved" in report, "these fixtures have no recorded run"
