@@ -55,6 +55,9 @@ class Forecaster(Protocol):
     pre-sliced frame, so a model can see lagged history right up to its own window
     without the caller re-deriving it — the same shape the architecture doc's
     ``Forecaster`` protocol specifies.
+
+    A forecaster may also declare ``sets_own_level = True`` (see
+    ``declares_own_level``); none has to.
     """
 
     name: str
@@ -64,3 +67,14 @@ class Forecaster(Protocol):
     def predict(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> pd.Series: ...
 
     def describe(self) -> ModelDescription: ...
+
+
+def declares_own_level(forecaster: object) -> bool:
+    """Whether ``forecaster`` sets its forecast's level itself rather than taking it
+    from the training-mean target, by declaring ``sets_own_level = True``.
+
+    Most models' level is the training mean, so what they add to it is the signal the
+    harness scores. A model whose level is its own fit (``models/no_change.py``) would
+    be credited for any gap between the two, so the harness judges it against its own
+    mean in-sample forecast instead (``validation.harness.fold_baseline``)."""
+    return bool(getattr(forecaster, "sets_own_level", False))

@@ -28,7 +28,7 @@ from forecasting_engine.ingest.align import Transform
 from forecasting_engine.ingest.fama_french import FactorFetchError, FactorFile, ResolvedFactors
 from forecasting_engine.ingest.provenance import SourceFile
 from forecasting_engine.ingest.upload import frame_sha256
-from forecasting_engine.models import boosted
+from forecasting_engine.models import boosted, no_change
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import Tune, TuningLog
 from forecasting_engine.models.famafrench import FACTOR_COLUMNS, FactorCoverage
@@ -292,7 +292,13 @@ def test_every_model_trains_on_the_same_rolling_window(splitter_calls, stub_ml):
     app = _press_run(_untick(_page(), "Fama-French 5", "Machine learning"))
 
     assert not app.exception
-    assert {call["train"] for call in splitter_calls} == {120}
+    # The one exception is the derived polynomial's expanding no-change fit: the
+    # page's window, grown to every earlier date, so its first test window opens
+    # where the rolling ones' does.
+    rolling = [call for call in splitter_calls if call["train"] is not None]
+    grown = [call for call in splitter_calls if call["train"] is None]
+    assert {call["train"] for call in rolling} == {120}
+    assert all(call["tuning_rows"] == 120 for call in grown)
 
 
 def test_the_embargo_and_signal_lag_are_not_inputs():
@@ -1510,3 +1516,195 @@ def test_the_research_model_can_be_set_active_with_its_signal_and_no_train_windo
     assert record.train_window is None
     signal = active_model.get_active_model_signal(EQUITY)
     pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)
+
+
+# --- the derived polynomial, won by its no-change fit --------------------------------
+
+RATE = "USGG10YR_Index_PX_LAST"
+VIX = "VIX_Index_PX_LAST"
+
+
+def _carry_committed() -> tuple[pd.DataFrame, dict[str, ColumnSource]]:
+    """An index whose return the 10-year yield's level drives and whose moves cost it.
+    The page reads the yield as a daily change, so only the no-change fit sees its level."""
+    rng = np.random.default_rng(7)
+    n = 200
+    rate = 3 + np.cumsum(rng.normal(scale=0.05, size=n))
+    daily = np.r_[
+        0.0,
+        0.004 * (rate[:-1] - 3) - 0.05 * np.diff(rate) + rng.normal(scale=0.001, size=n - 1),
+    ]
+    committed = pd.DataFrame(
+        {
+            "Date": pd.bdate_range("2024-01-01", periods=n),
+            SPX: 4000 * np.exp(np.cumsum(daily)),
+            VIX: 15 + rng.normal(size=n),
+            RATE: rate,
+        }
+    )
+    sources = {
+        SPX: ColumnSource("SPX Index", "PX_LAST"),
+        VIX: ColumnSource("VIX Index", "PX_LAST"),
+        RATE: ColumnSource("USGG10YR Index", "PX_LAST"),
+    }
+    return committed, sources
+
+
+def test_a_derived_run_won_by_the_no_change_fit_reads_and_shows_its_inputs_as_levels(stub_ml):
+    committed, sources = _carry_committed()
+    app = _page(committed=committed, sources=sources)
+    app = _press_run(_untick(app, "Fama-French 5", "Machine learning"))
+
+    assert not app.exception
+    run = _stored_runs(app)[POLY]
+    assert run.input_transforms == {RATE: Transform.LEVEL, VIX: Transform.LEVEL}
+    assert run.expanding_window
+    assert RATE in run.description.terms
+    # Standardised as a level: about the yield's own mean, not its daily change's zero.
+    mean, _sd = run.description.standardisation[RATE]
+    assert mean == pytest.approx(committed[RATE].iloc[:160].mean(), rel=0.05)
+    assert RATE in run.shap.terms
+    (latex,) = [lx.value for lx in app.latex]
+    assert r"z_{\text{USGG10YR Index (last price)}}" in latex
+    assert (
+        "Won by the no-change fit: each rate, spread and gauge enters as its level, not its "
+        "daily change, and this is the return expected over the next 5 days if none of them "
+        "moves. Each fold trained on every earlier date."
+    ) in _captions(app)
+
+
+def _no_change_run(*, expanding_window: bool) -> model_runs.ModelRun:
+    description = ModelDescription(
+        name="NoChangePolynomial",
+        terms=(RATE, VIX),
+        coefficients=(0.0009, -0.0004),
+        intercept=0.0026,
+        input_bounds={RATE: (-2.0, 7.7), VIX: (-10.6, 47.8)},
+        standardisation={RATE: (2.86, 1.21), VIX: (18.6, 7.30)},
+    )
+    fn = from_description(
+        description, origin=Origin.DERIVED, target=SPX, horizon=5, columns=(RATE, VIX)
+    )
+    return model_runs.ModelRun(
+        _result(),
+        description,
+        function=fn,
+        input_transforms={RATE: Transform.LEVEL, VIX: Transform.LEVEL},
+        expanding_window=expanding_window,
+    )
+
+
+@pytest.mark.parametrize(("expanding_window", "train_window"), [(True, None), (False, 120)])
+def test_setting_a_no_change_winner_active_stores_level_inputs_and_its_train_window(
+    expanding_window, train_window
+):
+    committed, sources = _carry_committed()
+    app = _page(
+        {EQUITY: {POLY: _no_change_run(expanding_window=expanding_window)}},
+        committed=committed,
+        sources=sources,
+    )
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert not app.exception
+    function = active_model.get_active_function(EQUITY)
+    # The page's map reads the yield as a daily change; the function was fitted on levels.
+    assert function.transforms == {RATE: Transform.LEVEL, VIX: Transform.LEVEL}
+    assert active_model.get_active_model(EQUITY).train_window == train_window
+
+
+def test_a_derived_winner_on_the_page_panel_keeps_the_pages_transforms():
+    committed, sources = _carry_committed()
+    description = ModelDescription("DerivedPolynomial", (RATE,), (0.0004,), intercept=0.001)
+    fn = from_description(description, origin=Origin.DERIVED, target=SPX, horizon=5)
+    run = model_runs.ModelRun(_result(), description, function=fn)
+    app = _page({EQUITY: {POLY: run}}, committed=committed, sources=sources)
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert active_model.get_active_function(EQUITY).transforms == {RATE: Transform.DIFFERENCE}
+    assert active_model.get_active_model(EQUITY).train_window == 120
+    assert "Won by the no-change fit" not in _captions(app)
+
+
+def test_a_no_change_winner_says_it_screens_nothing():
+    committed, sources = _carry_committed()
+    app = _page(
+        {EQUITY: {POLY: _no_change_run(expanding_window=True)}},
+        committed=committed,
+        sources=sources,
+    )
+
+    captions = _captions(app)
+    assert "The derived polynomial's no-change fit won, and it screens nothing" in captions
+    assert "Nothing was screened" not in captions
+
+
+def test_a_derived_run_says_when_its_no_change_fit_was_not_tried():
+    note = (
+        "The no-change fit was not tried: not enough complete training rows for the "
+        "no-change polynomial (need at least 30, got 12)."
+    )
+    app = _page({EQUITY: {POLY: replace(_polynomial_run(), warning=note)}})
+
+    assert note in _captions(app)
+
+
+# --- the derived polynomial on the bond tab tries only the no-change fit --------------
+
+
+@pytest.fixture
+def derive_calls(monkeypatch):
+    """Record ``no_change_only`` for each target's derived run, then run it for real."""
+    from forecasting_engine.models import polynomial
+
+    calls: list[bool] = []
+    real = polynomial.derive_polynomial
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs.get("no_change_only", False))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(polynomial, "derive_polynomial", recording)
+    return calls
+
+
+def test_the_bond_tab_asks_for_the_no_change_fit_alone_and_the_equity_tab_does_not(
+    derive_calls, stub_ml
+):
+    app = _page(bond=True)
+    equity_run, bond_run = [b for b in app.button if b.label == "Run"]
+
+    equity_run.click().run()
+    assert derive_calls == [False]
+    bond_run.click().run()
+
+    assert not app.exception
+    assert derive_calls[-1] is True
+    assert not any(derive_calls[:-1])
+    assert POLY in _stored_runs(app, BOND)
+
+
+def test_the_derived_caption_says_what_each_tab_tries():
+    captions = [c.value for c in _page(bond=True).caption]
+
+    equity = [c for c in captions if c.startswith("Tries a Lasso fit")]
+    bond = [c for c in captions if c.startswith("Tries a no-change fit")]
+    assert len(equity) == 1
+    assert len(bond) == 1
+    assert "only if neither can be fitted" in bond[0]
+
+
+def test_a_bond_run_with_no_rate_in_the_data_says_the_other_fits_were_tried_instead(
+    monkeypatch, stub_ml
+):
+    monkeypatch.setattr(no_change, "level_panel", lambda *args: None)
+    app = _page(bond=True)
+    equity_run, bond_run = [b for b in app.button if b.label == "Run"]
+    bond_run.click().run()
+
+    assert not app.exception
+    note = _stored_runs(app, BOND)[POLY].warning
+    assert note is not None
+    assert "Only the no-change fit was meant to run on this target" in note
+    assert "The Lasso and shrinkage fits were tried instead." in note
+    assert _stored_runs(app, EQUITY) == {}

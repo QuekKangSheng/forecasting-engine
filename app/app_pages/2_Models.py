@@ -51,14 +51,17 @@ from forecasting_engine.models.famafrench import (
     run_famafrench,
 )
 from forecasting_engine.models.naive import NaiveDataError, run_naive
+from forecasting_engine.models.no_change import level_panel
 from forecasting_engine.models.polynomial import (
     CANDIDATE_CONFIGS,
     CLIP_SD,
     MAX_DEGREE,
+    NO_CHANGE_ONLY_ROLES,
     DerivedPolynomial,
+    DerivedRun,
     PolynomialConfigError,
+    derive_polynomial,
     placeholders,
-    run_derived_polynomial,
     run_user_polynomial,
 )
 from forecasting_engine.models.shrinkage import ShrinkageDataError
@@ -176,8 +179,11 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 #: derived grid reaches degree 5, adds the shrinkage fit, and trains equity on
 #: every earlier date. 4: every model trains on the latest 504 dates, and machine
 #: learning tunes on 252-row folds inside its tuning period. 5: every model
-#: but the naive baseline is gated on Signal Rank IC and t.
-RESULT_VERSION = 5
+#: but the naive baseline is gated on Signal Rank IC and t. 6: the derived grid
+#: adds the no-change fit on levels, rolling and expanding, scored against its own level,
+#: and the bond target tries only that fit (the lasso and shrinkage fits run only if it
+#: cannot be fitted).
+RESULT_VERSION = 6
 
 st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
 ui.inject()
@@ -241,8 +247,8 @@ with st.expander("Settings"):
     test = DEFAULT_TEST_WINDOW
     st.caption(
         f"The train window is fixed: every model on both targets trains on the latest "
-        f"{TRAIN_WINDOW} dates. The research model alone trains on every earlier date, "
-        "as its research did.",
+        f"{TRAIN_WINDOW} dates. The research model trains on every earlier date, as its "
+        "research did, and the derived polynomial tries its no-change fit both ways.",
         help=glossary.term("Walk-forward train window (days)"),
     )
     st.caption(
@@ -322,8 +328,23 @@ def _keep(widget_key: str, value: object) -> None:
     st.session_state[f"{widget_key}_kept"] = value
 
 
+def _derived_caption(no_change_only: bool) -> str:
+    """What the derived polynomial tries on this tab."""
+    if no_change_only:
+        return (
+            "Tries a no-change fit on the levels of the rates, spreads and gauges, on the "
+            "latest dates and on every earlier date, and reports the one with the best "
+            "Signal Rank IC. The Lasso and shrinkage fits run only if neither can be fitted."
+        )
+    return (
+        f"Tries a Lasso fit at each degree from 1 to 3 (of up to {MAX_DEGREE} allowed), "
+        "a shrinkage fit and a no-change fit on the levels of the rates, spreads and "
+        "gauges, and reports the one with the best Signal Rank IC."
+    )
+
+
 def _polynomial_settings(
-    key: str, panel: FeaturePanel, run_poly: bool
+    key: str, panel: FeaturePanel, run_poly: bool, no_change_only: bool
 ) -> tuple[str | None, dict[str, object]]:
     """Which polynomial runs, if any, and each polynomial row's own setting.
 
@@ -355,10 +376,7 @@ def _polynomial_settings(
         )
         _keep(terms_key, int(max_terms))
         settings[DERIVED] = int(max_terms)
-        st.caption(
-            f"Tries a Lasso fit at each degree from 1 to 3 (of up to {MAX_DEGREE} allowed) "
-            "and a shrinkage fit, and reports the one with the best Signal Rank IC."
-        )
+        st.caption(_derived_caption(no_change_only), help=glossary.term("No-change fit"))
         return DERIVED, settings
     formula = st.text_input(
         "Function — write its shape with placeholders, then pick each one's signal",
@@ -454,24 +472,63 @@ def _latest(series: pd.Series) -> str:
     return f"{present.iloc[-1]:.4g}" if len(present) else "—"
 
 
+def _derived_warning(run: DerivedRun) -> str | None:
+    """What to tell the user when the derived run was not the one asked for."""
+    if run.fallback:
+        return (
+            f"Only the no-change fit was meant to run on this target, but {run.fallback}. "
+            "The Lasso and shrinkage fits were tried instead."
+        )
+    left_out = "; ".join(dict.fromkeys(run.left_out.values()))
+    return f"The no-change fit was not tried: {left_out}" if left_out else None
+
+
 def _run_derived(
-    max_terms: int, panel: FeaturePanel, price_col: str, splitter: PurgedWalkForward
+    max_terms: int,
+    panel: FeaturePanel,
+    frame: pd.DataFrame,
+    page_transforms: Mapping[str, Transform],
+    price_col: str,
+    splitter: PurgedWalkForward,
+    no_change_only: bool = False,
 ) -> model_runs.ModelRun:
+    """The derived grid, including the no-change fit on the levels of ``frame``'s rates,
+    spreads and gauges, or with ``no_change_only`` that fit alone. The equation and SHAP
+    are the winner's: on its own panel and its last fold's training window, rolling or
+    expanding."""
     candidates = tuple(
         DerivedPolynomial(degree=c.degree, regularizer=c.regularizer, max_terms=max_terms)
         for c in CANDIDATE_CONFIGS
     )
-    result, description = run_derived_polynomial(panel, splitter, candidates=candidates)
+    levels = level_panel(frame, panel.signals, page_transforms, price_col, panel.horizon)
+    run = derive_polynomial(
+        panel,
+        splitter,
+        candidates,
+        level_panel=levels,
+        no_change_max_terms=max_terms,
+        no_change_only=no_change_only,
+    )
     fn = from_description(
-        description,
+        run.description,
         origin=Origin.DERIVED,
         target=price_col,
         horizon=panel.horizon,
-        columns=panel.signals,
+        columns=run.panel.signals,
     )
-    training = panel.frame.loc[last_fold_train_window(panel, splitter)]
-    shap = polynomial_shap(fn, training, description.input_bounds)
-    return model_runs.ModelRun(result, description, function=fn, shap=shap)
+    training = run.panel.frame.loc[last_fold_train_window(run.panel, run.splitter)]
+    shap = polynomial_shap(fn, training, run.description.input_bounds)
+    read_as = dict.fromkeys(run.panel.signals, Transform.LEVEL) if run.reads_levels else None
+    warning = _derived_warning(run)
+    return model_runs.ModelRun(
+        run.result,
+        run.description,
+        function=fn,
+        shap=shap,
+        warning=warning,
+        input_transforms=read_as,
+        expanding_window=run.expanding,
+    )
 
 
 def _run_research(
@@ -509,15 +566,17 @@ def _research_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None
 def _active_function(name: str, run: model_runs.ModelRun) -> active_model.ActiveFunction | None:
     """The fitted function a scenario evaluates again (FYP-32), for the polynomial
     models only: their latest fold's fit, with each input's transform. The research
-    model reads its inputs as levels whatever the transform map says."""
+    model, and a derived polynomial won by its no-change fit, read their inputs as
+    levels whatever the transform map says."""
     origin = {DERIVED: Origin.DERIVED, RESEARCH: Origin.DERIVED, USER: Origin.USER_SUPPLIED}
     if name not in origin:
         return None
     inputs = function_inputs(run.description, origin[name], numeric_cols)
+    own = run.input_transforms or {}
     return active_model.ActiveFunction(
         origin[name],
         run.description,
-        {s: Transform.LEVEL if name == RESEARCH else transforms[s] for s in inputs},
+        {s: Transform.LEVEL if name == RESEARCH else own.get(s, transforms[s]) for s in inputs},
     )
 
 
@@ -560,10 +619,11 @@ def _recorder(
     return record
 
 
-def _active_settings(name: str) -> dict[str, int | str | None]:
-    """What a model set active was run under. The research model trains on every
-    earlier date, so it has no train window."""
-    if name == RESEARCH:
+def _active_settings(name: str, run: model_runs.ModelRun) -> dict[str, int | str | None]:
+    """What a model set active was run under. The research model, and a derived
+    polynomial won by its expanding no-change fit, train on every earlier date, so
+    they have no train window."""
+    if name == RESEARCH or run.expanding_window:
         return {**ACTIVE_SETTINGS, "train_window": None}
     return ACTIVE_SETTINGS
 
@@ -768,12 +828,21 @@ def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> N
     same folds, so their screening is the same and shown once."""
     screenings = [runs[n].result.screening for n in (DERIVED, ML) if n in runs]
     screening = next((s for s in screenings if s is not None), None)
+    no_change = DERIVED in runs and bool(runs[DERIVED].input_transforms)
     with st.expander(f"Signal screening · {target_name}"):
-        if screening is None:
+        if no_change:
             st.caption(
-                "Nothing was screened: a user-supplied function and FF5 are handed their "
-                "inputs. Derive the polynomial or run machine learning to screen signals."
+                "The derived polynomial's no-change fit won, and it screens nothing: every "
+                "rate, spread and gauge enters as its level and its penalty decides which "
+                "stay. Any table below is machine learning's.",
+                help=glossary.term("No-change fit"),
             )
+        if screening is None:
+            if not no_change:
+                st.caption(
+                    "Nothing was screened: a user-supplied function and FF5 are handed their "
+                    "inputs. Derive the polynomial or run machine learning to screen signals."
+                )
             return
         st.caption(
             f"Every one of the {screening.folds} walk-forward folds screens signals on its "
@@ -840,6 +909,16 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
         )
     else:
         st.latex(to_latex(fn, label))
+    if run.input_transforms:
+        window = " Each fold trained on every earlier date." if run.expanding_window else ""
+        st.caption(
+            "Won by the no-change fit: each rate, spread and gauge enters as its level, not "
+            f"its daily change, and this is the return expected over the next {fn.horizon} "
+            f"days if none of them moves.{window}",
+            help=glossary.term("No-change fit"),
+        )
+    if run.warning:
+        st.caption(run.warning)
     lines = standardisation_lines(fn, label)
     if lines:
         st.caption(
@@ -961,7 +1040,7 @@ def _show_active_status(role: TargetRole, target_name: str) -> None:
 def _confirm_high_risk(
     role: TargetRole,
     model_name: str,
-    result: ModelRunResult,
+    run: model_runs.ModelRun,
     failed: tuple[str, ...],
     target_name: str,
     function: active_model.ActiveFunction | None,
@@ -981,12 +1060,12 @@ def _confirm_high_risk(
         active_model.set_active_model(
             role,
             model_name,
-            result,
+            run.result,
             high_risk=True,
             function=function,
             attribution=attribution,
             run_id=run_id,
-            **_active_settings(model_name),
+            **_active_settings(model_name, run),
         )
         st.session_state.pop(pending_key, None)
         st.rerun()
@@ -1046,17 +1125,16 @@ def _show_active_picker(
                 function=_active_function(selected, runs[selected]),
                 attribution=_active_attribution(selected, runs[selected]),
                 run_id=_run_id(role, selected, settings),
-                **_active_settings(selected),
+                **_active_settings(selected, runs[selected]),
             )
             st.rerun()
     pending = st.session_state.get(pending_key)
     if pending in runs:
-        result = runs[pending].result
-        outcome = _outcome(result)
+        outcome = _outcome(runs[pending].result)
         _confirm_high_risk(
             role,
             pending,
-            result,
+            runs[pending],
             outcome.failed_gates,
             target_name,
             _active_function(pending, runs[pending]),
@@ -1224,7 +1302,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     panel = align_and_lag(indexed, signal_cols, price_col, horizon=horizon, transforms=transforms)
     _show_alignment(panel, target_name)
 
-    polynomial, settings = _polynomial_settings(key, panel, run_poly)
+    no_change_only = role in NO_CHANGE_ONLY_ROLES
+    polynomial, settings = _polynomial_settings(key, panel, run_poly, no_change_only)
     signs, unavailable = _research_signs(role) if equity else (None, None)
     if research_ticked and not signs:
         st.caption(f"No research model for this target: {unavailable}")
@@ -1252,7 +1331,16 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if (clicked or run_all) and not nothing_to_run and not running:
         runners = {
             NAIVE: functools.partial(_run_naive, panel, splitter),
-            DERIVED: functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter),
+            DERIVED: functools.partial(
+                _run_derived,
+                settings[DERIVED],
+                panel,
+                indexed,
+                transforms,
+                price_col,
+                splitter,
+                no_change_only=no_change_only,
+            ),
             RESEARCH: functools.partial(
                 _run_research, signs, indexed, price_col, horizon, splitter
             ),

@@ -1,9 +1,11 @@
 """FYP-43: the polynomial Forecaster, user-supplied or system-derived.
 
 Two ``Forecaster`` implementations (``UserPolynomial``, ``DerivedPolynomial``) plus the
-two functions that run either one through the shared harness and shape the result into
+functions that run them through the shared harness and shape the result into
 ``reporting.model_metrics.ModelRunResult`` — the fixed contract FYP-45/FYP-14 already
-built the comparison view and promotion gates against.
+built the comparison view and promotion gates against. The derived polynomial's grid
+also tries ``shrinkage.ShrinkagePolynomial`` and, on the levels of the rates, spreads
+and gauges, ``no_change.NoChangePolynomial``.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from __future__ import annotations
 import ast
 import operator
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -19,6 +21,7 @@ from sklearn.linear_model import enet_path
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
+from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.shrinkage import ShrinkagePolynomial
@@ -26,11 +29,12 @@ from forecasting_engine.parallel import map_processes
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.validation.harness import (
     FoldResult,
+    candidate_scores,
     evaluate,
     select_best_candidate,
     summarize,
 )
-from forecasting_engine.validation.splitters import PurgedWalkForward
+from forecasting_engine.validation.splitters import PurgedWalkForward, expanding
 
 MAX_DEGREE: int = 5
 """FYP-43's third acceptance criterion: a degree above this is rejected."""
@@ -524,6 +528,77 @@ SHRINKAGE: str = "shrinkage"
 """The grid's other candidate: ``shrinkage.ShrinkagePolynomial``, a degree-1 fit
 whose slopes are shrunk toward one common slope."""
 
+NO_CHANGE: str = "no_change"
+"""The no-change candidate: ``no_change.NoChangePolynomial``, a degree-1 fit on the
+levels of the rates, spreads and gauges with each row's own news taken out, on the
+caller's rolling window. In the grid only when a level panel is passed."""
+
+NO_CHANGE_EXPANDING: str = "no_change_expanding"
+"""The same fit trained on every earlier row (``splitters.expanding``)."""
+
+NO_CHANGE_ONLY_ROLES: tuple[TargetRole, ...] = (TargetRole.BOND,)
+"""The targets whose derived polynomial tries only the two no-change fits, not the
+lasso and shrinkage ones. On the bond target those keep no term in about half the
+folds, so they forecast a flat line, and on the Sep 2026 data at the 20-day horizon
+they scored a Signal Rank IC of +0.011, +0.027 and +0.051 (lasso, degrees 1 to 3) and
+-0.037 (shrinkage), against +0.101 and +0.137 for the no-change fit on the rolling and
+the expanding window. If the no-change fits cannot be fitted, the others run instead."""
+
+
+@dataclass(frozen=True)
+class DerivedRun:
+    """The derived polynomial's winning candidate: its score and latest fit, and what
+    it was fitted on, so its equation and attribution can be built on the same panel
+    and windows."""
+
+    result: ModelRunResult
+    description: ModelDescription
+    winner: str
+    """The winning candidate: ``degree<d>_lasso``, ``SHRINKAGE``, ``NO_CHANGE`` or
+    ``NO_CHANGE_EXPANDING``."""
+    panel: FeaturePanel
+    """The panel it was fitted on: the caller's, or the level panel for a no-change
+    winner."""
+    splitter: PurgedWalkForward
+    """The walk-forward it ran: the caller's, or its expanding version."""
+    reads_levels: bool
+    """Whether its inputs are the state series' levels whatever the caller's transform
+    map says, as a no-change winner's are."""
+    scores: Mapping[str, float]
+    """Every candidate's Signal Rank IC, the figure the winner was picked on."""
+    left_out: Mapping[str, str] = field(default_factory=dict)
+    """Candidates that could not be fitted on this data, each with why, and so were not
+    in the pick. Only a no-change fit can be: it needs every one of its inputs on a row,
+    where the other candidates screen a sparse signal out."""
+    fallback: str | None = None
+    """Why the lasso and shrinkage grid ran when only the no-change fits were asked for
+    (``no_change_only``): there was no rate, spread or gauge in the data, or no no-change
+    fit could be fitted on it. None when the run was as asked."""
+
+    @property
+    def expanding(self) -> bool:
+        """Whether every fold trained on every earlier row, not a rolling window."""
+        return self.splitter.train is None
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    """One entry of the grid: what it fits, on which panel, over which walk-forward."""
+
+    name: str
+    config: tuple[int, str, int | None]
+    panel: FeaturePanel
+    splitter: PurgedWalkForward
+    reads_levels: bool = False
+
+
+@dataclass(frozen=True)
+class _LeftOut:
+    """A candidate that could not be fitted on this data, and why, for a portfolio
+    manager."""
+
+    reason: str
+
 
 def run_user_polynomial(
     formula: str,
@@ -544,41 +619,176 @@ def run_derived_polynomial(
     candidates: tuple[DerivedPolynomial, ...] = CANDIDATE_CONFIGS,
     *,
     shrinkage: bool = True,
+    level_panel: FeaturePanel | None = None,
+    no_change_max_terms: int | None = None,
+    no_change_only: bool = False,
 ) -> tuple[ModelRunResult, ModelDescription]:
-    """Evaluates every candidate in ``candidates``, and the shrinkage polynomial
-    unless ``shrinkage`` is false, then reports the one with the best Signal Rank
+    """The winning candidate's result and latest fit (``derive_polynomial``, which
+    also says which candidate won and what it was fitted on)."""
+    run = derive_polynomial(
+        panel,
+        splitter,
+        candidates,
+        shrinkage=shrinkage,
+        level_panel=level_panel,
+        no_change_max_terms=no_change_max_terms,
+        no_change_only=no_change_only,
+    )
+    return run.result, run.description
+
+
+def derive_polynomial(
+    panel: FeaturePanel,
+    splitter: PurgedWalkForward,
+    candidates: tuple[DerivedPolynomial, ...] = CANDIDATE_CONFIGS,
+    *,
+    shrinkage: bool = True,
+    level_panel: FeaturePanel | None = None,
+    no_change_max_terms: int | None = None,
+    no_change_only: bool = False,
+) -> DerivedRun:
+    """Evaluates every candidate in ``candidates``, the shrinkage polynomial unless
+    ``shrinkage`` is false and, given a ``level_panel`` (``no_change.level_panel``),
+    the no-change polynomial on ``splitter``'s rolling window and on its expanding
+    one, capped at ``no_change_max_terms``. Reports the one with the best Signal Rank
     IC.
 
     Feature selection is screened per fold (``evaluate(..., screen=True)``) —
     a signal below FYP-102's inclusion threshold, judged on that fold's own
-    train window, is left out of that fold's fit.
+    train window, is left out of that fold's fit. The no-change candidates are not
+    screened: every state series' level enters, and the penalty alone decides which
+    survive, as for the lasso's expanded terms.
+
+    With ``no_change_only`` and a level panel that holds a signal, only the two
+    no-change candidates are tried. If there is no such level panel, or neither can be
+    fitted, the ordinary grid runs instead and ``DerivedRun.fallback`` says why, so the
+    target is never left without a polynomial.
     """
-    configs = [(c.degree, c.regularizer, c.max_terms) for c in candidates]
-    if shrinkage:
-        configs.append((1, SHRINKAGE, None))
-    if not configs:
+    has_levels = level_panel is not None and bool(level_panel.signals)
+    if no_change_only and has_levels:
+        only = _grid_no_change(splitter, level_panel, no_change_max_terms)
+        fits = _fit_all(only)
+        if any(not isinstance(fit, _LeftOut) for fit in fits):
+            return _pick(only, fits, panel, splitter)
+        reasons = "; ".join(dict.fromkeys(fit.reason for fit in fits))
+        why = f"neither could be fitted: {reasons}"
+        return _fallback(panel, splitter, candidates, shrinkage, why)
+    if no_change_only:
+        return _fallback(
+            panel, splitter, candidates, shrinkage, "the data holds no rate, spread or gauge"
+        )
+    grid = _grid(panel, splitter, candidates, shrinkage, level_panel, no_change_max_terms)
+    return _pick(grid, _fit_all(grid), panel, splitter)
+
+
+def _fallback(
+    panel: FeaturePanel,
+    splitter: PurgedWalkForward,
+    candidates: tuple[DerivedPolynomial, ...],
+    shrinkage: bool,
+    why: str,
+) -> DerivedRun:
+    """The ordinary lasso and shrinkage grid, for a run that asked for the no-change
+    fits alone and could not have them."""
+    grid = _grid(panel, splitter, candidates, shrinkage, None, None)
+    return replace(_pick(grid, _fit_all(grid), panel, splitter), fallback=why)
+
+
+def _fit_all(grid: list[_Candidate]) -> list[tuple[FoldResult, ...] | _LeftOut]:
+    """Every candidate's walk-forward. Each is independent of the others, so they run
+    in parallel and come back in order."""
+    if not grid:
         raise PolynomialConfigError("deriving a function needs at least one candidate.")
-    # Each configuration's walk-forward is independent of the others, so they
-    # run in parallel and come back in order.
-    fits = map_processes(
-        _evaluate_candidate, configs, [panel] * len(configs), [splitter] * len(configs)
+    return map_processes(
+        _evaluate_candidate,
+        [c.config for c in grid],
+        [c.panel for c in grid],
+        [c.splitter for c in grid],
     )
-    per_candidate = {
-        SHRINKAGE if regularizer == SHRINKAGE else f"degree{degree}_{regularizer}": folds
-        for (degree, regularizer, _), folds in zip(configs, fits, strict=True)
-    }
-    _require_folds(next(iter(per_candidate.values()), ()), panel, splitter)
-    return summarize(per_candidate[select_best_candidate(per_candidate)])
+
+
+def _pick(
+    grid: list[_Candidate],
+    fits: list[tuple[FoldResult, ...] | _LeftOut],
+    panel: FeaturePanel,
+    splitter: PurgedWalkForward,
+) -> DerivedRun:
+    """The candidate with the best Signal Rank IC among those that could be fitted."""
+    pairs = list(zip(grid, fits, strict=True))
+    left_out = {c.name: f.reason for c, f in pairs if isinstance(f, _LeftOut)}
+    per_candidate = {c.name: f for c, f in pairs if not isinstance(f, _LeftOut)}
+    if not per_candidate:
+        raise PolynomialConfigError(f"no candidate could be fitted: {'; '.join(left_out.values())}")
+    _require_folds(next(iter(per_candidate.values())), panel, splitter)
+    best = select_best_candidate(per_candidate)
+    winner = next(c for c in grid if c.name == best)
+    result, description = summarize(per_candidate[best])
+    return DerivedRun(
+        result=result,
+        description=description,
+        winner=best,
+        panel=winner.panel,
+        splitter=winner.splitter,
+        reads_levels=winner.reads_levels,
+        scores=candidate_scores(per_candidate),
+        left_out=left_out,
+    )
+
+
+def _grid(
+    panel: FeaturePanel,
+    splitter: PurgedWalkForward,
+    candidates: tuple[DerivedPolynomial, ...],
+    shrinkage: bool,
+    level_panel: FeaturePanel | None,
+    no_change_max_terms: int | None,
+) -> list[_Candidate]:
+    """Every configuration the derived polynomial tries, in the order selection breaks
+    ties by: the lasso degrees, shrinkage, then the no-change fits."""
+    grid = [
+        _Candidate(f"degree{degree}_{regularizer}", (degree, regularizer, cap), panel, splitter)
+        for degree, regularizer, cap in ((c.degree, c.regularizer, c.max_terms) for c in candidates)
+    ]
+    if shrinkage:
+        grid.append(_Candidate(SHRINKAGE, (1, SHRINKAGE, None), panel, splitter))
+    if level_panel is not None and level_panel.signals:
+        grid.extend(_grid_no_change(splitter, level_panel, no_change_max_terms))
+    return grid
+
+
+def _grid_no_change(
+    splitter: PurgedWalkForward, level_panel: FeaturePanel, no_change_max_terms: int | None
+) -> list[_Candidate]:
+    """The two no-change candidates: the caller's rolling window, then an expanding one."""
+    config = (1, NO_CHANGE, no_change_max_terms)
+    return [
+        _Candidate(NO_CHANGE, config, level_panel, splitter, reads_levels=True),
+        _Candidate(
+            NO_CHANGE_EXPANDING, config, level_panel, expanding(splitter), reads_levels=True
+        ),
+    ]
 
 
 def _evaluate_candidate(
     config: tuple[int, str, int | None], panel: FeaturePanel, splitter: PurgedWalkForward
-) -> tuple[FoldResult, ...]:
-    """One configuration's screened walk-forward: module-level, so a worker
-    process can run it."""
+) -> tuple[FoldResult, ...] | _LeftOut:
+    """One configuration's walk-forward, screened unless it is a no-change fit:
+    module-level, so a worker process can run it."""
     degree, regularizer, max_terms = config
     if regularizer == SHRINKAGE:
         return evaluate(ShrinkagePolynomial, panel, splitter, screen=True)
+    if regularizer == NO_CHANGE:
+        # Imported here: the no-change fit is built on this module's validation splits
+        # and penalty grid, so it cannot be imported before them.
+        from forecasting_engine.models.no_change import NoChangePolynomial
+
+        # It needs every input on a row, where the other candidates screen a sparse
+        # one out, so data they fit can leave it too few rows. Then it is left out,
+        # with why, rather than the whole grid failing with it.
+        try:
+            return evaluate(lambda: NoChangePolynomial(max_terms), panel, splitter)
+        except PolynomialConfigError as exc:
+            return _LeftOut(str(exc))
     return evaluate(
         lambda: DerivedPolynomial(degree, regularizer, max_terms), panel, splitter, screen=True
     )

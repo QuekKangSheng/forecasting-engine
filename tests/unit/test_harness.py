@@ -11,6 +11,7 @@ from forecasting_engine.validation.harness import (
     FoldResult,
     evaluate,
     select_best_candidate,
+    signal_forecasts,
     summarize,
 )
 from forecasting_engine.validation.splitters import PurgedWalkForward
@@ -539,3 +540,91 @@ def test_selection_chooses_by_signal_not_by_level():
     best = select_best_candidate({"level": level, "signal": signal})
 
     assert best == "signal"
+
+
+# --- a forecaster that sets its own level is judged against it ---------------------
+
+
+class _OwnLevelEcho(_EchoForecaster):
+    """The echo forecaster, declaring that its level is its own."""
+
+    sets_own_level = True
+
+
+class _Constant:
+    """Forecasts one value everywhere, its level or not as ``sets_own_level`` says."""
+
+    name = "Constant"
+    value = 0.0013  # a value whose mean over ten rows is off by rounding dust
+
+    def __init__(self, sets_own_level: bool) -> None:
+        self.sets_own_level = sets_own_level
+
+    def fit(self, panel: FeaturePanel, train: pd.DatetimeIndex) -> None:
+        pass
+
+    def predict(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> pd.Series:
+        return pd.Series(self.value, index=idx, dtype=float)
+
+    def describe(self) -> ModelDescription:
+        return ModelDescription(name=self.name, terms=(), coefficients=(), intercept=self.value)
+
+
+def _rising_panel(n: int = 40) -> FeaturePanel:
+    """A target that drifts up, so each fold's training mean sits below its test window's
+    returns, and a signal that ranks nothing within a fold."""
+    rng = np.random.default_rng(4)
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    frame = pd.DataFrame(
+        {"signal_a": rng.normal(size=n), "fwd_return_1d": np.linspace(0.0, 0.01, n)}, index=idx
+    )
+    return FeaturePanel(frame=frame, signals=("signal_a",), targets=("fwd_return_1d",), lag_days=1)
+
+
+def test_a_forecaster_that_does_not_declare_its_level_is_judged_against_its_training_mean():
+    panel = _panel_with_varying_folds()
+    folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=10, test=3, embargo=2))
+
+    assert all(f.own_level is None for f in folds)
+    expected = pd.concat([f.predicted - float(f.realised_train.mean()) for f in folds])
+    pd.testing.assert_series_equal(signal_forecasts(folds), expected)
+
+
+def test_a_forecaster_that_sets_its_own_level_is_judged_against_its_mean_in_sample_forecast():
+    panel = _panel_with_varying_folds()
+    holed = panel.frame.copy()
+    holed.iloc[3, 0] = np.nan  # a training row it cannot forecast is skipped, not zero
+    panel = replace(panel, frame=holed)
+    folds = evaluate(_OwnLevelEcho, panel, PurgedWalkForward(train=10, test=3, embargo=2))
+
+    for fold in folds:
+        assert fold.own_level == pytest.approx(fold.predicted_train.dropna().mean())
+        assert fold.own_level != pytest.approx(fold.realised_train.mean())
+    expected = pd.concat([f.predicted - f.own_level for f in folds])
+    pd.testing.assert_series_equal(signal_forecasts(folds), expected)
+
+
+def test_a_constant_forecast_that_sets_its_own_level_adds_exactly_no_signal():
+    panel = _rising_panel()
+    splitter = PurgedWalkForward(train=10, test=5, embargo=2)
+    assert pd.Series(_Constant.value, index=range(10)).mean() != _Constant.value  # the dust
+
+    own = evaluate(lambda: _Constant(sets_own_level=True), panel, splitter)
+    result, _ = summarize(own)
+
+    assert (signal_forecasts(own) == 0.0).all()
+    assert result.signal_rank_ic != result.signal_rank_ic  # NaN: nothing to rank, no credit
+    assert (result.baseline == _Constant.value).all()
+
+
+def test_the_same_constant_judged_against_the_training_mean_is_credited_for_its_level():
+    # What the declaration is for: against a training mean that trails a drifting
+    # target, a constant "ranks" later returns, and selection would credit it.
+    panel = _rising_panel()
+    splitter = PurgedWalkForward(train=10, test=5, embargo=2)
+    trailing = evaluate(lambda: _Constant(sets_own_level=False), panel, splitter)
+    own = evaluate(lambda: _Constant(sets_own_level=True), panel, splitter)
+    noise = evaluate(_EchoForecaster, panel, splitter)
+
+    assert summarize(trailing)[0].signal_rank_ic < -0.5
+    assert select_best_candidate({"own level": own, "noise": noise}) == "noise"
