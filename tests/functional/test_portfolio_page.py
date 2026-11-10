@@ -228,6 +228,24 @@ def test_the_happy_path_shows_latest_weights_summing_to_one():
     assert sum(values) == pytest.approx(1.0, abs=1e-6)
 
 
+def test_the_latest_rebalance_inputs_are_shared_for_re_optimising_under_a_shock():
+    """FYP-246: the Scenarios page re-solves from these, so they must be the latest
+    rebalance's, at the page's own risk level and limits."""
+    import portfolio_summary
+
+    committed = _committed()
+    _set_active(EQUITY, forecast=_forecast(committed, seed=1))
+    _set_active(BOND, forecast=_forecast(committed, seed=2))
+    app = _page(committed)
+
+    summary = app.session_state[portfolio_summary.SUMMARY_KEY]
+    inputs = summary.solve_inputs
+    assert inputs is not None
+    assert inputs.date == summary.as_of
+    assert inputs.risk_level == 3
+    assert inputs.bounds == pytest.approx((0.2, 0.8))
+
+
 # --- FYP-19: performance against the equal-weight benchmark -------------------------
 
 

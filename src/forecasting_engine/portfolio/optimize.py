@@ -403,6 +403,69 @@ def solve_weights(
     return pd.Series({equity: w_equity, bond: 1 - w_equity})
 
 
+@dataclass(frozen=True)
+class SolveInputs:
+    """Everything one rebalance's target is solved from, kept so the same solve can be
+    run again on a different signal: re-optimising under a shock (FYP-246) changes
+    the signal and nothing else."""
+
+    date: pd.Timestamp
+    signal: pd.Series
+    """Each asset's signal at ``date``: its forecast less its fold's training mean."""
+    covariance: pd.DataFrame
+    premium: float
+    trust: float
+    risk_level: int
+    bounds: tuple[float, float]
+
+    def solve(self, signal: pd.Series | None = None) -> WeightBreakdown:
+        """``weight_breakdown`` from these inputs, on ``signal`` if given, else on the
+        rebalance's own. No no-trade band: this is the target, ``WeightBreakdown.bounded``."""
+        return weight_breakdown(
+            self.signal if signal is None else signal,
+            self.covariance,
+            premium=self.premium,
+            trust=self.trust,
+            risk_level=self.risk_level,
+            bounds=self.bounds,
+        )
+
+
+def solve_inputs_at(
+    rebalance_date: pd.Timestamp,
+    signals: Mapping[TargetRole, pd.Series],
+    prices: Mapping[TargetRole, pd.Series],
+    *,
+    baselines: Mapping[TargetRole, pd.Series],
+    horizon: int,
+    train_window: int,
+    embargo: int,
+    risk_level: int = DEFAULT_RISK_LEVEL,
+    bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
+    trust_gate: float = SIGNIFICANCE_T_GATE,
+) -> SolveInputs:
+    """The inputs ``schedule_breakdowns`` solves ``rebalance_date``'s target from: the
+    signal as of that date, the covariance over its training window, the long-run
+    premium and ``forecast_trust``."""
+    signal = expected_returns(pd.DatetimeIndex([rebalance_date]), signals).iloc[0]
+    if signal.isna().any():
+        raise OptimizeDataError(
+            f"There is no signal for both indices on {rebalance_date:%d %b %Y}."
+        )
+    pairs = trust_pairs(signals, baselines, prices, horizon=horizon)
+    return SolveInputs(
+        date=rebalance_date,
+        signal=signal,
+        covariance=covariance_at_rebalance(
+            rebalance_date, prices, horizon=horizon, train_window=train_window, embargo=embargo
+        ),
+        premium=float(long_run_premium(prices, horizon=horizon).get(rebalance_date, 0.0)),
+        trust=forecast_trust(rebalance_date, pairs, horizon=horizon, gate=trust_gate),
+        risk_level=risk_level,
+        bounds=bounds,
+    )
+
+
 def weight_schedule(
     signals: Mapping[TargetRole, pd.Series],
     prices: Mapping[TargetRole, pd.Series],

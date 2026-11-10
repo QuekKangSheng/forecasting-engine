@@ -24,6 +24,7 @@ from forecasting_engine.portfolio.optimize import (
     pairs_known_by,
     schedule_breakdowns,
     schedule_weights,
+    solve_inputs_at,
     solve_weights,
     trust_pairs,
     weight_breakdown,
@@ -1041,3 +1042,60 @@ def test_switching_an_equity_model_moves_the_weights_when_the_trust_is_given():
 
     assert (higher[EQUITY] >= lower[EQUITY]).all()
     assert (higher[EQUITY] > lower[EQUITY]).any()
+
+
+# --- FYP-246: solving one rebalance again on a different signal ----------------------
+
+
+def test_solve_inputs_reproduce_each_rebalance_target_before_the_no_trade_band():
+    dates, prices, signals, kwargs = _skilful_inputs()
+
+    breakdowns = schedule_breakdowns(signals, prices, **kwargs)
+
+    for date in list(breakdowns)[-3:]:
+        inputs = solve_inputs_at(
+            date,
+            signals,
+            prices,
+            baselines=kwargs["baselines"],
+            horizon=kwargs["horizon"],
+            train_window=kwargs["train_window"],
+            embargo=kwargs["embargo"],
+        )
+        assert inputs.solve().equity == pytest.approx(breakdowns[date].bounded)
+
+
+def test_a_higher_equity_signal_re_solves_to_more_equity_once_trusted():
+    dates, prices, signals, kwargs = _skilful_inputs()
+    date = list(schedule_breakdowns(signals, prices, **kwargs))[-1]
+    inputs = solve_inputs_at(
+        date,
+        signals,
+        prices,
+        baselines=kwargs["baselines"],
+        horizon=3,
+        train_window=15,
+        embargo=2,
+        bounds=(0.0, 1.0),
+    )
+    assert inputs.trust > 0
+
+    higher = inputs.signal + pd.Series({EQUITY: 0.001, BOND: 0.0})
+
+    assert inputs.solve(higher).unconstrained > inputs.solve().unconstrained
+
+
+def test_solve_inputs_refuse_a_date_with_no_signal():
+    dates, prices, signals, kwargs = _skilful_inputs()
+    gappy = {**signals, BOND: signals[BOND][dates[-1] :]}
+
+    with pytest.raises(OptimizeDataError, match="no signal"):
+        solve_inputs_at(
+            dates[-50],
+            gappy,
+            prices,
+            baselines=kwargs["baselines"],
+            horizon=3,
+            train_window=15,
+            embargo=2,
+        )

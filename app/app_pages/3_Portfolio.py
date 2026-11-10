@@ -326,6 +326,23 @@ except BacktestDataError as exc:
 # can be read separately.
 no_forecast_backtest = run_backtest(prices, optimize.schedule_weights(no_forecast_breakdowns))
 
+# FYP-246: what the latest target was solved from, so the Scenarios page can solve it
+# again on shocked forecasts with everything else held the same.
+try:
+    latest_solve_inputs = optimize.solve_inputs_at(
+        latest_date,
+        signals,
+        prices,
+        baselines=baselines,
+        horizon=equity_active.horizon,
+        train_window=TRAIN_WINDOW,
+        embargo=EMBARGO_DAYS,
+        risk_level=risk_level,
+        bounds=(lower, upper),
+    )
+except optimize.OptimizeDataError:
+    latest_solve_inputs = None
+
 st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
     dataset_fingerprint=str(dataset_fingerprint(merged)),
     as_of=latest_date,
@@ -333,6 +350,7 @@ st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSum
     bond_weight=float(latest[BOND]),
     net_sharpe=backtest.metrics[("optimised", "net")].sharpe,
     baseline_net_sharpe=backtest.metrics[("baseline", "net")].sharpe,
+    solve_inputs=latest_solve_inputs,
 )
 
 # Recorded once per distinct set of inputs (store/portfolio_runs): the key is the

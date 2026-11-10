@@ -8,10 +8,12 @@ import pandas as pd
 import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.portfolio.optimize import SolveInputs
 from forecasting_engine.risk import monte_carlo
 from forecasting_engine.scenario.portfolio_impact import (
     PortfolioImpactError,
     portfolio_impact,
+    shocked_signal,
 )
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
@@ -139,3 +141,84 @@ def test_volatility_is_reported_by_the_simulation_itself():
     outcomes_sd = result.risk["p"].volatility
 
     assert math.isfinite(outcomes_sd) and outcomes_sd > 0
+
+
+# --- re-optimising under the shock (FYP-246) -----------------------------------------
+
+
+def _solve_inputs(trust: float = 1.0, risk_level: int = 3) -> SolveInputs:
+    """A rebalance whose forecasts are fully trusted, sized against a covariance where
+    equity is the riskier index."""
+    roles = [EQUITY, BOND]
+    return SolveInputs(
+        date=pd.Timestamp("2025-12-31"),
+        signal=pd.Series({EQUITY: 0.002, BOND: 0.0}),
+        covariance=pd.DataFrame([[0.0016, 0.0001], [0.0001, 0.0004]], index=roles, columns=roles),
+        premium=0.01,
+        trust=trust,
+        risk_level=risk_level,
+        bounds=(0.0, 1.0),
+    )
+
+
+def test_nothing_is_re_optimised_unless_asked():
+    assert _impact({EQUITY: -0.05, BOND: 0.004}).reoptimised is None
+
+
+def test_asking_to_re_optimise_leaves_the_held_weights_results_as_they_were():
+    shocked = {EQUITY: -0.05, BOND: 0.004}
+
+    held = _impact(shocked, paths=2_000)
+    both = _impact(shocked, paths=2_000, reoptimise=_solve_inputs())
+
+    assert both.base == held.base
+    assert both.shocked == held.shocked
+    assert both.weights.equals(held.weights)
+
+
+def test_the_shock_moves_each_signal_by_as_much_as_it_moved_the_forecast():
+    forecasts = pd.DataFrame(
+        {"base": [0.015, 0.004], "shocked": [0.005, 0.004]}, index=[EQUITY, BOND]
+    )
+
+    signal = shocked_signal(_solve_inputs(), forecasts)
+
+    assert signal[EQUITY] == pytest.approx(0.002 - 0.010)
+    assert signal[BOND] == 0.0
+
+
+def test_a_zero_shock_re_solves_to_the_rebalance_target():
+    reoptimised = _impact(BASE, paths=2_000, reoptimise=_solve_inputs()).reoptimised
+
+    assert reoptimised.breakdown == reoptimised.unshocked
+    assert reoptimised.weights[EQUITY] == pytest.approx(reoptimised.unshocked.equity)
+    assert reoptimised.weights.sum() == pytest.approx(1.0)
+
+
+def test_a_lower_equity_forecast_re_solves_to_less_equity():
+    reoptimised = _impact(
+        {EQUITY: 0.005, BOND: 0.004}, paths=2_000, reoptimise=_solve_inputs()
+    ).reoptimised
+
+    assert reoptimised.weights[EQUITY] < reoptimised.unshocked.equity
+
+
+def test_untrusted_forecasts_or_level_5_leave_the_re_solved_weights_where_they_were():
+    shocked = {EQUITY: 0.005, BOND: 0.004}
+    for inputs in (_solve_inputs(trust=0.0), _solve_inputs(risk_level=5)):
+        reoptimised = _impact(shocked, paths=2_000, reoptimise=inputs).reoptimised
+
+        assert reoptimised.weights[EQUITY] == pytest.approx(reoptimised.unshocked.equity)
+
+
+def test_re_optimised_weights_are_simulated_on_the_held_weights_paths():
+    inputs = _solve_inputs()
+    target = inputs.solve().equity
+    shocked = {EQUITY: 0.005, BOND: 0.004}
+    # Holding the weights a zero-shock re-solve gives makes the two portfolios one.
+    held_at_target = {EQUITY: target, BOND: 1 - target}
+    zero = _impact(BASE, weights=held_at_target, paths=2_000, reoptimise=inputs)
+    assert zero.reoptimised.metrics == zero.shocked
+
+    moved = _impact(shocked, weights=held_at_target, paths=2_000, reoptimise=inputs)
+    assert moved.reoptimised.metrics != moved.shocked

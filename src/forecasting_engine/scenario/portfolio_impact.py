@@ -12,6 +12,14 @@ The weights are the latest optimised weights as they stand; they are not
 re-solved for the shock. Re-optimising under the shock is a separate, explicit
 action (FYP-246), so a risk manager first sees what the allocation they already
 hold would do.
+
+Re-optimising solves the latest rebalance's target again (``optimize.SolveInputs``)
+with one thing changed: each index's signal moves by as much as the shock moved its
+forecast. A signal is the forecast less a training mean the shock doesn't touch, so
+the two move together. The covariance, long-run premium, forecast trust, risk level
+and weight limits are the rebalance's own. The re-optimised weights are simulated
+under the shocked forecasts on the same paths as the held ones, so the two can be
+compared directly.
 """
 
 from __future__ import annotations
@@ -22,11 +30,16 @@ from dataclasses import dataclass
 import pandas as pd
 
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.portfolio.backtest import ASSETS
+from forecasting_engine.portfolio.optimize import SolveInputs, WeightBreakdown
 from forecasting_engine.risk import monte_carlo
 from forecasting_engine.risk.monte_carlo import MonteCarloResult, SimulatedTailRisk
 
 PORTFOLIO: str = "optimised"
-"""The one portfolio simulated: the weights the risk manager holds."""
+"""The weights the risk manager holds."""
+
+REOPTIMISED: str = "re-optimised"
+"""The weights re-solved from the shocked forecasts (FYP-246)."""
 
 
 class PortfolioImpactError(ValueError):
@@ -53,6 +66,24 @@ class PortfolioMetrics:
 
 
 @dataclass(frozen=True)
+class Reoptimised:
+    """The latest target solved again from the shocked forecasts, and what it does
+    under them."""
+
+    weights: pd.Series
+    """By ``TargetRole``, summing to 1."""
+    breakdown: WeightBreakdown
+    """How the re-solved equity weight was reached."""
+    unshocked: WeightBreakdown
+    """The same solve on the signals as they were: the rebalance's target before any
+    no-trade band, which a zero shock reproduces."""
+    signal: pd.Series
+    """Each index's shocked signal, the solve's input."""
+    metrics: PortfolioMetrics
+    """The re-optimised weights simulated under the shocked forecasts."""
+
+
+@dataclass(frozen=True)
 class PortfolioImpact:
     base: PortfolioMetrics
     shocked: PortfolioMetrics
@@ -65,6 +96,8 @@ class PortfolioImpact:
     method: str
     paths: int
     as_of: pd.Timestamp
+    reoptimised: Reoptimised | None = None
+    """Set only when re-optimising was asked for."""
 
     @property
     def return_change(self) -> float:
@@ -78,6 +111,13 @@ class PortfolioImpact:
         return self.shocked.max_drawdown[confidence] - self.base.max_drawdown[confidence]
 
 
+def shocked_signal(inputs: SolveInputs, forecasts: pd.DataFrame) -> pd.Series:
+    """``inputs``' signal moved by each index's shocked less base-case forecast. An
+    index ``forecasts`` doesn't cover is left where it was."""
+    shift = forecasts["shocked"] - forecasts["base"]
+    return inputs.signal + shift.reindex(inputs.signal.index, fill_value=0.0)
+
+
 def portfolio_impact(
     history: pd.DataFrame,
     base_forecasts: Mapping[TargetRole, float],
@@ -88,6 +128,7 @@ def portfolio_impact(
     method: str = monte_carlo.BOOTSTRAP,
     paths: int = monte_carlo.DEFAULT_PATHS,
     seed: int = monte_carlo.SEED,
+    reoptimise: SolveInputs | None = None,
 ) -> PortfolioImpact:
     """The portfolio's return, volatility and drawdown over the next ``horizon``
     days under the base-case forecasts and under the shocked ones.
@@ -97,6 +138,10 @@ def portfolio_impact(
     index in ``history``, and ``weights`` must sum to 1: a scenario that could
     shock only one index still needs the other's base-case forecast to simulate
     the portfolio.
+
+    Given ``reoptimise``, the latest rebalance's solve inputs, the weights are also
+    re-solved on the shocked signals and simulated under the shocked forecasts; the
+    held weights' results are unchanged by it.
     """
     assets = list(history.columns)
     for name, forecasts in (("base-case", base_forecasts), ("shocked", shocked_forecasts)):
@@ -108,28 +153,55 @@ def portfolio_impact(
             )
     held = pd.Series({role: float(weights[role]) for role in assets})
 
-    def simulate(forecasts: Mapping[TargetRole, float]) -> MonteCarloResult:
+    def simulate(
+        forecasts: Mapping[TargetRole, float], portfolios: Mapping[str, pd.Series]
+    ) -> MonteCarloResult:
         return monte_carlo.simulate(
             history,
             pd.Series({role: float(forecasts[role]) for role in assets}),
-            {PORTFOLIO: held},
+            portfolios,
             horizon=horizon,
             method=method,
             paths=paths,
             seed=seed,
         )
 
-    base = simulate(base_forecasts)
-    shocked = simulate(shocked_forecasts)
+    forecasts = pd.DataFrame(
+        {
+            "base": [float(base_forecasts[role]) for role in assets],
+            "shocked": [float(shocked_forecasts[role]) for role in assets],
+        },
+        index=assets,
+    )
+    shocked_portfolios = {PORTFOLIO: held}
+    if reoptimise is not None:
+        signal = shocked_signal(reoptimise, forecasts)
+        breakdown = reoptimise.solve(signal)
+        equity, bond = ASSETS
+        resolved = pd.Series({equity: breakdown.equity, bond: 1 - breakdown.equity})
+        shocked_portfolios[REOPTIMISED] = resolved.reindex(assets)
+
+    base = simulate(base_forecasts, {PORTFOLIO: held})
+    # One run for both portfolios: they share its paths.
+    shocked = simulate(shocked_forecasts, shocked_portfolios)
+
+    reoptimised = None
+    if reoptimise is not None:
+        reoptimised = Reoptimised(
+            weights=shocked_portfolios[REOPTIMISED],
+            breakdown=breakdown,
+            unshocked=reoptimise.solve(),
+            signal=signal,
+            metrics=PortfolioMetrics.from_simulation(shocked.risk[REOPTIMISED]),
+        )
     return PortfolioImpact(
         base=PortfolioMetrics.from_simulation(base.risk[PORTFOLIO]),
         shocked=PortfolioMetrics.from_simulation(shocked.risk[PORTFOLIO]),
         weights=held,
-        forecasts=pd.DataFrame(
-            {"base": base.forecasts, "shocked": shocked.forecasts}, index=assets
-        ),
+        forecasts=forecasts,
         horizon=horizon,
         method=method,
         paths=paths,
         as_of=base.as_of,
+        reoptimised=reoptimised,
     )

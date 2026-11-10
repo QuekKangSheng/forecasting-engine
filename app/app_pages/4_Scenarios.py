@@ -10,7 +10,9 @@ model was trained on is flagged as an extrapolation.
 
 The portfolio impact (``scenario.portfolio_impact``) carries the shocked
 forecasts through the Monte Carlo simulation at the latest optimised weights,
-held as they are, beside the same simulation on the base-case forecasts.
+held as they are, beside the same simulation on the base-case forecasts. Only if
+the user switches on "Re-optimise under shock" (FYP-246) are the weights also
+re-solved from the shocked forecasts, shown in a column of their own.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import transform_for
+from forecasting_engine.portfolio import optimize
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
@@ -41,6 +44,7 @@ RESULT_KEY = "scenario_result"
 #: The Portfolio page's Monte Carlo settings, so both pages simulate the same way.
 METHOD_KEY = "monte_carlo_method"
 PATHS_KEY = "monte_carlo_paths"
+REOPTIMISE_KEY = "scenario_reoptimise"
 KIND_LABELS = {shock.ShockKind.ABSOLUTE: "New value", shock.ShockKind.PERCENT: "% change"}
 
 ui.inject()
@@ -381,6 +385,19 @@ if blocked_reason:
     st.info(blocked_reason, icon=":material/info:")
     st.stop()
 
+# FYP-246: off by default, so the held weights are what a risk manager sees first.
+reoptimise = st.toggle(
+    "Re-optimise under shock",
+    key=REOPTIMISE_KEY,
+    disabled=summary.solve_inputs is None,
+    help=glossary.term("Re-optimise under shock"),
+)
+if summary.solve_inputs is None:
+    st.caption(
+        "The latest rebalance's inputs couldn't be rebuilt, so the weights can't be "
+        "re-optimised. Open the Portfolio Optimizer page again to refresh them."
+    )
+
 weights = {TargetRole.EQUITY: summary.equity_weight, TargetRole.BOND: summary.bond_weight}
 horizon = max(records[role].horizon for role in results)
 method = st.session_state.get(METHOD_KEY, monte_carlo.BOOTSTRAP)
@@ -395,50 +412,71 @@ try:
         horizon=horizon,
         method=method,
         paths=paths,
+        reoptimise=summary.solve_inputs if reoptimise else None,
     )
 except (portfolio_impact.PortfolioImpactError, monte_carlo.MonteCarloDataError) as exc:
     st.warning(str(exc), icon=":material/warning:")
     st.stop()
 
+equity_name = label(target_columns[TargetRole.EQUITY])
+bond_name = label(target_columns[TargetRole.BOND])
+resolved = impact.reoptimised
+
+
+def _metric_row(name: str, term: str, read, *, signed: bool = True) -> str:
+    """One metric, ``read`` off each case's ``PortfolioMetrics``: base case, shocked with
+    the weights held, the change between them, then shocked and re-optimised if asked."""
+    held_change = _pts(read(impact.shocked) - read(impact.base))
+    resolved_cell = _cell(_pct(read(resolved.metrics), signed)) if resolved else ""
+    return (
+        _heading(name, term)
+        + _cell(_pct(read(impact.base), signed))
+        + _cell(_pct(read(impact.shocked), signed))
+        + _cell(held_change)
+        + resolved_cell
+    )
+
+
+held_equity = _pct(impact.weights[TargetRole.EQUITY], signed=False)
 impact_header = (
     _heading("Metric")
     + _heading("Base case")
-    + _heading("Shocked")
+    + _heading("Shocked, weights held")
     + _heading("Change")
+    + (_heading("Shocked, re-optimised", "Re-optimise under shock") if resolved else "")
 )
 impact_rows = [
-    _heading("Return", "Shocked return")
-    + _cell(_pct(impact.base.mean_return))
-    + _cell(_pct(impact.shocked.mean_return))
-    + _cell(_pts(impact.return_change)),
-    _heading("Volatility", "Shocked volatility")
-    + _cell(_pct(impact.base.volatility, signed=False))
-    + _cell(_pct(impact.shocked.volatility, signed=False))
-    + _cell(_pts(impact.volatility_change)),
+    # FYP-248: the weights move only in the re-optimised column.
+    _heading(f"{equity_name} weight")
+    + _cell(held_equity)
+    + _cell(held_equity)
+    + _cell(_pts(0.0))
+    + (_cell(_pct(resolved.weights[TargetRole.EQUITY], signed=False)) if resolved else ""),
+    _metric_row("Return", "Shocked return", lambda m: m.mean_return),
+    _metric_row("Volatility", "Shocked volatility", lambda m: m.volatility, signed=False),
 ]
 for confidence in impact.base.max_drawdown:
     impact_rows.append(
-        _heading(f"Max drawdown {confidence:.0%}", "Shocked drawdown")
-        + _cell(_pct(impact.base.max_drawdown[confidence]))
-        + _cell(_pct(impact.shocked.max_drawdown[confidence]))
-        + _cell(_pts(impact.drawdown_change(confidence)))
+        _metric_row(
+            f"Max drawdown {confidence:.0%}",
+            "Shocked drawdown",
+            lambda m, c=confidence: m.max_drawdown[c],
+        )
     )
 st.markdown(
     f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{impact_header}</tr>'
     f"</thead><tbody>{''.join(f'<tr>{r}</tr>' for r in impact_rows)}</tbody></table></div>",
     unsafe_allow_html=True,
 )
-equity_name = label(target_columns[TargetRole.EQUITY])
-bond_name = label(target_columns[TargetRole.BOND])
 untouched = [label(target_columns[role]) for role in ROLES if role not in results]
 st.caption(
     f"Over the next {impact.horizon} trading days, at the latest optimised weights "
     f"({impact.weights[TargetRole.EQUITY]:.0%} {equity_name}, "
     f"{impact.weights[TargetRole.BOND]:.0%} {bond_name}, as of {summary.as_of:%d %b %Y}), "
-    "held as they are: the weights are not re-optimised for the shock. Both cases are "
-    f"simulated on the same {impact.paths:,} {method} paths, so the change is the "
-    "shock's alone. Volatility is the spread of the simulated horizon returns; max "
-    "drawdown is the fall only the worst 5% or 1% of paths exceed."
+    "held as they are: the weights are not re-optimised for the shock. The base case "
+    f"and the shocked case are simulated on the same {impact.paths:,} {method} paths, so "
+    "the change is the shock's alone. Volatility is the spread of the simulated horizon "
+    "returns; max drawdown is the fall only the worst 5% or 1% of paths exceed."
     + (
         f" {' and '.join(untouched)} had no scenario result, so its base-case "
         "forecast is used in both cases."
@@ -446,3 +484,31 @@ st.caption(
         else ""
     )
 )
+
+if resolved:
+    solved_from = summary.solve_inputs
+    if solved_from.risk_level == optimize.RISK_LEVELS[-1]:
+        why_still = (
+            " Risk level 5 ignores the forecasts, so re-optimising can't move the weights."
+        )
+    elif solved_from.trust == 0:
+        why_still = (
+            " The forecasts aren't yet statistically reliable enough to move any weight, so "
+            "re-optimising can't move the weights."
+        )
+    else:
+        why_still = ""
+    st.caption(
+        f"Shocked, re-optimised solves the {summary.as_of:%d %b %Y} rebalance again with "
+        f"each signal moved by as much as the shock moved its forecast, and the same risk "
+        f"level ({solved_from.risk_level}), weight limits ({solved_from.bounds[0]:.0%} to "
+        f"{solved_from.bounds[1]:.0%}), covariance and forecast trust: "
+        f"{resolved.weights[TargetRole.EQUITY]:.0%} {equity_name}, "
+        f"{resolved.weights[TargetRole.BOND]:.0%} {bond_name}. It is simulated under the "
+        "shocked forecasts on the same paths as the held weights. With no shock it would "
+        f"give {resolved.unshocked.equity:.0%} {equity_name}, the rebalance's target before "
+        "the no-trade band, which can differ from the weights held."
+        + why_still
+        + " This is a what-if: the weights on the Portfolio Optimizer page don't change.",
+        help=glossary.term("Re-optimise under shock"),
+    )
