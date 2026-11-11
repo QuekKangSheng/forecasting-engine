@@ -44,13 +44,14 @@ targets: dict[TargetRole, str] = st.session_state.get(
     bloomberg_extraction_panel.COMMITTED_TARGETS_KEY, {}
 )
 sources = st.session_state.get(bloomberg_extraction_panel.COMMITTED_SOURCES_KEY, {})
-fingerprint = None if merged is None else str(dataset_fingerprint(merged))
+data_fingerprint = None if merged is None else dataset_fingerprint(merged)
+fingerprint = None if data_fingerprint is None else str(data_fingerprint)
 stored: model_runs.StoredRuns | None = st.session_state.get(model_runs.RUNS_KEY)
 current_runs = (
     stored
     if stored is not None
     and merged is not None
-    and stored.shared_settings[0] == dataset_fingerprint(merged)
+    and stored.shared_settings[0] == data_fingerprint
     else None
 )
 actives = {role: active_model.get_active_model(role) for role in ROLES}

@@ -269,7 +269,11 @@ horizon = int(horizon)
 splitter = PurgedWalkForward(
     train=int(train), test=int(test), embargo=EMBARGO_DAYS, tuning_rows=TUNING_ROWS
 )
-shared_settings = (dataset_fingerprint(merged), horizon, int(train), int(test))
+# Hashed once a rerun: the fingerprint, the run history and every saved result's key
+# all read the same content hash.
+data_sha256 = frame_sha256(merged)
+fingerprint = dataset_fingerprint(merged, data_sha256)
+shared_settings = (fingerprint, horizon, int(train), int(test))
 cleared = model_runs.cleared_by(st.session_state, shared_settings)
 stored = model_runs.stored(st.session_state, shared_settings)
 
@@ -284,7 +288,7 @@ ACTIVE_SETTINGS: dict[str, int | str] = {
     "horizon": horizon,
     "train_window": int(train),
     "test_window": int(test),
-    "dataset_fingerprint": str(dataset_fingerprint(merged)),
+    "dataset_fingerprint": str(fingerprint),
 }
 
 
@@ -533,7 +537,7 @@ def _recorder(
     """What appends each finished fit to the run history (``store/runs``). Built
     when Run is clicked, so the worker thread that calls it never reads the page's
     session: everything it records is fixed here."""
-    dataset_sha256 = frame_sha256(merged)
+    dataset_sha256 = data_sha256
     shared = {
         "target": price_col,
         "horizon": horizon,
@@ -641,15 +645,29 @@ MODEL_ERRORS = (
 )
 
 
+def _tab_inputs(role: TargetRole) -> tuple:
+    """What a target's fits read besides the shared settings: its target column and
+    every signal with its transform. The committed data can stay the same while
+    these change (another field confirmed as the target, another security resolved
+    as one), and a result fitted on the old ones is not this target's result."""
+    return (target_columns[role], tuple((c, str(transforms[c])) for c in signal_cols))
+
+
 def _job_id(role: TargetRole) -> str:
-    return model_jobs.result_key("job", shared_settings, role.value)
+    return model_jobs.result_key("job", shared_settings, role.value, _tab_inputs(role))
 
 
 def _result_key(role: TargetRole, name: str, settings: dict[str, object]) -> str:
-    """Everything a model's result depends on: the shared settings, the target,
-    the model and, for a polynomial row, its own setting."""
+    """Everything a model's result depends on: the shared settings (the data's
+    content among them), the target role, its column and signals, the model and,
+    for a polynomial row, its own setting."""
     return model_jobs.result_key(
-        RESULT_VERSION, shared_settings, role.value, name, settings.get(name)
+        RESULT_VERSION,
+        shared_settings,
+        role.value,
+        _tab_inputs(role),
+        name,
+        settings.get(name),
     )
 
 
@@ -999,7 +1017,7 @@ def _run_id(role: TargetRole, name: str, settings: Mapping[str, object]) -> str 
     """The recorded run (``store/runs``) a stored result came from: the newest
     successful fit of the same settings on the same data. ``None`` for a result
     fitted before the run history existed."""
-    run = run_history.latest_run(_result_key(role, name, settings), frame_sha256(merged))
+    run = run_history.latest_run(_result_key(role, name, settings), data_sha256)
     return None if run is None else run.run_id
 
 
@@ -1231,7 +1249,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     run_research = research_ticked and bool(signs)
     if equity:
         settings[RESEARCH] = RESEARCH_SETTING
-    tab_runs = model_runs.tab(stored, role, settings)
+    tab_runs = model_runs.tab(stored, role, settings, inputs=_tab_inputs(role))
     models = [NAIVE]
     user_formula, user_bindings = settings[USER]
     if polynomial == DERIVED or (polynomial == USER and user_formula and user_bindings is not None):

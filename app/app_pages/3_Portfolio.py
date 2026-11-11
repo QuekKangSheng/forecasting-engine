@@ -110,13 +110,16 @@ if merged is None or EQUITY not in target_columns or BOND not in target_columns:
     )
     st.stop()
 
+data_sha256 = frame_sha256(merged)
+fingerprint = str(dataset_fingerprint(merged, data_sha256))
+
 # Each active model's saved forecast belongs to the dataset it was run on. One
 # set on an earlier upload (other dates, another bond index) would otherwise be
 # combined with today's prices without a word.
 stale = [
     name
     for name, record in (("equity", equity_active), ("bond", bond_active))
-    if record.dataset_fingerprint != str(dataset_fingerprint(merged))
+    if record.dataset_fingerprint != fingerprint
 ]
 if stale:
     st.warning(
@@ -344,7 +347,7 @@ except optimize.OptimizeDataError:
     latest_solve_inputs = None
 
 st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
-    dataset_fingerprint=str(dataset_fingerprint(merged)),
+    dataset_fingerprint=fingerprint,
     as_of=latest_date,
     equity_weight=float(latest[EQUITY]),
     bond_weight=float(latest[BOND]),
@@ -357,7 +360,7 @@ st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSum
 # hash of everything the result depends on, so recording on every view is safe,
 # and a failed write is reported without stopping the page.
 run_inputs = portfolio_runs.PortfolioInputs(
-    dataset_sha256=frame_sha256(merged),
+    dataset_sha256=data_sha256,
     equity_run_id=equity_active.run_id,
     bond_run_id=bond_active.run_id,
     equity_set_at=equity_active.set_at,
@@ -610,7 +613,7 @@ PATHS_KEY = "monte_carlo_paths"
 # Everything the figures depend on: a result simulated from any other inputs is
 # not shown as if it were this one's.
 allocation = (
-    str(dataset_fingerprint(merged)),
+    fingerprint,
     equity_active.set_at,
     bond_active.set_at,
     latest_date,

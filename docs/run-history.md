@@ -154,10 +154,11 @@ active model ──run_id──▶ run ──dataset_sha256──▶ dataset ─
 Data page stores the merged dataset under the same hash in `data/uploads/<sha256>.csv`
 and logs it in `uploads`. So a run traces back to the exact bytes it was fitted on.
 
-This replaces the app's `dataset_fingerprint` (row count, first and last date, column
-names) for this purpose: a fingerprint can't tell two datasets of the same shape
-apart, so a single corrected value would pass unnoticed. A content hash changes
-with any byte.
+The app's `dataset_fingerprint`, which decides whether a saved result, an active
+model or a portfolio summary belongs to the data committed now, carries this same
+hash beside the row count, first and last date and column names. Shape alone can't
+tell two datasets of the same dates and columns apart, so a single corrected value
+would pass unnoticed; a content hash changes with any byte.
 
 `code_version` is `git describe --always --dirty`: the commit the app ran from, with
 `-dirty` when the checkout had uncommitted changes, since the commit alone would then
