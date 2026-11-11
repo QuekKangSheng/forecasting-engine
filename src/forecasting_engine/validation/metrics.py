@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from statsmodels.regression.linear_model import RegressionResultsWrapper
+from statsmodels.stats.sandwich_covariance import weights_uniform
 
 
 def rank_ic(signal: pd.Series, target: pd.Series) -> float:
@@ -56,13 +58,48 @@ def rmse(predicted: pd.Series, actual: pd.Series) -> float:
     return float((errors**2).mean() ** 0.5)
 
 
-def rank_ic_se(predicted: pd.Series, realised: pd.Series, lags: int) -> float:
-    """Newey-West standard error of ``rank_ic(predicted, realised)``.
+def overlap_fit(y: np.ndarray, x: np.ndarray, *, lags: int) -> RegressionResultsWrapper:
+    """The OLS of ``y`` on ``x`` with an intercept, its covariance allowing for errors
+    that overlap over ``lags`` rows: every autocovariance up to ``lags`` counted in
+    full (Hansen & Hodrick 1980).
+
+    h-day labels a day apart share h - 1 days, so their errors are correlated out to
+    h - 1 rows and no further. Newey-West's weights shrink an autocovariance as its
+    lag grows, by ``1 - lag / (lags + 1)``, which leaves the variance too small when
+    every one of those lags matters. On simulated 20-day labels with no
+    predictability and a slow-moving signal, the Newey-West error was 0.84 of the
+    Rank IC's real spread and t exceeded 2 in 4.6% of samples, twice the 2.3% it
+    should; counted in full, 0.98 and 2.9%.
+
+    Equal weights do not guarantee a positive variance, and on a sample not much
+    longer than ``lags`` they can give one far too small (over every lag a sample
+    has, the scores' autocovariances sum to exactly zero). So the fit returned is
+    never surer than Newey-West's over the same lags: where the slope's standard
+    error counted in full is smaller, or not a positive number, the fit carries the
+    Newey-West covariance instead.
+    """
+    model = sm.OLS(y, sm.add_constant(x))
+    newey_west = model.fit(cov_type="HAC", cov_kwds={"maxlags": lags})
+    with np.errstate(invalid="ignore"):
+        in_full = model.fit(
+            cov_type="HAC", cov_kwds={"maxlags": lags, "weights_func": weights_uniform}
+        )
+        wider = bool(in_full.bse[1] > newey_west.bse[1])  # False for a NaN
+    return in_full if wider else newey_west
+
+
+def rank_ic_se(
+    predicted: pd.Series, realised: pd.Series, lags: int, *, overlap: bool = False
+) -> float:
+    """Standard error of ``rank_ic(predicted, realised)``, allowing for errors
+    correlated over ``lags`` rows.
 
     Regresses standardised ranks of the realised values on standardised ranks
     of the predictions, whose slope is the rank IC, with a HAC covariance over
-    ``lags`` lags: overlapping h-day labels make neighbouring errors
-    correlated, so ``lags`` is h - 1. Returns NaN with fewer than three pairs.
+    ``lags`` lags. With ``overlap``, for the overlap between neighbouring h-day
+    labels (``lags`` is h - 1), every lag counts in full (``overlap_fit``);
+    without, the weights are Newey-West's, which decline with the lag. Returns
+    NaN with fewer than three pairs.
     """
     paired = pd.concat([predicted, realised], axis=1).dropna()
     if len(paired) < 3:
@@ -71,8 +108,8 @@ def rank_ic_se(predicted: pd.Series, realised: pd.Series, lags: int) -> float:
     standardised = (ranks - ranks.mean()) / ranks.std(ddof=0)
     if not np.isfinite(standardised.to_numpy()).all():
         return float("nan")
-    x = sm.add_constant(standardised.iloc[:, 0].to_numpy())
-    fit = sm.OLS(standardised.iloc[:, 1].to_numpy(), x).fit(
-        cov_type="HAC", cov_kwds={"maxlags": lags}
-    )
+    x, y = standardised.iloc[:, 0].to_numpy(), standardised.iloc[:, 1].to_numpy()
+    if overlap:
+        return float(overlap_fit(y, x, lags=lags).bse[1])
+    fit = sm.OLS(y, sm.add_constant(x)).fit(cov_type="HAC", cov_kwds={"maxlags": lags})
     return float(fit.bse[1])

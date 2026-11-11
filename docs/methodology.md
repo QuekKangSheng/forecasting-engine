@@ -442,7 +442,7 @@ values end to end, then computes once:
 
   Until November 2026 the training mean was taken off every model instead of the
   model's own level. That scored any gap between the two as skill. On the Sep
-  2026 data a forecast of zero every day read +0.215 with t 2.6 and passed both
+  2026 data a forecast of zero every day read +0.21 with t 3.0 and passed both
   gates; the fixed-input polynomial (§9.1) read 0.259 where its
   signals earn 0.237; and in folds that kept no term the fitted intercept differed
   from the training mean by rounding, whose sign was then ranked, which moved the
@@ -451,11 +451,23 @@ values end to end, then computes once:
 - **OOS Rank IC**: the Spearman correlation of the whole forecast, its level
   included, computed as the Pearson correlation of ranks. Shown, not gated.
 - **RMSE.**
-- **Two Newey-West standard errors of each of those Rank ICs** (`validation/metrics.rank_ic_se`).
+- **Two standard errors of each of those Rank ICs** (`validation/metrics.rank_ic_se`).
   Each regresses the standardised ranks of the outcome on those of the prediction
-  with a HAC covariance: "s.e. (h−1 lags)" allows for overlapping h-day labels,
-  and "s.e. (test-window lags)" uses as many lags as a test window has rows,
-  allowing for errors shared within a fold's single fit.
+  with a HAC covariance.
+  - "s.e. (h−1 lags)" allows for overlapping h-day labels. Labels a day apart
+    share h − 1 days and no more, so it counts every autocovariance up to lag
+    h − 1 in full (Hansen & Hodrick 1980; `validation/metrics.overlap_fit`).
+    Until November 2026 it used Newey-West's weights, which shrink an
+    autocovariance as its lag grows and so leave the variance too small here: on
+    simulated 20-day labels with no predictability and a slow-moving signal, the
+    Newey-West error was 0.84 of the Rank IC's real spread and t exceeded 2 in
+    4.6% of samples, twice the 2.3% it should, so "t above 2" was nearer "t above
+    1.7". Counted in full the figures are 0.98 and 2.9%. Equal weights can give a
+    variance that is not positive, or far too small on a sample not much longer
+    than the lags, so the error reported is never smaller than Newey-West's over
+    the same lags.
+  - "s.e. (test-window lags)" is Newey-West over as many lags as a test window
+    has rows, allowing for errors shared within a fold's single fit.
 - **Rows scored**: test rows with both a prediction and an outcome.
 - **t** (`ModelRunResult.signal_t`): the Signal Rank IC over the larger of its
   two standard errors, the harder bar, since the test-window one also allows for
@@ -497,6 +509,13 @@ a model with no skill clears the first alone about 39% of the time, and the
 sponsor asked for a t-statistic above 2. A model that fails both is high risk
 (`is_high_risk`): it can still be set active, after a confirmation. The plain OOS
 Rank IC and Constant folds are shown beside the gate but never enter it.
+
+**Known limit: short histories.** Both standard errors are estimated from the
+scored rows, and need many more of them than they have lags. A dataset only just
+long enough for one or two folds scores 20 to 40 rows of 20-day labels, about two
+independent periods, and no estimate from those rows is reliable: t can pass 2
+there on noise. The table shows "Rows scored" beside every model; with fewer than
+a few hundred, read the gate as not yet informative. No minimum is enforced.
 
 ## 13. Naive baseline
 
@@ -720,8 +739,8 @@ signals into the weight schedule step 14 backtests.
    Mincer-Zarnowitz regression of realised return on forecast (Mincer & Zarnowitz
    1969) — over every such pair (expanding), clipped to `[0, 1]`. It is zero with fewer than
    `MIN_TRUST_HISTORY` pairs, where `x` never varies, or where the slope's t-statistic
-   is not above `SIGNIFICANCE_T_GATE`. That t-statistic's standard error is Newey-West
-   over `h − 1` lags, for the overlap between neighbouring h-day labels, the same
+   is not above `SIGNIFICANCE_T_GATE`. That t-statistic's standard error counts
+   `h − 1` lags in full, for the overlap between neighbouring h-day labels, the same
    choice as the Signal Rank IC's h-day standard error (§10). At 252 pairs a 20-day horizon holds only
    about 13 independent observations, so early estimates are noisy. The t-statistic
    gate was added after seeing the ungated result on the Sep 2026 data, so it is not
