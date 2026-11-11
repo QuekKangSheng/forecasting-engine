@@ -55,8 +55,7 @@ TERMS: Mapping[str, str] = {
         "are fitted, so a level is credited with what it earns, not with how it "
         "happened to move in that sample. The forecast is the return expected if "
         "none of them moves. It is tried on the latest 504 dates and on every "
-        "earlier date, and its Signal Rank IC is measured against its own average "
-        "forecast, not the training average."
+        "earlier date."
     ),
     "Max terms": (
         "The most terms the derived equation may keep. The cap works through the "
@@ -114,13 +113,14 @@ TERMS: Mapping[str, str] = {
         "than a cause for celebration."
     ),
     "Signal Rank IC": (
-        "What the signals add, scored: each forecast less its training block's "
-        "average return, compared in order with what actually happened, on data "
-        "the model never trained on. The headline number, and the one the "
-        "promotion gate is set on. The training average is left out because it "
-        "moves with recent performance whatever the signals say, so it can drown "
-        "a real signal or pass a model that has none. A model that sets its own "
-        "level is read against its own average forecast instead. The two s.e.s beside it "
+        "What the signals add, scored: each forecast less the model's own level, "
+        "the average forecast it made over its training block, compared in order "
+        "with what actually happened, on data the model never trained on. The "
+        "headline number, and the one the promotion gate is set on. The level is "
+        "left out because it is not skill: it moves from one training block to the "
+        "next whatever the signals say, so it can drown a real signal or pass a "
+        "model that has none. For most models the level is the training block's "
+        "average return. The two s.e.s beside it "
         "are standard errors, one allowing for overlapping labels, one for errors "
         "shared within a test window; t divides the score by the larger."
     ),
@@ -128,8 +128,8 @@ TERMS: Mapping[str, str] = {
         "Out-of-sample Rank IC of the whole forecast, its level included: the "
         "order of predictions against the order of outcomes, on data the model "
         "never trained on. Shown for comparison with the Signal Rank IC; it is "
-        "not gated, because a forecast's level shifts with each training block's "
-        "average whatever the signals say. Far apart from the Signal Rank IC "
+        "not gated, because a forecast's level shifts from one training block to "
+        "the next whatever the signals say. Far apart from the Signal Rank IC "
         "means the level, not the signals, drove this score."
     ),
     "t": (

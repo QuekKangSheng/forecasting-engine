@@ -243,5 +243,23 @@ def test_the_research_model_reproduces_mains_pooled_forecasts():
     )
     assert result.forecast.index.equals(golden.index)
     np.testing.assert_allclose(result.forecast, golden["forecast"], rtol=1e-12, atol=1e-15)
-    np.testing.assert_allclose(result.baseline, golden["baseline"], rtol=1e-12, atol=1e-15)
     np.testing.assert_allclose(result.realised, golden["realised"], rtol=1e-12, atol=1e-15)
+
+
+def test_the_research_model_is_judged_against_its_own_level_not_the_training_mean():
+    # Its level is the mean of its first training labels, which is not its fold's
+    # training mean (the golden's ``baseline``, what main judged it against). Judged
+    # against that mean, the gap between the two was scored as part of its signal.
+    golden = pd.read_csv(GOLDEN, index_col="date", parse_dates=True)
+    result, _description, _panel = run_sign_ruled_polynomial(
+        _main_fixture(),
+        {"hy": 1, "ig": 1, "vix": -1, "slope": 1},
+        "price",
+        20,
+        PurgedWalkForward(train=252, test=20, embargo=20, tuning_rows=504),
+    )
+
+    gap = (result.baseline - golden["baseline"]).abs()
+    assert gap.max() > 1e-4
+    # One level per fold, as before: it changes only where a new fold starts.
+    assert result.baseline.nunique() <= len(result.baseline) // 20 + 1

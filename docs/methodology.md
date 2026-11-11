@@ -285,21 +285,23 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   4. the posterior is drawn by Gibbs sampling, `CHAINS` chains of `BURN_IN`
      discarded and `KEPT_SWEEPS` kept sweeps from `SEED`, so a fit is
      reproducible;
-  5. the level is the training mean, as for every other model, so what it adds
-     to the naive forecast is its slopes alone.
+  5. the level is the training mean, so what it adds to the naive forecast is
+     its slopes alone.
 
   The equation is `mean + Σ β·z`, one term per signal, written in each signal's
   own direction. A fold needs at least `_MIN_TRAINING_ROWS` complete rows. The
   shrinkage idea comes from the October 2026 model research (below); the
   literature behind it is Campbell & Thompson (2008) on economically restricted
   return forecasts and Rapach, Strauss & Zhou (2010) on combining correlated
-  predictors. On the Sep 2026 data it was the best candidate for both targets at
-  every fold placement tried; degrees 4 and 5 were never chosen.
+  predictors. In the October 2026 research it was the best candidate for both
+  targets at every fold placement tried, and degrees 4 and 5 were never chosen. On
+  the page's grid today the degree-3 lasso scores higher for equity and the
+  no-change fit for bond (figures below).
 
   **Bond tries only the no-change candidates.** On the bond target the lasso and
   shrinkage candidates keep no term in about half the folds, so they forecast a flat
-  line, and on the Sep 2026 data at the 20-day horizon their Signal Rank IC was +0.011,
-  +0.027 and +0.051 (lasso, degrees 1 to 3) and −0.037 (shrinkage), against +0.101 for
+  line, and on the Sep 2026 data at the 20-day horizon their Signal Rank IC was +0.008,
+  +0.024 and +0.049 (lasso, degrees 1 to 3) and −0.037 (shrinkage), against +0.101 for
   `NO_CHANGE` and +0.137 for `NO_CHANGE_EXPANDING`. So for a target in
   `NO_CHANGE_ONLY_ROLES` (`derive_polynomial(..., no_change_only=True)`) the grid is
   those two candidates alone and the better of them is reported. Fallback: with no
@@ -358,25 +360,24 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   active function built from it reads every input as a level (and, for
   `NO_CHANGE_EXPANDING`, has no train window).
 
-  **Its Signal Rank IC is measured against its own level.** Its level is its own
-  intercept, not the training mean, and against the training mean any gap between
-  the two would be scored as skill: a model forecasting one constant could pass. So
-  it declares `sets_own_level` (`models/base.declares_own_level`), and each fold's
-  forecasts are judged against its mean in-sample forecast over that fold's
-  training rows (`FoldResult.own_level`, `harness.fold_baseline`), which is also
-  the baseline the results carry for the optimiser. A fold that keeps no term
-  forecasts its intercept everywhere and adds exactly zero. Every other model is
-  judged against the training mean as before.
+  **Its level is its own.** Its level is its own intercept, not the training
+  mean. Every model's Signal Rank IC is measured against the model's own level
+  (§10), so that gap earns it nothing: each fold's forecasts are judged against
+  its mean in-sample forecast over that fold's training rows
+  (`FoldResult.own_level`, `harness.fold_baseline`), which is also the baseline
+  the results carry for the optimiser. A fold that keeps no term forecasts its
+  intercept everywhere and adds exactly zero.
 
   It comes from the November 2026 model research (`bond/nochange_levels`), where on
   bond it was the one derivation that gave a usable, sign-stable polynomial: a
   mean forecast of about 0.25% per 20 days against a carry of about 0.20%, with the
   10-year yield's level kept, positive, in every refit that kept it. On the Sep
   2026 data at the page's settings (`h` = 20) the grid picks `NO_CHANGE_EXPANDING`
-  for bond (Signal Rank IC +0.137, t 1.55; `NO_CHANGE` +0.101; the best other
-  candidate, degree-3 lasso, +0.051) and still picks the degree-3 lasso for equity
-  (+0.156, t 2.31; `NO_CHANGE` −0.074, `NO_CHANGE_EXPANDING` +0.026), whose numbers
-  are unchanged.
+  for bond (Signal Rank IC +0.137, t 1.27; `NO_CHANGE` +0.101; the best other
+  candidate, degree-3 lasso, +0.049) and still picks the degree-3 lasso for equity
+  (+0.166, t 2.25; `NO_CHANGE` −0.074, `NO_CHANGE_EXPANDING` +0.026). Before every
+  model was scored against its own level and the overlap standard error counted
+  every lag in full (§10), those read t 1.55 for bond and +0.156, t 2.31 for equity.
 - **Machine learning** (`models/boosted.py`). XGBoost and LightGBM, each with
   `_FIXED_PARAMS` and gain feature importance, and minimum leaf size
   (`_LEAF_KEYS`) capped at `LEAF_CAP_SHARE` of a fit's training rows.
@@ -470,9 +471,12 @@ each fold instead.
 
 It is gated like every other model (§12) and can be set active for equity like
 any model, so the optimiser can use either it or the derived polynomial. The
-active-model store saves its forecast and each date's baseline, its fold's
-training-mean target, so its signal is `forecast − baseline`
-(`harness.signal_forecasts`), as for every model.
+active-model store saves its forecast and each date's baseline, its own level
+for that date's fold (§10), so its signal is `forecast − baseline`
+(`harness.signal_forecasts`), as for every model. Its level is the mean of its
+first training labels, not its fold's training mean, so measured against that
+mean the gap between the two was scored as part of its signal: on the Sep 2026
+data its Signal Rank IC read 0.259 that way and is 0.237 against its own level.
 
 ### 9.2 Feature attribution (SHAP) for polynomial models
 
@@ -518,25 +522,45 @@ values end to end, then computes once:
 - **IC**: the Pearson correlation of prediction and outcome. It mixes the scales
   of different folds' fits, so it is not gated.
 - **Signal Rank IC** (`validation/harness.signal_forecasts`), the gated figure:
-  the Rank IC of each fold's predictions less that fold's training-window mean
-  target, pooled. The training mean is what the naive baseline forecasts, so this
-  scores what a model adds to it. A forecast's level moves with its fold's
-  training mean whatever the signals say, and on the Sep 2026 Bloomberg data that
-  trailing mean ranked future equity returns the wrong way (pooled Rank IC down to
-  −0.25 at a 20-day horizon): pooled whole, the level swamped signals that were
-  there. `ModelRunResult.baseline` keeps each date's training mean, so the
-  portfolio optimiser can read the signal back. A model that sets its own level
-  (the derived polynomial's no-change candidates, §9) is judged against that
-  level instead, its mean in-sample forecast over the fold's training rows, and
-  that is its baseline.
+  the Rank IC of each fold's predictions less that fold's level, pooled. A fold's
+  level is the model's own: its mean in-sample forecast over the fold's training
+  rows (`FoldResult.own_level`). For a least-squares fit with an intercept that is
+  the fold's training-mean target, which is what the naive baseline forecasts. A
+  forecast's level is not skill, and it moves from fold to fold whatever the
+  signals say. On the Sep 2026 Bloomberg data the trailing mean ranked future
+  equity returns the wrong way (pooled Rank IC down to −0.25 at a 20-day horizon):
+  pooled whole, the level swamped signals that were there.
+  `ModelRunResult.baseline` keeps each date's level, so the portfolio optimiser
+  can read the signal back.
+
+  Until November 2026 the training mean was taken off every model instead of the
+  model's own level. That scored any gap between the two as skill. On the Sep
+  2026 data a forecast of zero every day read +0.21 with t 3.0 and passed both
+  gates; the fixed-input polynomial (§9.1) read 0.259 where its
+  signals earn 0.237; and in folds that kept no term the fitted intercept differed
+  from the training mean by rounding, whose sign was then ranked, which moved the
+  derived equity polynomial's figure from 0.166 to 0.156. A fold that forecasts
+  one value throughout now adds exactly zero.
 - **OOS Rank IC**: the Spearman correlation of the whole forecast, its level
   included, computed as the Pearson correlation of ranks. Shown, not gated.
 - **RMSE.**
-- **Two Newey-West standard errors of each of those Rank ICs** (`validation/metrics.rank_ic_se`).
+- **Two standard errors of each of those Rank ICs** (`validation/metrics.rank_ic_se`).
   Each regresses the standardised ranks of the outcome on those of the prediction
-  with a HAC covariance: "s.e. (h−1 lags)" allows for overlapping h-day labels,
-  and "s.e. (test-window lags)" uses as many lags as a test window has rows,
-  allowing for errors shared within a fold's single fit.
+  with a HAC covariance.
+  - "s.e. (h−1 lags)" allows for overlapping h-day labels. Labels a day apart
+    share h − 1 days and no more, so it counts every autocovariance up to lag
+    h − 1 in full (Hansen & Hodrick 1980; `validation/metrics.overlap_fit`).
+    Until November 2026 it used Newey-West's weights, which shrink an
+    autocovariance as its lag grows and so leave the variance too small here: on
+    simulated 20-day labels with no predictability and a slow-moving signal, the
+    Newey-West error was 0.84 of the Rank IC's real spread and t exceeded 2 in
+    4.6% of samples, twice the 2.3% it should, so "t above 2" was nearer "t above
+    1.7". Counted in full the figures are 0.98 and 2.9%. Equal weights can give a
+    variance that is not positive, or far too small on a sample not much longer
+    than the lags, so the error reported is never smaller than Newey-West's over
+    the same lags.
+  - "s.e. (test-window lags)" is Newey-West over as many lags as a test window
+    has rows, allowing for errors shared within a fold's single fit.
 - **Rows scored**: test rows with both a prediction and an outcome.
 - **t** (`ModelRunResult.signal_t`): the Signal Rank IC over the larger of its
   two standard errors, the harder bar, since the test-window one also allows for
@@ -578,6 +602,13 @@ a model with no skill clears the first alone about 39% of the time, and the
 sponsor asked for a t-statistic above 2. A model that fails both is high risk
 (`is_high_risk`): it can still be set active, after a confirmation. The plain OOS
 Rank IC and Constant folds are shown beside the gate but never enter it.
+
+**Known limit: short histories.** Both standard errors are estimated from the
+scored rows, and need many more of them than they have lags. A dataset only just
+long enough for one or two folds scores 20 to 40 rows of 20-day labels, about two
+independent periods, and no estimate from those rows is reliable: t can pass 2
+there on noise. The table shows "Rows scored" beside every model; with fewer than
+a few hundred, read the gate as not yet informative. No minimum is enforced.
 
 ## 13. Naive baseline
 
@@ -754,8 +785,9 @@ built, has no row.
 signals into the weight schedule step 14 backtests.
 
 1. **Signals, not forecasts.** Each active model's saved forecast less its
-   fold's training-mean target (`store/active_model.get_active_model_signal`),
-   as scored by the Signal Rank IC (§10). The training means are left out:
+   fold's level (`store/active_model.get_active_model_signal`), as scored by the
+   Signal Rank IC (§10); for most models the level is the fold's training-mean
+   target. The levels are left out:
    equity's is far above bond's in most windows and swings with recent
    performance, so in the optimiser it pinned the allocation to a bound on most
    rebalances whatever the signals said.
@@ -794,14 +826,14 @@ signals into the weight schedule step 14 backtests.
    date with a stored forecast from both models gives a pair (`trust_pairs`): `x`
    is that date's `Δs`, and `y` is the equity-minus-bond return over the horizon
    starting that date, from the harness's own labels (`align_and_lag`), less the
-   same training-mean difference taken off the forecasts. At a rebalance only pairs
+   same difference in levels taken off the forecasts. At a rebalance only pairs
    whose later label ended before it count, so no return the rebalance couldn't see
    reaches it. `β̂` is the slope of an OLS of `y` on `x` with an intercept — a
    Mincer-Zarnowitz regression of realised return on forecast (Mincer & Zarnowitz
    1969) — over every such pair (expanding), clipped to `[0, 1]`. It is zero with fewer than
    `MIN_TRUST_HISTORY` pairs, where `x` never varies, or where the slope's t-statistic
-   is not above `SIGNIFICANCE_T_GATE`. That t-statistic's standard error is Newey-West
-   over `h − 1` lags, for the overlap between neighbouring h-day labels, the same
+   is not above `SIGNIFICANCE_T_GATE`. That t-statistic's standard error counts
+   `h − 1` lags in full, for the overlap between neighbouring h-day labels, the same
    choice as the Signal Rank IC's h-day standard error (§10). At 252 pairs a 20-day horizon holds only
    about 13 independent observations, so early estimates are noisy. The t-statistic
    gate was added after seeing the ungated result on the Sep 2026 data, so it is not
@@ -949,8 +981,8 @@ column, *Shocked, re-optimised*.
    training window, the long-run premium `π̄`, the forecast trust `β̂`, the risk
    level and the weight limits (§17). Re-optimising runs §17's rule
    (`weight_breakdown`) on those inputs with only the signal changed.
-2. **Shocked signal.** A signal is the forecast less its fold's training mean,
-   and a shock leaves the training mean alone, so each index's signal moves by
+2. **Shocked signal.** A signal is the forecast less its fold's level (§10),
+   and a shock leaves the level alone, so each index's signal moves by
    exactly as much as the shock moved its forecast:
    `shocked signal = signal + (shocked forecast − base-case forecast)`
    (`scenario/portfolio_impact.shocked_signal`). An index the scenario did not
@@ -978,7 +1010,7 @@ Monte Carlo (Parametric / Bootstrap), `risk/tail.MONTE_CARLO`.
 
 1. **Centre.** Each asset's latest active-model forecast of its `h`-day return as
    of the latest rebalance (`store/active_model.get_active_model_forecast`, read
-   as the optimiser reads signals, §17): the forecast itself, training mean
+   as the optimiser reads signals, §17): the forecast itself, level
    included, since a risk estimate needs the expected return and not only the
    tilt. Each simulated day adds `forecast / h`, so a path's `h` days add up to
    the forecast; compounding adds about half the horizon's variance on top.

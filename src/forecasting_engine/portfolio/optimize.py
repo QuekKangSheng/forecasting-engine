@@ -24,17 +24,17 @@ follows from the bounds, not a separate rule. Level 3 is not pinned to 50/50. Th
 50/50 benchmark used for comparison (``backtest.BASELINE_WEIGHTS``) is separate and
 never moves.
 
-A model's signal is its forecast less its fold's training-mean return
-(``validation.harness.signal_forecasts``). The training means are left out on
-purpose: equity's trailing mean is far above bond's in most windows and swings
-with recent performance, so fed to the optimiser it pins the allocation to a
-bound whatever the signals say.
+A model's signal is its forecast less its own level for that fold, which for most
+models is the fold's training-mean return (``validation.harness.signal_forecasts``).
+The levels are left out on purpose: equity's trailing mean is far above bond's in
+most windows and swings with recent performance, so fed to the optimiser it pins
+the allocation to a bound whatever the signals say.
 
 ``β̂`` is estimated on an expanding window, from each past date's signal difference
 and the return that followed it — a Mincer-Zarnowitz regression of realised on
 forecast (Mincer & Zarnowitz 1969) — using only returns fully known before the
 rebalance (``forecast_trust``). Until ``MIN_TRUST_HISTORY`` such pairs exist, and whenever the
-slope's Newey-West t-statistic is not above ``validation.gates.SIGNIFICANCE_T_GATE``,
+slope's t-statistic is not above ``validation.gates.SIGNIFICANCE_T_GATE``,
 it is zero, so the forecasts move nothing.
 
 A rebalance happens once every ``horizon`` trading days over the out-of-sample
@@ -58,7 +58,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
@@ -67,6 +66,7 @@ from forecasting_engine.portfolio.backtest import (
     DEFAULT_COSTS_BPS,
     asset_returns,
 )
+from forecasting_engine.validation import metrics
 from forecasting_engine.validation.gates import SIGNIFICANCE_T_GATE
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 
@@ -226,7 +226,7 @@ def trust_pairs(
 ) -> pd.DataFrame:
     """One row per date with a stored forecast for both models: ``x``, the signal
     difference; ``y``, the realised equity-minus-bond return over the horizon starting
-    that date, less the same training-mean difference taken off the forecasts; and
+    that date, less the same difference in levels taken off the forecasts; and
     ``label_end``, the date the later of the two returns is known.
 
     The returns are the labels the models were trained and scored on
@@ -253,14 +253,14 @@ def pairs_known_by(rebalance_date: pd.Timestamp, pairs: pd.DataFrame) -> pd.Data
 def _trust_fit(rebalance_date: pd.Timestamp, pairs: pd.DataFrame, *, horizon: int):
     """The OLS of ``y`` on ``x`` with an intercept over every pair known by
     ``rebalance_date``, or ``None`` with fewer than ``MIN_TRUST_HISTORY`` pairs or where
-    ``x`` never varies and has no slope. Its standard errors are Newey-West over h - 1
-    lags, for the overlap between neighbouring h-day labels, as the model metrics'
-    (``validation.metrics.rank_ic_se``)."""
+    ``x`` never varies and has no slope. Its standard errors count h - 1 lags in full,
+    for the overlap between neighbouring h-day labels, as the model metrics' do
+    (``validation.metrics.overlap_fit``)."""
     known = pairs_known_by(rebalance_date, pairs)
     x, y = known["x"].to_numpy(dtype=float), known["y"].to_numpy(dtype=float)
     if len(known) < MIN_TRUST_HISTORY or np.ptp(x) == 0:
         return None
-    return sm.OLS(y, sm.add_constant(x)).fit(cov_type="HAC", cov_kwds={"maxlags": horizon - 1})
+    return metrics.overlap_fit(y, x, lags=horizon - 1)
 
 
 def forecast_trust(
@@ -411,7 +411,7 @@ class SolveInputs:
 
     date: pd.Timestamp
     signal: pd.Series
-    """Each asset's signal at ``date``: its forecast less its fold's training mean."""
+    """Each asset's signal at ``date``: its forecast less its fold's level."""
     covariance: pd.DataFrame
     premium: float
     trust: float
@@ -529,7 +529,7 @@ def schedule_breakdowns(
     solved from that date's signals, ``forecast_trust`` and the covariance over its
     own training window, then the no-trade band against the weight the last
     allocation drifted to. Zero costs leave no band, so every rebalance moves to its
-    target. ``baselines`` are each forecast's fold training means. A ``trust`` given
+    target. ``baselines`` are each forecast's fold levels. A ``trust`` given
     is used at every rebalance in place of the estimate; ``trust=0.0`` is the level
     with no forecasts, under the same band. ``trust_gate`` is the t-statistic the
     estimate must clear.

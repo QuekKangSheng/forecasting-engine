@@ -30,7 +30,7 @@ active_models (…, run_id)                                            ← store
 |---|---|---|
 | `runs` | fit actually executed | An **event log**: append-only, never updated. The same settings run twice are two rows, so a change in results between them (new code, new data) stays visible. Columns that are filtered or sorted on are typed; the remaining settings are one JSON column, so a new setting needs no schema change. |
 | `run_metrics` | run × metric | **Long format**: a new metric is a new row, not a new column. `runs_table` turns the headline metrics into columns with one `FILTER` aggregate each. |
-| `run_forecasts` | run × date | The out-of-sample forecast, its fold's training-mean baseline and the realised return, so a past run can be inspected or rescored without refitting. |
+| `run_forecasts` | run × date | The out-of-sample forecast, its fold's baseline (the model's own level, `docs/methodology.md` §10) and the realised return, so a past run can be inspected or rescored without refitting. |
 | `dataset_sources` | dataset × export | A **link table**: one dataset is merged from several exports and one export can go into several datasets, so neither side can hold the other in a column. Re-committing the same files adds nothing (`ON CONFLICT DO NOTHING`). |
 
 ## Guarantees

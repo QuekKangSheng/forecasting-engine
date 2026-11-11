@@ -130,10 +130,11 @@ class ModelRunResult:
     """How many folds kept any term. ``None`` only on a result built before this
     field existed (one parked in session state by an older run)."""
     oos_rank_ic_se: float | None = None
-    """Newey-West standard error of ``oos_rank_ic`` over h - 1 lags (the overlap
-    between labels), or ``None`` if not computed."""
+    """Standard error of ``oos_rank_ic`` over h - 1 lags counted in full, for the
+    overlap between labels (``validation.metrics.overlap_fit``), or ``None`` if not
+    computed."""
     oos_rank_ic_se_test: float | None = None
-    """The same over as many lags as a walk-forward test window has rows, allowing
+    """Its Newey-West error over as many lags as a walk-forward test window has rows, allowing
     for errors shared within a fold's single fit."""
     rows_scored: int | None = None
     """Test rows with both a prediction and a realised value. Each model drops
@@ -146,19 +147,18 @@ class ModelRunResult:
     """The realised forward return on each of ``forecast``'s dates — what each
     forecast is scored against."""
     signal_rank_ic: float | None = None
-    """Pooled Rank IC of each forecast less its fold's training-mean target, or its
-    own level for a model that sets one (``validation.harness.signal_forecasts``):
-    what the signals add. The gated
+    """Pooled Rank IC of each forecast less its model's own level for that fold
+    (``validation.harness.signal_forecasts``): what the signals add. The gated
     figure. ``None`` only on a result built before this field existed."""
     signal_rank_ic_se: float | None = None
-    """Newey-West standard error of ``signal_rank_ic`` over h - 1 lags."""
+    """Standard error of ``signal_rank_ic`` over h - 1 lags counted in full."""
     signal_rank_ic_se_test: float | None = None
-    """The same over test-window lags."""
+    """Its Newey-West error over test-window lags."""
     baseline: pd.Series | None = None
-    """Each of ``forecast``'s dates' fold training-mean target, or, for a model that
-    sets its own level, that level (``validation.harness.fold_baseline``):
-    ``forecast`` less this is the signal's contribution, which the portfolio
-    optimiser tilts on."""
+    """The level of each of ``forecast``'s dates' fold: the model's mean in-sample
+    forecast (``validation.harness.fold_baseline``), which for a least-squares fit
+    with an intercept is the fold's training-mean target. ``forecast`` less this is
+    the signal's contribution, which the portfolio optimiser tilts on."""
 
     @property
     def gated_rank_ic(self) -> float:

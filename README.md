@@ -91,8 +91,8 @@ hosting step is needed.
 - **Walk-forward validation** — every model on both targets is trained on the
   latest 504 trading days and scored on the next 20, with a 20-day embargo
   between the two, under one shared set of settings that the results table states.
-- **Overfitting checks** — Signal Rank IC (what a model adds to its training-mean
-  forecast, out of sample) with its Newey-West t, crash-day diagnostics, and a
+- **Overfitting checks** — Signal Rank IC (what a model adds to its own average
+  forecast, out of sample) with its t-statistic, crash-day diagnostics, and a
   promotion gate on both: Signal Rank IC above 0.02 and t above 2.
 - **Active model** — the model chosen to carry forward for each index, saved in
   DuckDB, with a confirmation step for a model that failed both gates.
