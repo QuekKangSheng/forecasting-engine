@@ -147,7 +147,7 @@ def set_active_model(
     """Append a new active-model row for ``role``, superseding any prior one.
 
     Also stores ``result.forecast`` (if present) as one row per date, with each
-    date's ``result.baseline`` (its fold's training-mean target), so a later
+    date's ``result.baseline`` (its fold's level), so a later
     reader never has to re-run the model to get its predicted values or their
     signal back; ``function``, for a polynomial, so a scenario can evaluate it
     again; and ``attribution``, its mean |SHAP value| per signal, in the terms and
@@ -391,7 +391,7 @@ def get_active_model_signal(
     role: TargetRole, *, db_path: Path = DEFAULT_DB_PATH
 ) -> pd.Series | None:
     """The currently active model's signal — each saved forecast less its fold's
-    training-mean target — indexed by date, or ``None`` if there is no active
+    level — indexed by date, or ``None`` if there is no active
     model or it was set before baselines were captured."""
     current = get_active_model(role, db_path=db_path)
     if current is None:
@@ -415,9 +415,10 @@ def get_active_model_signal(
 def get_active_model_baseline(
     role: TargetRole, *, db_path: Path = DEFAULT_DB_PATH
 ) -> pd.Series | None:
-    """The training-mean target taken off each of the currently active model's saved
-    forecasts to give its signal, indexed by date, or ``None`` if there is no active
-    model or it was set before baselines were captured."""
+    """The level taken off each of the currently active model's saved forecasts to
+    give its signal (``validation.harness.fold_baseline``), indexed by date, or
+    ``None`` if there is no active model or it was set before baselines were
+    captured."""
     current = get_active_model(role, db_path=db_path)
     if current is None:
         return None

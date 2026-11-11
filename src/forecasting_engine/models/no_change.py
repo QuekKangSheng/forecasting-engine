@@ -38,10 +38,10 @@ The news looks forward exactly as far as the label does. It is read on training 
 only, whose labels the splitter has already purged against the test window, and a
 row whose label or news is not yet complete is not used.
 
-Its level is its own intercept, not the training-mean target, so it declares
-``sets_own_level``: the harness judges its forecasts against its own mean in-sample
-forecast (``validation.harness.fold_baseline``), and a fold that keeps no term adds
-exactly nothing to the Signal Rank IC.
+Its level is its own intercept, not the training-mean target. The harness judges
+every model's forecasts against the model's own mean in-sample forecast
+(``validation.harness.fold_baseline``), so that gap earns it nothing, and a fold that
+keeps no term adds exactly nothing to the Signal Rank IC.
 
 From the November 2026 model research (``bond/nochange_levels``), where on bond it
 was the one derivation that gave a usable, sign-stable polynomial: about 0.25% per 20
@@ -55,7 +55,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -208,8 +207,6 @@ class NoChangePolynomial:
 
     max_terms: int | None = None
     name: str = field(default="NoChangePolynomial", init=False)
-    sets_own_level: ClassVar[bool] = True
-    """Its level is its own intercept, so the harness judges it against that."""
 
     def __post_init__(self) -> None:
         self._coef: np.ndarray | None = None

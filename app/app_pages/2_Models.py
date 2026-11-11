@@ -182,8 +182,9 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 #: but the naive baseline is gated on Signal Rank IC and t. 6: the derived grid
 #: adds the no-change fit on levels, rolling and expanding, scored against its own level,
 #: and the bond target tries only that fit (the lasso and shrinkage fits run only if it
-#: cannot be fitted).
-RESULT_VERSION = 6
+#: cannot be fitted). 7: every model's Signal Rank IC and baseline are measured against
+#: its own level.
+RESULT_VERSION = 7
 
 st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
 ui.inject()

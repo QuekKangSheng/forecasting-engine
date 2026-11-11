@@ -24,11 +24,11 @@ follows from the bounds, not a separate rule. Level 3 is not pinned to 50/50. Th
 50/50 benchmark used for comparison (``backtest.BASELINE_WEIGHTS``) is separate and
 never moves.
 
-A model's signal is its forecast less its fold's training-mean return
-(``validation.harness.signal_forecasts``). The training means are left out on
-purpose: equity's trailing mean is far above bond's in most windows and swings
-with recent performance, so fed to the optimiser it pins the allocation to a
-bound whatever the signals say.
+A model's signal is its forecast less its own level for that fold, which for most
+models is the fold's training-mean return (``validation.harness.signal_forecasts``).
+The levels are left out on purpose: equity's trailing mean is far above bond's in
+most windows and swings with recent performance, so fed to the optimiser it pins
+the allocation to a bound whatever the signals say.
 
 ``β̂`` is estimated on an expanding window, from each past date's signal difference
 and the return that followed it — a Mincer-Zarnowitz regression of realised on
@@ -226,7 +226,7 @@ def trust_pairs(
 ) -> pd.DataFrame:
     """One row per date with a stored forecast for both models: ``x``, the signal
     difference; ``y``, the realised equity-minus-bond return over the horizon starting
-    that date, less the same training-mean difference taken off the forecasts; and
+    that date, less the same difference in levels taken off the forecasts; and
     ``label_end``, the date the later of the two returns is known.
 
     The returns are the labels the models were trained and scored on
@@ -411,7 +411,7 @@ class SolveInputs:
 
     date: pd.Timestamp
     signal: pd.Series
-    """Each asset's signal at ``date``: its forecast less its fold's training mean."""
+    """Each asset's signal at ``date``: its forecast less its fold's level."""
     covariance: pd.DataFrame
     premium: float
     trust: float
@@ -529,7 +529,7 @@ def schedule_breakdowns(
     solved from that date's signals, ``forecast_trust`` and the covariance over its
     own training window, then the no-trade band against the weight the last
     allocation drifted to. Zero costs leave no band, so every rebalance moves to its
-    target. ``baselines`` are each forecast's fold training means. A ``trust`` given
+    target. ``baselines`` are each forecast's fold levels. A ``trust`` given
     is used at every rebalance in place of the estimate; ``trust=0.0`` is the level
     with no forecasts, under the same band. ``trust_gate`` is the t-statistic the
     estimate must clear.

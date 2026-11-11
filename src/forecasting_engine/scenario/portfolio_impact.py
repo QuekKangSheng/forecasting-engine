@@ -15,7 +15,7 @@ hold would do.
 
 Re-optimising solves the latest rebalance's target again (``optimize.SolveInputs``)
 with one thing changed: each index's signal moves by as much as the shock moved its
-forecast. A signal is the forecast less a training mean the shock doesn't touch, so
+forecast. A signal is the forecast less a level the shock doesn't touch, so
 the two move together. The covariance, long-run premium, forecast trust, risk level
 and weight limits are the rebalance's own. The re-optimised weights are simulated
 under the shocked forecasts on the same paths as the held ones, so the two can be

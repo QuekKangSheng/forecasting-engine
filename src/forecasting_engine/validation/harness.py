@@ -26,7 +26,7 @@ import pandas as pd
 
 from forecasting_engine.features.screening import screen_over_folds
 from forecasting_engine.ingest.align import FeaturePanel
-from forecasting_engine.models.base import Forecaster, ModelDescription, declares_own_level
+from forecasting_engine.models.base import Forecaster, ModelDescription
 from forecasting_engine.reporting.model_metrics import (
     ConstantForecasts,
     FoldTerms,
@@ -96,10 +96,12 @@ class FoldResult:
     horizon: int = 1
     """The panel's label horizon, which sets how far apart errors stay correlated."""
     own_level: float | None = None
-    """For a forecaster that sets its own level (``models.base.declares_own_level``),
-    the level its forecasts are judged against: its mean in-sample forecast over this
-    fold's training rows. ``None`` for every other forecaster, which is judged against
-    the training-mean target."""
+    """The level this fold's forecasts are judged against: the model's mean in-sample
+    forecast over the fold's training rows. For a least-squares fit with an intercept
+    that is the training-mean target; for a model whose level is its own (a
+    no-change fit, a level taken from other rows) it is not. ``None`` on a fold
+    built without one, which is judged against its training-mean target
+    (``fold_baseline``)."""
 
 
 def evaluate(
@@ -162,16 +164,17 @@ def evaluate(
                 description=forecaster.describe(),
                 screening=screening,
                 horizon=panel.horizon,
-                own_level=_own_level(predicted_train) if declares_own_level(forecaster) else None,
+                own_level=_own_level(predicted_train),
             )
         )
     return tuple(results)
 
 
 def _own_level(predicted_train: pd.Series) -> float:
-    """A forecaster's mean in-sample forecast, over the training rows it forecast. A
-    forecast that is one value throughout is that value exactly, not a mean carrying
-    rounding dust, so a fold that forecasts it everywhere adds exactly zero signal."""
+    """A forecaster's mean in-sample forecast, over the training rows it forecast, or
+    NaN if it forecast none. A forecast that is one value throughout is that value
+    exactly, not a mean carrying rounding dust, so a fold that forecasts it everywhere
+    adds exactly zero signal."""
     values = predicted_train.dropna()
     if values.empty:
         return float("nan")
@@ -201,6 +204,7 @@ def _training_mean_fold(
         description=ModelDescription(name=TRAINING_MEAN, terms=(), coefficients=(), intercept=mean),
         screening=screening,
         horizon=panel.horizon,
+        own_level=mean,
     )
 
 
@@ -220,11 +224,10 @@ def summarize(
     fit shares.
 
     The gates read the Signal Rank IC, the pooled Rank IC of what the signals
-    add to each fold's training-mean return, or to the level of a forecaster that
-    sets its own (``signal_forecasts``), and its t. The plain pooled Rank IC also
-    scores the forecast's level, which shifts with each fold's training mean
-    whatever the signals say, so a model with no signal can score there and one
-    with a real signal can be swamped there.
+    add to each fold's own level (``signal_forecasts``), and its t. The plain
+    pooled Rank IC also scores the forecast's level, which shifts from fold to
+    fold whatever the signals say, so a model with no signal can score there and
+    one with a real signal can be swamped there.
 
     Requires at least one fold. Callers should check ``evaluate()``'s output is
     non-empty themselves and raise their own domain-appropriate error message
@@ -284,30 +287,32 @@ def candidate_scores(per_candidate: dict[str, tuple[FoldResult, ...]]) -> dict[s
 
 
 def fold_baseline(fold: FoldResult) -> float:
-    """The level a fold's forecasts are judged relative to: its training-window mean
-    target, which the naive baseline forecasts for it, or, for a forecaster that sets
-    its own level, that level (``FoldResult.own_level``)."""
-    if fold.own_level is not None:
+    """The level a fold's forecasts are judged relative to: the model's own, its mean
+    in-sample forecast (``FoldResult.own_level``). A fold with none recorded, or with
+    no in-sample forecast to take one from, is judged against its training-window
+    mean target, which is what the naive baseline forecasts for it."""
+    if fold.own_level is not None and fold.own_level == fold.own_level:  # not NaN
         return fold.own_level
     return float(fold.realised_train.mean())
 
 
 def signal_forecasts(folds: tuple[FoldResult, ...]) -> pd.Series:
-    """Every fold's test predictions less that fold's training-window mean target,
-    end to end: what the signals add to the naive forecast.
+    """Every fold's test predictions less that fold's own level (``fold_baseline``),
+    end to end: what the signals add to the forecast the model makes on average.
 
-    A forecast's level moves with its fold's training mean whatever the signals
-    say, and on daily equity data that trailing mean ranks future returns the
-    wrong way (returns mean-revert). Scored pooled, the level can swamp a real
-    signal or pass one that has none. Taking the training mean away leaves what
-    the model itself contributes. A fold that forecasts its training mean
-    contributes exactly zero.
+    A forecast's level is not skill, and scored pooled it can swamp a real signal
+    or pass a forecast that has none: the level differs from fold to fold, and on
+    daily equity data the trailing mean return ranks future returns the wrong way
+    (returns mean-revert). Taking each fold's level away leaves what the signals
+    say within it.
 
-    A forecaster that sets its own level (the derived polynomial's no-change fit)
-    is judged against that level instead, its mean in-sample forecast. Against the
-    training mean, any gap between the two would be scored as skill, so a model
-    forecasting one constant could pass. A fold of such a forecaster that forecasts
-    one value throughout contributes exactly zero too.
+    The level taken away is the model's own, its mean in-sample forecast. For a
+    least-squares fit with an intercept that is the fold's training-mean target,
+    to within rounding. Taking the training mean off every model instead scores
+    any gap between a model's level and that mean as skill: on the Sep 2026 data
+    a forecast of zero every day had a Signal Rank IC of +0.215, t 2.6, and
+    passed both gates, and rounding alone moved the derived polynomial's figure
+    by 0.01. A fold that forecasts one value throughout contributes exactly zero.
     """
     return pd.concat([f.predicted - fold_baseline(f) for f in folds])
 

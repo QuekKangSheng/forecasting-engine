@@ -175,7 +175,8 @@ def _model_fits() -> None:
             ui.eyebrow(
                 "Out-of-sample forecasts",
                 "Each test date's forecast of the return over the horizon, beside its fold's "
-                "training-mean baseline and the return that followed.",
+                "baseline (the model's average forecast over its training block) and the "
+                "return that followed.",
             ),
             unsafe_allow_html=True,
         )
