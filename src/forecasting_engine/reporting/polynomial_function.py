@@ -20,6 +20,7 @@ from enum import StrEnum
 import pandas as pd
 
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
+from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.polynomial import PolynomialConfigError, _parse
 
@@ -119,11 +120,18 @@ def from_description(
     )
 
 
-def dataset_fingerprint(frame: pd.DataFrame) -> tuple:
-    """Enough of a committed frame to tell when it has been replaced."""
+def dataset_fingerprint(frame: pd.DataFrame, content_hash: str | None = None) -> tuple:
+    """Enough of a committed frame to tell when it has been replaced: its rows, its
+    first and last date, its columns and the hash of its content.
+
+    The shape alone is not enough. A corrected re-export, or someone else's export of
+    the same dates and columns, has the same shape and other values, and results
+    fitted on one would be shown and used as the other's. ``content_hash`` is
+    ``ingest.upload.frame_sha256(frame)``, from a caller that already has it."""
     dates = frame[DATE_COLUMN]
     first, last = (dates.iloc[0], dates.iloc[-1]) if len(frame) else (None, None)
-    return (len(frame), first, last, tuple(frame.columns))
+    content = frame_sha256(frame) if content_hash is None else content_hash
+    return (len(frame), first, last, tuple(frame.columns), content)
 
 
 # --- derived terms -----------------------------------------------------------

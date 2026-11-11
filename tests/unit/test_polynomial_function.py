@@ -1,10 +1,13 @@
 """The fitted polynomial as a readable function: parsing, expansion, rendering."""
 
+import pickle
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from forecasting_engine.ingest.align import FeaturePanel
+from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.polynomial import DerivedPolynomial, UserPolynomial
 from forecasting_engine.reporting.factor_labels import labeller
@@ -462,3 +465,31 @@ def test_a_change_of_rows_dates_or_columns_changes_the_fingerprint():
     shifted = _frame()
     shifted["Date"] = pd.bdate_range("2025-01-01", periods=10)
     assert dataset_fingerprint(shifted) != base
+
+
+def test_the_same_shape_with_another_value_has_another_fingerprint():
+    # A corrected re-export: the same rows, dates and columns, one value put right.
+    corrected = _frame()
+    corrected.loc[3, "VIX_Index_PX_LAST"] = 99
+
+    assert dataset_fingerprint(corrected) != dataset_fingerprint(_frame())
+
+
+def test_a_frame_reloaded_from_disk_keeps_its_fingerprint():
+    reloaded = pickle.loads(pickle.dumps(_frame()))
+
+    assert dataset_fingerprint(reloaded) == dataset_fingerprint(_frame())
+
+
+def test_a_fingerprint_saved_before_it_carried_the_content_is_never_the_current_one():
+    frame = _frame()
+    dates = frame["Date"]
+    shape_only = (len(frame), dates.iloc[0], dates.iloc[-1], tuple(frame.columns))
+
+    assert str(dataset_fingerprint(frame)) != str(shape_only)
+
+
+def test_a_content_hash_passed_in_is_the_one_the_fingerprint_carries():
+    frame = _frame()
+
+    assert dataset_fingerprint(frame, frame_sha256(frame)) == dataset_fingerprint(frame)
