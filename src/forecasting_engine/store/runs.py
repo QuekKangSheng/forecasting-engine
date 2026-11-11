@@ -19,8 +19,8 @@ Three tables, all keyed by ``run_id``:
 **Lineage.** ``dataset_sha256`` is the SHA-256 of the committed dataset's
 canonical CSV (``ingest.upload.frame_sha256``), the same hash the upload log
 records for it and the name its bytes are stored under in ``data/uploads``. So any
-run traces back to the exact data it saw, and unlike the shape-based
-``dataset_fingerprint``, a single corrected value gives a different hash.
+run traces back to the exact data it saw: a single corrected value gives a
+different hash. ``dataset_fingerprint`` carries the same hash.
 
 Every row of one run is written in a single transaction: a reader sees a run
 with all its metrics and forecasts, or not at all.

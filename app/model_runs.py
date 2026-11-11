@@ -48,6 +48,10 @@ class TabRuns:
     that have one."""
     runs: dict[str, ModelRun] = field(default_factory=dict)
     """Model name (as in ``reporting.model_metrics.MODEL_ORDER``) -> its run."""
+    inputs: object | None = None
+    """What this target's runs were fitted on besides the shared settings: its target
+    column and its signals with their transforms. ``None`` until the page records
+    it."""
 
 
 @dataclass
@@ -76,15 +80,30 @@ def cleared_by(session: MutableMapping, shared_settings: tuple) -> bool:
     )
 
 
-def tab(runs: StoredRuns, role: TargetRole, model_settings: Mapping[str, object]) -> TabRuns:
-    """One target's runs, without any model whose own setting has changed."""
+def tab(
+    runs: StoredRuns,
+    role: TargetRole,
+    model_settings: Mapping[str, object],
+    inputs: object | None = None,
+) -> TabRuns:
+    """One target's runs, without any model whose own setting has changed, and with
+    none at all if what the target is fitted on has changed.
+
+    ``inputs`` is the target column and the signals with their transforms. The
+    committed data can stay the same while they change (another field confirmed as
+    the target, another security resolved as one), and every result held here is
+    then the answer to another question."""
     current = runs.tabs.get(role)
     if current is None:
-        current = TabRuns(dict(model_settings))
+        current = TabRuns(dict(model_settings), inputs=inputs)
         runs.tabs[role] = current
         return current
+    if inputs is not None and current.inputs is not None and current.inputs != inputs:
+        current.runs.clear()
     for name, value in model_settings.items():
         if current.model_settings.get(name) != value:
             current.runs.pop(name, None)
     current.model_settings = dict(model_settings)
+    if inputs is not None:
+        current.inputs = inputs
     return current

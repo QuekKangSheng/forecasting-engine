@@ -1288,3 +1288,17 @@ def test_the_report_carries_the_data_quality_models_and_their_functions():
     assert "0.0123" in report and "0.004500" in report
     assert "not a polynomial" in report
     assert "Gate result not saved" in report, "these fixtures have no recorded run"
+
+
+def test_active_models_set_on_a_same_shape_dataset_with_other_values_are_refused():
+    committed = _committed()
+    _set_active(EQUITY, forecast=_forecast(committed))
+    _set_active(BOND, forecast=_forecast(committed))
+    corrected = committed.copy()  # the same rows, dates and columns, one value put right
+    corrected.loc[10, EQUITY_COL] *= 1.01
+
+    app = _page(corrected)
+
+    assert not app.exception
+    assert any("different dataset than the one committed now" in w.value for w in app.warning)
+    assert not app.metric
