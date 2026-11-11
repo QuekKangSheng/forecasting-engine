@@ -102,12 +102,14 @@ TERMS: Mapping[str, str] = {
         "than a cause for celebration."
     ),
     "Signal Rank IC": (
-        "What the signals add, scored: each forecast less its training block's "
-        "average return, compared in order with what actually happened, on data "
-        "the model never trained on. The headline number, and the one the "
-        "promotion gate is set on. The training average is left out because it "
-        "moves with recent performance whatever the signals say, so it can drown "
-        "a real signal or pass a model that has none. The two s.e.s beside it "
+        "What the signals add, scored: each forecast less the model's own level, "
+        "the average forecast it made over its training block, compared in order "
+        "with what actually happened, on data the model never trained on. The "
+        "headline number, and the one the promotion gate is set on. The level is "
+        "left out because it is not skill: it moves from one training block to the "
+        "next whatever the signals say, so it can drown a real signal or pass a "
+        "model that has none. For most models the level is the training block's "
+        "average return. The two s.e.s beside it "
         "are standard errors, one allowing for overlapping labels, one for errors "
         "shared within a test window; t divides the score by the larger."
     ),
@@ -115,8 +117,8 @@ TERMS: Mapping[str, str] = {
         "Out-of-sample Rank IC of the whole forecast, its level included: the "
         "order of predictions against the order of outcomes, on data the model "
         "never trained on. Shown for comparison with the Signal Rank IC; it is "
-        "not gated, because a forecast's level shifts with each training block's "
-        "average whatever the signals say. Far apart from the Signal Rank IC "
+        "not gated, because a forecast's level shifts from one training block to "
+        "the next whatever the signals say. Far apart from the Signal Rank IC "
         "means the level, not the signals, drove this score."
     ),
     "t": (

@@ -10,7 +10,10 @@ from forecasting_engine.validation import metrics
 from forecasting_engine.validation.harness import (
     FoldResult,
     evaluate,
+    fold_baseline,
+    pooled,
     select_best_candidate,
+    signal_forecasts,
     summarize,
 )
 from forecasting_engine.validation.splitters import PurgedWalkForward
@@ -569,3 +572,140 @@ def test_selection_chooses_by_signal_not_by_level():
     best = select_best_candidate({"level": level, "signal": signal})
 
     assert best == "signal"
+
+
+# --- every forecaster is judged against its own level ------------------------------
+
+
+class _Constant:
+    """Forecasts one value everywhere, whatever it is trained on."""
+
+    name = "Constant"
+    value = 0.0013  # a value whose mean over ten rows is off by rounding dust
+
+    def fit(self, panel: FeaturePanel, train: pd.DatetimeIndex) -> None:
+        pass
+
+    def predict(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> pd.Series:
+        return pd.Series(self.value, index=idx, dtype=float)
+
+    def describe(self) -> ModelDescription:
+        return ModelDescription(name=self.name, terms=(), coefficients=(), intercept=self.value)
+
+
+class _MeanSummedBackwards:
+    """Forecasts its training-mean target, summed in the other order: the same number
+    as the harness's own training mean to within rounding, as a fitted intercept is."""
+
+    name = "MeanSummedBackwards"
+
+    def fit(self, panel: FeaturePanel, train: pd.DatetimeIndex) -> None:
+        values = panel.frame.loc[train, panel.targets[0]].to_numpy()[::-1]
+        self._mean = float(sum(values.tolist()) / len(values))
+
+    def predict(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> pd.Series:
+        return pd.Series(self._mean, index=idx, dtype=float)
+
+    def describe(self) -> ModelDescription:
+        return ModelDescription(name=self.name, terms=(), coefficients=(), intercept=self._mean)
+
+
+def _rising_panel(n: int = 40) -> FeaturePanel:
+    """A target that drifts up, so each fold's training mean sits below its test window's
+    returns, and a signal that ranks nothing within a fold."""
+    rng = np.random.default_rng(4)
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    frame = pd.DataFrame(
+        {"signal_a": rng.normal(size=n), "fwd_return_1d": np.linspace(0.0, 0.01, n)}, index=idx
+    )
+    return FeaturePanel(frame=frame, signals=("signal_a",), targets=("fwd_return_1d",), lag_days=1)
+
+
+def test_a_forecaster_is_judged_against_its_mean_in_sample_forecast():
+    panel = _panel_with_varying_folds()
+    holed = panel.frame.copy()
+    holed.iloc[3, 0] = np.nan  # a training row it cannot forecast is skipped, not zero
+    panel = replace(panel, frame=holed)
+    folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=10, test=3, embargo=2))
+
+    for fold in folds:
+        assert fold.own_level == pytest.approx(fold.predicted_train.dropna().mean())
+        assert fold.own_level != pytest.approx(fold.realised_train.mean())
+    expected = pd.concat([f.predicted - f.own_level for f in folds])
+    pd.testing.assert_series_equal(signal_forecasts(folds), expected)
+
+
+def test_a_fold_with_no_level_recorded_is_judged_against_its_training_mean():
+    # A fold built by hand, or saved before the level was recorded.
+    fold = _fold_around(0, 5.0, [1.0, 2.0, 3.0], [3.0, 1.0, 2.0])
+    assert fold.own_level is None
+
+    assert fold_baseline(fold) == float(fold.realised_train.mean())
+
+
+def test_a_fold_with_no_in_sample_forecast_is_judged_against_its_training_mean():
+    fold = _fold_around(0, 5.0, [1.0, 2.0, 3.0], [3.0, 1.0, 2.0])
+    fold = replace(fold, own_level=float("nan"))
+
+    assert fold_baseline(fold) == float(fold.realised_train.mean())
+
+
+def test_a_constant_forecast_adds_exactly_no_signal():
+    panel = _rising_panel()
+    splitter = PurgedWalkForward(train=10, test=5, embargo=2)
+    assert pd.Series(_Constant.value, index=range(10)).mean() != _Constant.value  # the dust
+
+    folds = evaluate(_Constant, panel, splitter)
+    result, _ = summarize(folds)
+
+    assert (signal_forecasts(folds) == 0.0).all()
+    assert result.signal_rank_ic != result.signal_rank_ic  # NaN: nothing to rank, no credit
+    assert (result.baseline == _Constant.value).all()
+
+
+def _reverting_panel(n: int = 100) -> FeaturePanel:
+    """A target that swings slowly, so a window of high returns is followed by a window
+    of low ones, and a signal that ranks nothing."""
+    rng = np.random.default_rng(4)
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    swing = 0.01 * np.sin(2 * np.pi * np.arange(n) / 20)
+    frame = pd.DataFrame({"signal_a": rng.normal(size=n), "fwd_return_1d": swing}, index=idx)
+    return FeaturePanel(frame=frame, signals=("signal_a",), targets=("fwd_return_1d",), lag_days=1)
+
+
+def test_a_constant_forecast_is_not_credited_for_its_gap_to_the_training_mean():
+    # Returns that revert make a low training mean precede high returns. A constant
+    # less that mean then ranks the returns that followed, with no signal at all.
+    panel = _reverting_panel()
+    splitter = PurgedWalkForward(train=10, test=5, embargo=2)
+    constant = evaluate(_Constant, panel, splitter)
+    noise = evaluate(_EchoForecaster, panel, splitter)
+    against_training_mean = pd.concat(
+        [f.predicted - float(f.realised_train.mean()) for f in constant]
+    )
+    assert metrics.rank_ic(against_training_mean, pooled(constant)[1]) > 0.5  # the false credit
+
+    result, _ = summarize(constant)
+
+    assert result.signal_rank_ic != result.signal_rank_ic  # NaN, which fails the gate
+    assert select_best_candidate({"constant": constant, "noise": noise}) == "noise"
+
+
+def test_a_fold_that_forecasts_its_training_mean_adds_exactly_no_signal():
+    # A fitted intercept equals the training mean only to within rounding. Left in, the
+    # rounding's sign is ranked against the returns that followed.
+    panel = _rising_panel()
+    folds = evaluate(_MeanSummedBackwards, panel, PurgedWalkForward(train=10, test=5, embargo=2))
+    assert any(float(f.predicted.iloc[0]) != float(f.realised_train.mean()) for f in folds)
+
+    assert (signal_forecasts(folds) == 0.0).all()
+    assert summarize(folds)[0].signal_rank_ic != summarize(folds)[0].signal_rank_ic
+
+
+def test_a_screened_out_fold_records_its_training_mean_as_its_level():
+    _, folds, _ = _no_signal_passes()
+
+    assert folds
+    for fold in folds:
+        assert fold.own_level == float(fold.realised_train.mean())
+        assert (signal_forecasts((fold,)) == 0.0).all()

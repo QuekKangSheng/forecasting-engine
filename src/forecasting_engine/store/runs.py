@@ -14,7 +14,7 @@ Three tables, all keyed by ``run_id``:
 - ``run_metrics``: one row per run and metric (long format), so a new metric
   needs no schema change either.
 - ``run_forecasts``: one row per run and date: the out-of-sample forecast, its
-  fold's training-mean baseline, and the realised return.
+  fold's baseline (the model's own level), and the realised return.
 
 **Lineage.** ``dataset_sha256`` is the SHA-256 of the committed dataset's
 canonical CSV (``ingest.upload.frame_sha256``), the same hash the upload log

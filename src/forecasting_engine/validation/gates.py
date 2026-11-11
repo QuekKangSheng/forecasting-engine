@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 SIGNAL_RANK_IC_GATE: float = 0.02
 """First gate: the Signal Rank IC — pooled OOS Rank IC of each forecast less its
-fold's training-mean target (``validation.harness.signal_forecasts``) — must
+model's own level for that fold (``validation.harness.signal_forecasts``) — must
 exceed this (strictly)."""
 
 SIGNIFICANCE_T_GATE: float = 2.0
