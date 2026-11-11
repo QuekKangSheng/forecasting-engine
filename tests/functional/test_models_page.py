@@ -1203,6 +1203,63 @@ def test_finished_runs_are_there_in_a_new_session_on_the_same_data(stub_ml):
     assert "Machine Learning" in _table(later)
 
 
+# --- saved results belong to the data and the target they were fitted on ----------
+
+
+def _corrected(committed: pd.DataFrame) -> pd.DataFrame:
+    """The same rows, dates and columns with one value put right: a re-export."""
+    corrected = committed.copy()
+    corrected.loc[100, "VIX_Index_PX_LAST"] += 1.0
+    return corrected
+
+
+def test_results_held_for_a_same_shape_dataset_with_other_values_are_dropped():
+    committed = _committed()
+    app = AppTest.from_file(str(PAGE), default_timeout=60)
+    app.session_state["extraction_committed"] = _corrected(committed)
+    app.session_state["extraction_committed_targets"] = {EQUITY: SPX}
+    stored = model_runs.StoredRuns((dataset_fingerprint(committed), *DEFAULT_SHARED))
+    stored.tabs[EQUITY] = model_runs.TabRuns(dict(DEFAULT_MODEL_SETTINGS), {NAIVE: _ml_run()})
+    app.session_state[model_runs.RUNS_KEY] = stored
+
+    app.run()
+
+    assert not app.exception
+    assert not _stored_runs(app)
+
+
+def test_finished_runs_are_not_shown_for_a_same_shape_dataset_with_other_values(stub_ml):
+    _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
+
+    later = _page(committed=_corrected(_committed()))  # a new session, on a re-export
+
+    assert not later.exception
+    assert not _stored_runs(later)
+
+
+def test_finished_runs_are_not_shown_when_another_column_is_the_target(stub_ml):
+    _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
+    later = AppTest.from_file(str(PAGE), default_timeout=60)
+    later.session_state["extraction_committed"] = _committed()
+    later.session_state["extraction_committed_targets"] = {EQUITY: "VIX_Index_PX_LAST"}
+
+    later.run()
+
+    assert not later.exception
+    assert not _stored_runs(later)
+
+
+def test_results_held_for_another_target_column_are_dropped():
+    app = _page({EQUITY: {NAIVE: _ml_run()}})
+    assert _stored_runs(app), "the page keeps what it was handed while nothing changes"
+    app.session_state["extraction_committed_targets"] = {EQUITY: "VIX_Index_PX_LAST"}
+
+    app.run()
+
+    assert not app.exception
+    assert not _stored_runs(app)
+
+
 def test_saved_runs_are_not_shown_under_other_settings(stub_ml):
     _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
 
@@ -1510,60 +1567,3 @@ def test_the_research_model_can_be_set_active_with_its_signal_and_no_train_windo
     assert record.train_window is None
     signal = active_model.get_active_model_signal(EQUITY)
     pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)
-
-
-# --- saved results belong to the data and the target they were fitted on ----------
-
-
-def _corrected(committed: pd.DataFrame) -> pd.DataFrame:
-    """The same rows, dates and columns with one value put right: a re-export."""
-    corrected = committed.copy()
-    corrected.loc[100, "VIX_Index_PX_LAST"] += 1.0
-    return corrected
-
-
-def test_results_held_for_a_same_shape_dataset_with_other_values_are_dropped():
-    committed = _committed()
-    app = AppTest.from_file(str(PAGE), default_timeout=60)
-    app.session_state["extraction_committed"] = _corrected(committed)
-    app.session_state["extraction_committed_targets"] = {EQUITY: SPX}
-    stored = model_runs.StoredRuns((dataset_fingerprint(committed), *DEFAULT_SHARED))
-    stored.tabs[EQUITY] = model_runs.TabRuns(dict(DEFAULT_MODEL_SETTINGS), {NAIVE: _ml_run()})
-    app.session_state[model_runs.RUNS_KEY] = stored
-
-    app.run()
-
-    assert not app.exception
-    assert not _stored_runs(app)
-
-
-def test_finished_runs_are_not_shown_for_a_same_shape_dataset_with_other_values(stub_ml):
-    _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
-
-    later = _page(committed=_corrected(_committed()))  # a new session, on a re-export
-
-    assert not later.exception
-    assert not _stored_runs(later)
-
-
-def test_finished_runs_are_not_shown_when_another_column_is_the_target(stub_ml):
-    _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
-    later = AppTest.from_file(str(PAGE), default_timeout=60)
-    later.session_state["extraction_committed"] = _committed()
-    later.session_state["extraction_committed_targets"] = {EQUITY: "VIX_Index_PX_LAST"}
-
-    later.run()
-
-    assert not later.exception
-    assert not _stored_runs(later)
-
-
-def test_results_held_for_another_target_column_are_dropped():
-    app = _page({EQUITY: {NAIVE: _ml_run()}})
-    assert _stored_runs(app), "the page keeps what it was handed while nothing changes"
-    app.session_state["extraction_committed_targets"] = {EQUITY: "VIX_Index_PX_LAST"}
-
-    app.run()
-
-    assert not app.exception
-    assert not _stored_runs(app)
