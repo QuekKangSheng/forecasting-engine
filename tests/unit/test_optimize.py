@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import statsmodels.api as sm
+from statsmodels.stats.sandwich_covariance import weights_uniform
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.backtest import run_backtest
@@ -907,15 +908,20 @@ def test_a_strong_slope_keeps_its_value():
     assert gated == slope
 
 
-def test_the_gate_reads_a_newey_west_t_over_h_minus_1_lags_and_is_strict():
+def test_the_gate_reads_a_t_over_h_minus_1_overlapping_lags_and_is_strict():
     dates, prices, signals = _leakage_inputs()
     pairs = trust_pairs(signals, _zero_baselines(dates), prices, horizon=20)
     known = pairs_known_by(dates[-1], pairs)
     fit = sm.OLS(known["y"].to_numpy(), sm.add_constant(known["x"].to_numpy()))
-    t = fit.fit(cov_type="HAC", cov_kwds={"maxlags": 19}).tvalues[1]
+    # h - 1 lags counted in full (Hansen-Hodrick), as the model metrics' overlap error.
+    t = fit.fit(
+        cov_type="HAC", cov_kwds={"maxlags": 19, "weights_func": weights_uniform}
+    ).tvalues[1]
+    newey_west_t = fit.fit(cov_type="HAC", cov_kwds={"maxlags": 19}).tvalues[1]
     spread_rule_t = fit.fit(
         cov_type="HAC", cov_kwds={"maxlags": newey_west_lags(len(known))}
     ).tvalues[1]
+    assert t != pytest.approx(newey_west_t)
     assert t != pytest.approx(spread_rule_t)
 
     assert forecast_trust(dates[-1], pairs, horizon=20, gate=t - 1e-9) > 0

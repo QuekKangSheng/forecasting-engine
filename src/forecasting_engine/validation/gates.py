@@ -14,8 +14,8 @@ model's own level for that fold (``validation.harness.signal_forecasts``) — mu
 exceed this (strictly)."""
 
 SIGNIFICANCE_T_GATE: float = 2.0
-"""Second gate: t, the Signal Rank IC divided by the larger of its two Newey-West
-standard errors, must exceed this (strictly). At a standard error near 0.07, a
+"""Second gate: t, the Signal Rank IC divided by the larger of its two standard
+errors, must exceed this (strictly). At a standard error near 0.07, a
 model with no skill clears the first gate alone about 39% of the time; the sponsor
 asked for a t-statistic above 2."""
 

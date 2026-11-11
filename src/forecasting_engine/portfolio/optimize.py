@@ -34,7 +34,7 @@ the allocation to a bound whatever the signals say.
 and the return that followed it — a Mincer-Zarnowitz regression of realised on
 forecast (Mincer & Zarnowitz 1969) — using only returns fully known before the
 rebalance (``forecast_trust``). Until ``MIN_TRUST_HISTORY`` such pairs exist, and whenever the
-slope's Newey-West t-statistic is not above ``validation.gates.SIGNIFICANCE_T_GATE``,
+slope's t-statistic is not above ``validation.gates.SIGNIFICANCE_T_GATE``,
 it is zero, so the forecasts move nothing.
 
 A rebalance happens once every ``horizon`` trading days over the out-of-sample
@@ -58,7 +58,6 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-import statsmodels.api as sm
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
@@ -67,6 +66,7 @@ from forecasting_engine.portfolio.backtest import (
     DEFAULT_COSTS_BPS,
     asset_returns,
 )
+from forecasting_engine.validation import metrics
 from forecasting_engine.validation.gates import SIGNIFICANCE_T_GATE
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
 
@@ -253,14 +253,14 @@ def pairs_known_by(rebalance_date: pd.Timestamp, pairs: pd.DataFrame) -> pd.Data
 def _trust_fit(rebalance_date: pd.Timestamp, pairs: pd.DataFrame, *, horizon: int):
     """The OLS of ``y`` on ``x`` with an intercept over every pair known by
     ``rebalance_date``, or ``None`` with fewer than ``MIN_TRUST_HISTORY`` pairs or where
-    ``x`` never varies and has no slope. Its standard errors are Newey-West over h - 1
-    lags, for the overlap between neighbouring h-day labels, as the model metrics'
-    (``validation.metrics.rank_ic_se``)."""
+    ``x`` never varies and has no slope. Its standard errors count h - 1 lags in full,
+    for the overlap between neighbouring h-day labels, as the model metrics' do
+    (``validation.metrics.overlap_fit``)."""
     known = pairs_known_by(rebalance_date, pairs)
     x, y = known["x"].to_numpy(dtype=float), known["y"].to_numpy(dtype=float)
     if len(known) < MIN_TRUST_HISTORY or np.ptp(x) == 0:
         return None
-    return sm.OLS(y, sm.add_constant(x)).fit(cov_type="HAC", cov_kwds={"maxlags": horizon - 1})
+    return metrics.overlap_fit(y, x, lags=horizon - 1)
 
 
 def forecast_trust(

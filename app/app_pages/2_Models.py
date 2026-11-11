@@ -183,7 +183,7 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 #: adds the no-change fit on levels, rolling and expanding, scored against its own level,
 #: and the bond target tries only that fit (the lasso and shrinkage fits run only if it
 #: cannot be fitted). 7: every model's Signal Rank IC and baseline are measured against
-#: its own level.
+#: its own level, and the standard error for overlapping labels counts every lag in full.
 RESULT_VERSION = 7
 
 st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")

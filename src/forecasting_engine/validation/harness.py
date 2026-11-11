@@ -218,10 +218,10 @@ def summarize(
     Pooling scores one long out-of-sample series rather than averaging short,
     noisy per-fold scores. Each fold's predictions come from its own fit, so a
     pooled Pearson IC mixes those fits' scales; Rank IC does not care about
-    scale. Two Newey-West standard errors of each pooled Rank IC are reported:
-    one over h - 1 lags, for the overlap between neighbouring h-day labels, and
-    one over as many lags as a test window has rows, for errors a fold's single
-    fit shares.
+    scale. Two standard errors of each pooled Rank IC are reported: one over
+    h - 1 lags counted in full (Hansen-Hodrick), for the overlap between
+    neighbouring h-day labels, and a Newey-West one over as many lags as a test
+    window has rows, for errors a fold's single fit shares.
 
     The gates read the Signal Rank IC, the pooled Rank IC of what the signals
     add to each fold's own level (``signal_forecasts``), and its t. The plain
@@ -241,7 +241,9 @@ def summarize(
     result = ModelRunResult(
         ic=metrics.ic(predicted, realised),
         oos_rank_ic=metrics.rank_ic(predicted, realised),
-        oos_rank_ic_se=metrics.rank_ic_se(predicted, realised, lags=folds[0].horizon - 1),
+        oos_rank_ic_se=metrics.rank_ic_se(
+            predicted, realised, lags=folds[0].horizon - 1, overlap=True
+        ),
         oos_rank_ic_se_test=metrics.rank_ic_se(predicted, realised, lags=test_window_lags),
         rmse=metrics.rmse(predicted, realised),
         crash=_crash_over_folds(folds),
@@ -255,7 +257,9 @@ def summarize(
         forecast=predicted,
         realised=realised,
         signal_rank_ic=metrics.rank_ic(signal, realised),
-        signal_rank_ic_se=metrics.rank_ic_se(signal, realised, lags=folds[0].horizon - 1),
+        signal_rank_ic_se=metrics.rank_ic_se(
+            signal, realised, lags=folds[0].horizon - 1, overlap=True
+        ),
         signal_rank_ic_se_test=metrics.rank_ic_se(signal, realised, lags=test_window_lags),
         baseline=predicted - signal,
     )
@@ -310,7 +314,7 @@ def signal_forecasts(folds: tuple[FoldResult, ...]) -> pd.Series:
     least-squares fit with an intercept that is the fold's training-mean target,
     to within rounding. Taking the training mean off every model instead scores
     any gap between a model's level and that mean as skill: on the Sep 2026 data
-    a forecast of zero every day had a Signal Rank IC of +0.215, t 2.6, and
+    a forecast of zero every day had a Signal Rank IC of +0.21, t 3.0, and
     passed both gates, and rounding alone moved the derived polynomial's figure
     by 0.01. A fold that forecasts one value throughout contributes exactly zero.
     """

@@ -293,13 +293,15 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   shrinkage idea comes from the October 2026 model research (below); the
   literature behind it is Campbell & Thompson (2008) on economically restricted
   return forecasts and Rapach, Strauss & Zhou (2010) on combining correlated
-  predictors. On the Sep 2026 data it was the best candidate for both targets at
-  every fold placement tried; degrees 4 and 5 were never chosen.
+  predictors. In the October 2026 research it was the best candidate for both
+  targets at every fold placement tried, and degrees 4 and 5 were never chosen. On
+  the page's grid today the degree-3 lasso scores higher for equity and the
+  no-change fit for bond (figures below).
 
   **Bond tries only the no-change candidates.** On the bond target the lasso and
   shrinkage candidates keep no term in about half the folds, so they forecast a flat
-  line, and on the Sep 2026 data at the 20-day horizon their Signal Rank IC was +0.011,
-  +0.027 and +0.051 (lasso, degrees 1 to 3) and −0.037 (shrinkage), against +0.101 for
+  line, and on the Sep 2026 data at the 20-day horizon their Signal Rank IC was +0.008,
+  +0.024 and +0.049 (lasso, degrees 1 to 3) and −0.037 (shrinkage), against +0.101 for
   `NO_CHANGE` and +0.137 for `NO_CHANGE_EXPANDING`. So for a target in
   `NO_CHANGE_ONLY_ROLES` (`derive_polynomial(..., no_change_only=True)`) the grid is
   those two candidates alone and the better of them is reported. Fallback: with no
@@ -371,10 +373,11 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   mean forecast of about 0.25% per 20 days against a carry of about 0.20%, with the
   10-year yield's level kept, positive, in every refit that kept it. On the Sep
   2026 data at the page's settings (`h` = 20) the grid picks `NO_CHANGE_EXPANDING`
-  for bond (Signal Rank IC +0.137, t 1.55; `NO_CHANGE` +0.101; the best other
-  candidate, degree-3 lasso, +0.051) and still picks the degree-3 lasso for equity
-  (+0.156, t 2.31; `NO_CHANGE` −0.074, `NO_CHANGE_EXPANDING` +0.026), whose numbers
-  are unchanged.
+  for bond (Signal Rank IC +0.137, t 1.27; `NO_CHANGE` +0.101; the best other
+  candidate, degree-3 lasso, +0.049) and still picks the degree-3 lasso for equity
+  (+0.166, t 2.25; `NO_CHANGE` −0.074, `NO_CHANGE_EXPANDING` +0.026). Before every
+  model was scored against its own level and the overlap standard error counted
+  every lag in full (§10), those read t 1.55 for bond and +0.156, t 2.31 for equity.
 - **Machine learning** (`models/boosted.py`). XGBoost and LightGBM, each with
   `_FIXED_PARAMS` and gain feature importance, and minimum leaf size
   (`_LEAF_KEYS`) capped at `LEAF_CAP_SHARE` of a fit's training rows.
@@ -532,7 +535,7 @@ values end to end, then computes once:
 
   Until November 2026 the training mean was taken off every model instead of the
   model's own level. That scored any gap between the two as skill. On the Sep
-  2026 data a forecast of zero every day read +0.215 with t 2.6 and passed both
+  2026 data a forecast of zero every day read +0.21 with t 3.0 and passed both
   gates; the fixed-input polynomial (§9.1) read 0.259 where its
   signals earn 0.237; and in folds that kept no term the fitted intercept differed
   from the training mean by rounding, whose sign was then ranked, which moved the
@@ -541,11 +544,23 @@ values end to end, then computes once:
 - **OOS Rank IC**: the Spearman correlation of the whole forecast, its level
   included, computed as the Pearson correlation of ranks. Shown, not gated.
 - **RMSE.**
-- **Two Newey-West standard errors of each of those Rank ICs** (`validation/metrics.rank_ic_se`).
+- **Two standard errors of each of those Rank ICs** (`validation/metrics.rank_ic_se`).
   Each regresses the standardised ranks of the outcome on those of the prediction
-  with a HAC covariance: "s.e. (h−1 lags)" allows for overlapping h-day labels,
-  and "s.e. (test-window lags)" uses as many lags as a test window has rows,
-  allowing for errors shared within a fold's single fit.
+  with a HAC covariance.
+  - "s.e. (h−1 lags)" allows for overlapping h-day labels. Labels a day apart
+    share h − 1 days and no more, so it counts every autocovariance up to lag
+    h − 1 in full (Hansen & Hodrick 1980; `validation/metrics.overlap_fit`).
+    Until November 2026 it used Newey-West's weights, which shrink an
+    autocovariance as its lag grows and so leave the variance too small here: on
+    simulated 20-day labels with no predictability and a slow-moving signal, the
+    Newey-West error was 0.84 of the Rank IC's real spread and t exceeded 2 in
+    4.6% of samples, twice the 2.3% it should, so "t above 2" was nearer "t above
+    1.7". Counted in full the figures are 0.98 and 2.9%. Equal weights can give a
+    variance that is not positive, or far too small on a sample not much longer
+    than the lags, so the error reported is never smaller than Newey-West's over
+    the same lags.
+  - "s.e. (test-window lags)" is Newey-West over as many lags as a test window
+    has rows, allowing for errors shared within a fold's single fit.
 - **Rows scored**: test rows with both a prediction and an outcome.
 - **t** (`ModelRunResult.signal_t`): the Signal Rank IC over the larger of its
   two standard errors, the harder bar, since the test-window one also allows for
@@ -587,6 +602,13 @@ a model with no skill clears the first alone about 39% of the time, and the
 sponsor asked for a t-statistic above 2. A model that fails both is high risk
 (`is_high_risk`): it can still be set active, after a confirmation. The plain OOS
 Rank IC and Constant folds are shown beside the gate but never enter it.
+
+**Known limit: short histories.** Both standard errors are estimated from the
+scored rows, and need many more of them than they have lags. A dataset only just
+long enough for one or two folds scores 20 to 40 rows of 20-day labels, about two
+independent periods, and no estimate from those rows is reliable: t can pass 2
+there on noise. The table shows "Rows scored" beside every model; with fewer than
+a few hundred, read the gate as not yet informative. No minimum is enforced.
 
 ## 13. Naive baseline
 
@@ -810,8 +832,8 @@ signals into the weight schedule step 14 backtests.
    Mincer-Zarnowitz regression of realised return on forecast (Mincer & Zarnowitz
    1969) — over every such pair (expanding), clipped to `[0, 1]`. It is zero with fewer than
    `MIN_TRUST_HISTORY` pairs, where `x` never varies, or where the slope's t-statistic
-   is not above `SIGNIFICANCE_T_GATE`. That t-statistic's standard error is Newey-West
-   over `h − 1` lags, for the overlap between neighbouring h-day labels, the same
+   is not above `SIGNIFICANCE_T_GATE`. That t-statistic's standard error counts
+   `h − 1` lags in full, for the overlap between neighbouring h-day labels, the same
    choice as the Signal Rank IC's h-day standard error (§10). At 252 pairs a 20-day horizon holds only
    about 13 independent observations, so early estimates are noisy. The t-statistic
    gate was added after seeing the ungated result on the Sep 2026 data, so it is not
