@@ -8,6 +8,8 @@ the Data page; Home only counts what it flagged.
 
 from __future__ import annotations
 
+import html
+
 import streamlit as st
 
 import bloomberg_extraction_panel
@@ -70,8 +72,9 @@ def _stale(fingerprint_then: str | None) -> bool:
     return fingerprint is not None and fingerprint_then != fingerprint
 
 
-def _next_step() -> str:
-    """The first thing left to do, in pipeline order."""
+def _next_step() -> str | None:
+    """The first thing left to do, in pipeline order, or ``None`` when every step is
+    up to date."""
     if merged is None:
         return "upload Bloomberg exports on the **Data** page and click **Use Updated Data**."
     missing = [ROLE_NAMES[r].lower() for r in ROLES if r not in targets]
@@ -90,7 +93,7 @@ def _next_step() -> str:
             )
     if summary is None or _stale(summary.dataset_fingerprint):
         return "open the **Portfolio Optimizer** to allocate between the active models."
-    return "nothing — every step is up to date with the committed data."
+    return None
 
 
 def _tick(ok: bool) -> str:
@@ -118,7 +121,13 @@ def _data_card() -> None:
     st.caption(f"{len(signals)} signal{'s' if len(signals) != 1 else ''}")
     if report is not None:
         issues = bloomberg_extraction_panel.quality_issue_count(report)
-        st.caption(f"{issues} quality issue{'s' if issues != 1 else ''} flagged → Data")
+        # Unusual moves are shown for information and never stop a run; say so, so a
+        # count of 98 doesn't read as 98 problems.
+        note = "" if report.schema_errors else " (for information; none stop a run)"
+        st.caption(f"{issues} quality issue{'s' if issues != 1 else ''} flagged → Data{note}")
+    restored = st.session_state.get(bloomberg_extraction_panel.RESTORED_AT_KEY)
+    if restored is not None:
+        st.caption(f"Loaded from the commit made {restored:%d %b %Y %H:%M}.")
 
 
 def _result_line(name: str, result: ModelRunResult) -> str:
@@ -197,7 +206,48 @@ def _portfolio_card() -> None:
     )
 
 
-st.info(f"**Next step:** {_next_step()}", icon=":material/arrow_forward:")
+def _headline() -> None:
+    """The latest portfolio result, first, for anyone who opens the app to see it."""
+    if summary is None or _stale(summary.dataset_fingerprint):
+        return
+    cells = [
+        (
+            f"Latest weights, {summary.as_of:%d %b %Y}",
+            f"{summary.equity_weight:.0%} / {summary.bond_weight:.0%}",
+            "equity / bond",
+        ),
+    ]
+    if summary.risk_level is not None:
+        cells.append(("Risk level", f"{summary.risk_level} of 5", ""))
+    behind = summary.net_sharpe < summary.baseline_net_sharpe
+    cells.append(
+        (
+            "Sharpe after costs",
+            f"{summary.net_sharpe:.2f}",
+            f"{summary.baseline_net_sharpe:.2f} for 50/50"
+            + (" · behind the benchmark" if behind else ""),
+        )
+    )
+    if summary.forecast_value_label is not None:
+        cells.append(
+            (
+                "Forecast value after costs",
+                ui.lozenge(html.escape(summary.forecast_value_label), summary.forecast_value_tone),
+                f"t = {summary.forecast_value_t}",
+            )
+        )
+    st.markdown(ui.strip(cells), unsafe_allow_html=True)
+
+
+_headline()
+step = _next_step()
+if step is None:
+    st.success(
+        "**Up to date:** every step has run on the committed data.",
+        icon=":material/check_circle:",
+    )
+else:
+    st.info(f"**Next step:** {step}", icon=":material/arrow_forward:")
 data_col, models_col, portfolio_col = st.columns(3)
 with data_col, st.container(border=True):
     _data_card()
