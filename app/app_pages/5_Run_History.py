@@ -32,6 +32,31 @@ ui.page_header(
 )
 
 OPEN_RUN_KEY = "open_portfolio_run"
+#: A stored metric's key -> the name the Models page's table gives it, in the order
+#: a run is read: the two gate figures first.
+METRIC_NAMES = {
+    "signal_rank_ic": "Signal Rank IC",
+    "signal_t": "t",
+    "oos_rank_ic": "OOS Rank IC",
+    "ic": "IC",
+    "rmse": "RMSE",
+    "rows_scored": "Rows scored",
+    "crash_recall": "Crash recall",
+    "crash_precision": "Crash precision",
+    "crash_f1": "Crash F1",
+    "crash_tail_days": "Crash tail days",
+    "signal_rank_ic_se": "Signal Rank IC s.e. (h−1 lags)",
+    "signal_rank_ic_se_test": "Signal Rank IC s.e. (test-window lags)",
+    "oos_rank_ic_se": "OOS Rank IC s.e. (h−1 lags)",
+    "oos_rank_ic_se_test": "OOS Rank IC s.e. (test-window lags)",
+}
+
+
+def _metric_value(value: float | None) -> str:
+    """A dash for a metric that wasn't computed, rather than the word "None"."""
+    if value is None or value != value:
+        return "—"
+    return f"{value:,.0f}" if float(value).is_integer() and abs(value) >= 1 else f"{value:.4g}"
 RUNS_PER_PAGE = 20
 RUN_NAME_MAX_CHARS = 80
 #: Run, name, first shown, equity model, bond model, risk level. A row's buttons sit on
@@ -113,29 +138,37 @@ def _model_fits() -> None:
     if run.error:
         st.error(run.error, icon=":material/error:")
 
-    # Lineage: the dataset hash leads to the upload that holds those exact bytes.
+    # Lineage: the dataset hash leads to the upload that holds those exact bytes. The
+    # file and date are what a reader wants; the hashes and paths that prove it are
+    # one click away, for an audit, rather than leading the run.
     upload = uploads.find_upload(run.dataset_sha256)
-    source = (
+    summary = (
         f"{html.escape(upload.filename)}, uploaded {upload.uploaded_at:%d %b %Y %H:%M}, "
-        f"{upload.row_count:,} rows, stored as data/uploads/{run.dataset_sha256}.csv"
+        f"{upload.row_count:,} rows"
         if upload is not None
         else "no upload with this hash is in the upload log"
     )
     st.markdown(
         ui.eyebrow("Data", glossary.term("Dataset hash"))
-        + f'<p style="margin:0">SHA-256 <code>{run.dataset_sha256}</code><br>'
-        f'<span style="color: var(--fe-muted)">{source}</span></p>',
+        + f'<p style="margin:0">{summary}</p>',
+        unsafe_allow_html=True,
+    )
+    lineage_box = st.expander("Lineage: hashes and the exports this data came from")
+    lineage_box.markdown(
+        f'<p style="margin:0">SHA-256 <code>{run.dataset_sha256}</code><br>'
+        f'<span style="color: var(--fe-muted)">stored as '
+        f"data/uploads/{run.dataset_sha256}.csv</span></p>",
         unsafe_allow_html=True,
     )
 
     # One step further back: the Bloomberg exports the dataset was merged from.
     sources = lineage.sources_of(run.dataset_sha256)
     if sources:
-        st.markdown(
+        lineage_box.markdown(
             ui.eyebrow(f"Merged from {len(sources)} export(s)", glossary.term("Lineage")),
             unsafe_allow_html=True,
         )
-        st.dataframe(
+        lineage_box.dataframe(
             pd.DataFrame(
                 {
                     "Role": [s.role.title() for s in sources],
@@ -150,7 +183,7 @@ def _model_fits() -> None:
             column_config={"Uploaded": st.column_config.DatetimeColumn(format="D MMM YYYY, HH:mm")},
         )
     else:
-        st.caption(
+        lineage_box.caption(
             "Which exports this dataset was merged from wasn't recorded: it was committed "
             "before exports were logged one by one."
         )
@@ -161,8 +194,20 @@ def _model_fits() -> None:
     metrics = runs.run_metrics(run.run_id)
     if metrics:
         st.markdown(ui.eyebrow("Metrics"), unsafe_allow_html=True)
+        # The gate's two figures first, then the rest, under the names the Models
+        # page's table uses rather than their storage keys.
+        ordered = [k for k in METRIC_NAMES if k in metrics] + [
+            k for k in metrics if k not in METRIC_NAMES
+        ]
         st.dataframe(
-            pd.DataFrame({"Metric": list(metrics), "Value": list(metrics.values())}),
+            pd.DataFrame(
+                {
+                    "Metric": [
+                        METRIC_NAMES.get(k, k.replace("_", " ").capitalize()) for k in ordered
+                    ],
+                    "Value": [_metric_value(metrics[k]) for k in ordered],
+                }
+            ),
             hide_index=True,
             width="stretch",
         )

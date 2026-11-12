@@ -110,7 +110,8 @@ def test_opening_a_run_shows_its_settings_metrics_and_forecasts():
     assert [m.value for m in app.metric][:3] == ["Done", "12.0 s", "abc1234"]
     assert app.json[0].value is not None
     metrics = app.dataframe[1].value
-    assert metrics.set_index("Metric").loc["signal_rank_ic", "Value"] == pytest.approx(0.06)
+    assert metrics.set_index("Metric").loc["Signal Rank IC", "Value"] == "0.06"
+    assert metrics["Metric"].iloc[0] == "Signal Rank IC"  # the gate's figures first
     assert "Out-of-sample forecasts" in _text(app)
 
 
