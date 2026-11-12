@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import traceback
+from dataclasses import replace
 
 import pandas as pd
 import streamlit as st
@@ -177,7 +178,12 @@ st.markdown(
 # FYP-273: filled at the end of the page, once the run and any simulation are known.
 report_slot = st.container()
 
-with st.expander("Settings"):
+BASES = {"After costs": "net", "Before costs": "gross"}
+
+# The choices that change every figure below sit in view at the top, not in a
+# collapsed expander: the risk level is what a client is asked to pick.
+risk_col, floor_col, basis_col = st.columns([3, 3, 2], gap="large")
+with risk_col:
     risk_level = st.select_slider(
         "Risk level",
         options=list(optimize.RISK_LEVELS),
@@ -187,6 +193,7 @@ with st.expander("Settings"):
         ),
         help=glossary.term("Risk level"),
     )
+with floor_col:
     # Equity and bond always sum to 100%, so one floor bounds both: at least this
     # much in each means at most 100% minus it in the other.
     lower = st.slider(
@@ -198,11 +205,20 @@ with st.expander("Settings"):
         format="%.2f",
         help=glossary.term("Weight bounds"),
     )
-    upper = 1 - lower
-    st.caption(
-        "Each level targets a volatility evenly spaced between the lowest-risk and "
-        "highest-risk mixes these limits allow, and the forecasts tilt from there."
+with basis_col:
+    basis_label = st.segmented_control(
+        "Returns",
+        list(BASES),
+        default="After costs",
+        required=True,
+        key="backtest_basis",
     )
+upper = 1 - lower
+basis = BASES[basis_label]
+st.caption(
+    "Each level targets a volatility evenly spaced between the lowest-risk and "
+    "highest-risk mixes these limits allow, and the forecasts tilt from there."
+)
 
 schedule_settings = {
     "baselines": baselines,
@@ -229,12 +245,17 @@ if schedule.empty:
 
 latest_date = schedule.index[-1]
 latest = schedule.loc[latest_date]
+ui.section("Allocation")
 st.markdown(
-    ui.eyebrow("Latest weights", f"As of {latest_date:%d %b %Y}"), unsafe_allow_html=True
+    ui.eyebrow(f"Latest weights, {latest_date:%d %b %Y}", f"As of {latest_date:%d %b %Y}"),
+    unsafe_allow_html=True,
 )
-cols = st.columns(2)
+# The weights first, then the figures that say whether to trust them. Those come
+# from the backtest further down, so their place is held here and filled there.
+cols = st.columns([1, 1, 6], gap="medium")
 cols[0].metric(equity_name, f"{latest[EQUITY]:.0%}")
 cols[1].metric(bond_name, f"{latest[BOND]:.0%}")
+headline_slot = cols[2].empty()
 
 latest_signal = optimize.expected_returns(pd.DatetimeIndex([latest_date]), signals).iloc[0]
 breakdown = breakdowns[latest_date]
@@ -287,27 +308,23 @@ for line in no_trade_lines:
     st.caption(line, help=glossary.term("No-trade band"))
 how_set += no_trade_lines
 
-st.markdown(
-    ui.eyebrow(
-        "Weights per rebalance",
-        "Each rebalance's allocation, re-derived from that date's signals and risk.",
-    ),
-    unsafe_allow_html=True,
-)
-renamed = schedule.rename(columns={EQUITY: equity_name, BOND: bond_name})
-st.altair_chart(charts.weights_chart(renamed), width="stretch")
+# The weights beside how volatile each index has been, so a move towards bonds can
+# be read against the volatility that prompted it. Filled once the backtest is run.
+weights_col, volatility_col = st.columns(2, gap="large")
+with weights_col:
+    st.markdown(
+        ui.eyebrow(
+            "Weights per rebalance",
+            "Each rebalance's allocation, re-derived from that date's signals and risk.",
+        ),
+        unsafe_allow_html=True,
+    )
+    renamed = schedule.rename(columns={EQUITY: equity_name, BOND: bond_name})
+    st.altair_chart(charts.weights_chart(renamed), width="stretch")
 
 
 # --- FYP-19: the optimised allocation against the equal-weight benchmark -----------
 
-BASES = {"After costs": "net", "Before costs": "gross"}
-
-st.markdown(
-    ui.eyebrow(
-        "Performance vs equal-weight benchmark", glossary.term("Equal-weight benchmark")
-    ),
-    unsafe_allow_html=True,
-)
 try:
     backtest = run_backtest(
         prices,
@@ -435,6 +452,40 @@ except Exception:  # noqa: BLE001 - a failed log must not stop the page
     traceback.print_exc()
 
 costs = backtest.costs_bps
+
+# --- FYP-254 / FYP-255: how risk has moved over the backtest ------------------------
+
+index_names = {EQUITY: equity_name, BOND: bond_name}
+with volatility_col:
+    st.markdown(
+        ui.eyebrow("Rolling volatility", glossary.term("Rolling volatility")),
+        unsafe_allow_html=True,
+    )
+    volatility = rolling_volatility_paths(
+        backtest, basis, index_names, window=ROLLING_VOL_WINDOW
+    )
+    if len(volatility) < 2:  # a line needs two points
+        st.info(
+            f"Rolling volatility needs more than {ROLLING_VOL_WINDOW} trading days of "
+            f"returns, and this backtest has {len(backtest.optimised.gross)}, so there is "
+            "no chart yet.",
+            icon=":material/info:",
+        )
+    else:
+        st.altair_chart(
+            charts.line_chart(volatility, "Rolling volatility").properties(height=280),
+            width="stretch",
+        )
+        st.caption(
+            f"Annualised standard deviation of the previous {ROLLING_VOL_WINDOW} trading "
+            "days' returns, at each day. Each index is held alone, with no trading costs; "
+            f"the optimised portfolio is {basis_label.lower()}, the same basis as the "
+            "table below."
+        )
+
+ui.section(
+    "Performance against the equal-weight benchmark", glossary.term("Equal-weight benchmark")
+)
 st.caption(
     f"Backtest {backtest.start:%d %b %Y} to {backtest.end:%d %b %Y}. The optimised "
     f"portfolio is rebalanced at each of the {len(schedule)} rebalances above (every "
@@ -443,14 +494,6 @@ st.caption(
     f"{REBALANCE_FREQUENCY}. Trading costs: {costs[EQUITY]:g} bp equity, "
     f"{costs[BOND]:g} bp bond. Forecasts from {'; '.join(backtest.active_models)}."
 )
-basis_label = st.segmented_control(
-    "Returns",
-    list(BASES),
-    default="After costs",
-    required=True,
-    key="backtest_basis",
-)
-basis = BASES[basis_label]
 
 
 def _metric_cell(metric: str) -> str:
@@ -494,73 +537,57 @@ st.caption(
 cumulative = cumulative_paths(backtest, basis)
 st.altair_chart(charts.line_chart(cumulative, "Cumulative return"), width="stretch")
 
-# --- FYP-254 / FYP-255: how risk has moved over the backtest ------------------------
-
-st.markdown(
-    ui.eyebrow("Rolling volatility", glossary.term("Rolling volatility")),
-    unsafe_allow_html=True,
-)
-index_names = {EQUITY: equity_name, BOND: bond_name}
-volatility = rolling_volatility_paths(backtest, basis, index_names, window=ROLLING_VOL_WINDOW)
-if len(volatility) < 2:  # a line needs two points
-    st.info(
-        f"Rolling volatility needs more than {ROLLING_VOL_WINDOW} trading days of returns, "
-        f"and this backtest has {len(backtest.optimised.gross)}, so there is no chart yet.",
-        icon=":material/info:",
-    )
-else:
-    st.altair_chart(charts.line_chart(volatility, "Rolling volatility"), width="stretch")
-    st.caption(
-        f"Annualised standard deviation of the previous {ROLLING_VOL_WINDOW} trading days' "
-        f"returns, at each day. Each index is held alone, with no trading costs; the "
-        f"optimised portfolio is {basis_label.lower()}, the same basis as the table above."
-    )
+drawdown_col, sharpe_col = st.columns(2, gap="large")
 
 # --- FYP-258 / FYP-259: how far below its peak each line has stood -------------------
 
-st.markdown(ui.eyebrow("Drawdown", glossary.term("Drawdown")), unsafe_allow_html=True)
-drawdowns = drawdown_paths(backtest, basis, index_names)
-st.altair_chart(charts.line_chart(drawdowns, "Drawdown"), width="stretch")
-st.caption(
-    "Fall from the highest value reached so far, at each day, counting the start of the "
-    "backtest as the first high. Each index is held alone, with no trading costs; the "
-    f"optimised portfolio is {basis_label.lower()}, and its lowest point is the max "
-    "drawdown in the table above."
-)
+with drawdown_col:
+    st.markdown(ui.eyebrow("Drawdown", glossary.term("Drawdown")), unsafe_allow_html=True)
+    drawdowns = drawdown_paths(backtest, basis, index_names)
+    st.altair_chart(charts.line_chart(drawdowns, "Drawdown"), width="stretch")
+    st.caption(
+        "Fall from the highest value reached so far, at each day, counting the start of "
+        "the backtest as the first high. Each index is held alone, with no trading costs; "
+        f"the optimised portfolio is {basis_label.lower()}, and its lowest point is the "
+        "max drawdown in the table above."
+    )
 
 # --- FYP-279 / FYP-280: how risk-adjusted return has moved over the backtest ----------
 
-st.markdown(ui.eyebrow("Rolling Sharpe", glossary.term("Rolling Sharpe")), unsafe_allow_html=True)
-rolling_sharpes = rolling_sharpe_paths(backtest, basis, index_names, window=ROLLING_SHARPE_WINDOW)
-if len(rolling_sharpes) < 2:  # a line needs two points
-    st.info(
-        f"Rolling Sharpe needs more than {ROLLING_SHARPE_WINDOW} trading days of returns, and "
-        f"this backtest has {len(backtest.optimised.gross)}, so there is no chart yet.",
-        icon=":material/info:",
+with sharpe_col:
+    st.markdown(
+        ui.eyebrow("Rolling Sharpe", glossary.term("Rolling Sharpe")), unsafe_allow_html=True
     )
-else:
-    st.altair_chart(
-        charts.line_chart(
-            rolling_sharpes,
-            "Rolling Sharpe",
-            percent=False,
-            title=f"Rolling Sharpe, {ROLLING_SHARPE_WINDOW}-day window",
-        ),
-        width="stretch",
+    rolling_sharpes = rolling_sharpe_paths(
+        backtest, basis, index_names, window=ROLLING_SHARPE_WINDOW
     )
-    st.caption(
-        f"Annualised Sharpe of the previous {ROLLING_SHARPE_WINDOW} trading days' returns, at "
-        "each day. Each index is held alone, with no trading costs; the optimised portfolio "
-        f"is {basis_label.lower()}, the same basis as the table above."
-    )
+    if len(rolling_sharpes) < 2:  # a line needs two points
+        st.info(
+            f"Rolling Sharpe needs more than {ROLLING_SHARPE_WINDOW} trading days of "
+            f"returns, and this backtest has {len(backtest.optimised.gross)}, so there is "
+            "no chart yet.",
+            icon=":material/info:",
+        )
+    else:
+        st.altair_chart(
+            charts.line_chart(
+                rolling_sharpes,
+                "Rolling Sharpe",
+                percent=False,
+                title=f"Rolling Sharpe, {ROLLING_SHARPE_WINDOW}-day window",
+            ),
+            width="stretch",
+        )
+        st.caption(
+            f"Annualised Sharpe of the previous {ROLLING_SHARPE_WINDOW} trading days' "
+            "returns, at each day. Each index is held alone, with no trading costs; the "
+            f"optimised portfolio is {basis_label.lower()}, the same basis as the table above."
+        )
 
 # --- FYP-20 / FYP-52: is the outperformance more than noise? ------------------------
 
 significance = significance_summary(backtest, basis)
-st.markdown(
-    ui.eyebrow("Is the outperformance genuine?", glossary.term("Spread t-statistic")),
-    unsafe_allow_html=True,
-)
+ui.section("Is the outperformance genuine?", glossary.term("Spread t-statistic"))
 st.markdown(
     ui.status_row(
         "Spread t-statistic",
@@ -585,6 +612,53 @@ st.caption(
     f"reflects level {risk_level}'s equity weight. This one has that weight and the no-trade "
     "band on both sides, so the forecasts are the only difference.",
     help=glossary.term("Forecast value t-statistic"),
+)
+
+
+# --- The headline figures beside the latest weights -----------------------------------
+# Always after costs, whatever the toggle shows: these are what a client would get.
+
+
+def _var95(portfolio: str) -> float:
+    levels = backtest.tail_risk[(portfolio, "net")].levels
+    return next(level.var for level in levels if abs(level.confidence - 0.95) < 1e-9)
+
+
+net_value = forecast_value_summary(backtest, no_forecast_backtest, "net")
+net_optimised = backtest.metrics[("optimised", "net")]
+net_baseline = backtest.metrics[("baseline", "net")]
+behind = net_optimised.sharpe < net_baseline.sharpe
+headline_slot.markdown(
+    ui.strip(
+        [
+            ("Risk level", f"{risk_level} of 5", f"{lower:.0%}–{upper:.0%} in each index"),
+            (
+                "Sharpe after costs",
+                f"{net_optimised.sharpe:.2f}",
+                f"{net_baseline.sharpe:.2f} for 50/50"
+                + (" · behind the benchmark" if behind else ""),
+            ),
+            (
+                "Forecast value after costs",
+                ui.lozenge(html.escape(net_value.label), net_value.tone),
+                f"t = {net_value.t} against level {risk_level} with no forecasts",
+            ),
+            (
+                "1-day VaR 95%",
+                f"{_var95('optimised'):.2%}",
+                f"{_var95('baseline'):.2%} for 50/50",
+            ),
+        ],
+        inline=True,
+    ),
+    unsafe_allow_html=True,
+)
+st.session_state[portfolio_summary.SUMMARY_KEY] = replace(
+    st.session_state[portfolio_summary.SUMMARY_KEY],
+    risk_level=risk_level,
+    forecast_value_label=net_value.label,
+    forecast_value_tone=net_value.tone,
+    forecast_value_t=net_value.t,
 )
 
 
@@ -677,9 +751,11 @@ lozenges = " ".join(
     else ui.lozenge(html.escape(f"{m} · {NOT_RUN}"), "neutral")
     for m in TAIL_METHODS
 )
-st.markdown(
-    ui.eyebrow(f"Tail risk {lozenges}", glossary.term("Historical tail risk")),
-    unsafe_allow_html=True,
+ui.section(
+    "Tail risk",
+    glossary.term("Historical tail risk"),
+    note=f"Methods: {lozenges}"
+    + ("" if MONTE_CARLO in ran else " · run the simulation below to fill the Monte Carlo rows"),
 )
 
 
@@ -749,12 +825,9 @@ SIMULATED_TERMS = {
     "Max drawdown": "Simulated max drawdown",
 }
 
-st.markdown(
-    ui.eyebrow(
-        f"Monte Carlo over the next {equity_active.horizon} days",
-        glossary.term("Simulated tail risk"),
-    ),
-    unsafe_allow_html=True,
+ui.section(
+    f"Monte Carlo over the next {equity_active.horizon} days",
+    glossary.term("Simulated tail risk"),
 )
 st.segmented_control(
     "Sampling method",

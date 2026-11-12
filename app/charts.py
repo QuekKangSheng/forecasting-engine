@@ -42,6 +42,17 @@ def series_colour(name: str, position: int = 0) -> str:
     return _OTHERS[position % len(_OTHERS)]
 
 
+def _legend() -> alt.Legend:
+    """A legend under the chart, its labels shortened so three fit across a
+    half-width chart: "(total return)" says nothing the reader needs here."""
+    return alt.Legend(
+        title=None,
+        orient="bottom",
+        labelLimit=0,
+        labelExpr="replace(datum.label, ' (total return)', '')",
+    )
+
+
 def colour_scale(names: list[str]) -> alt.Scale:
     """An explicit domain and range, so Vega cannot reassign colours by order."""
     return alt.Scale(domain=names, range=[series_colour(n, i) for i, n in enumerate(names)])
@@ -71,7 +82,7 @@ def weights_chart(renamed: pd.DataFrame) -> alt.Chart:
                 "Asset:N",
                 scale=colour_scale(names),
                 sort=names,
-                legend=alt.Legend(title=None, orient="bottom", labelLimit=0),
+                legend=_legend(),
             ),
             order=alt.Order("Asset:N", sort="ascending"),
             tooltip=[
@@ -100,7 +111,7 @@ def line_chart(
         color=alt.Color(
             "Series:N",
             scale=colour_scale([str(c) for c in paths.columns]),
-            legend=alt.Legend(title=None, orient="bottom", labelLimit=0),
+            legend=_legend(),
         ),
     )
     # Vega only shows a line's tooltip within a pixel or two of one of its days,

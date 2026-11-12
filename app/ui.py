@@ -221,6 +221,15 @@ _CSS = """
     border-left: 1px solid var(--fe-border);
     padding-left: 16px;
   }
+  .fe-strip-inline {
+    margin: 0;
+    padding: 0;
+    border: none;
+  }
+  .fe-strip-inline .fe-strip-cell:first-child {
+    border-left: 1px solid var(--fe-border);
+    padding-left: 16px;
+  }
   .fe-strip-label { font-size: 12px; font-weight: 600; color: var(--fe-muted); }
   .fe-strip-value {
     font-size: 20px;
@@ -229,7 +238,12 @@ _CSS = """
     color: var(--fe-text);
     font-variant-numeric: tabular-nums;
   }
+  .fe-strip .fe-lozenge { white-space: normal; }
   .fe-strip-note { font-size: 12px; color: var(--fe-muted); margin-top: 2px; }
+
+  /* Streamlit's metrics at the size of a strip value, so the two sit level. */
+  [data-testid="stMetricValue"] { font-size: 20px; font-weight: 600; line-height: 28px; }
+  [data-testid="stMetricLabel"] p { font-size: 12px; font-weight: 600; color: var(--fe-muted); }
 </style>
 """.replace("GUTTER", _GUTTER)
 
@@ -309,22 +323,26 @@ def rule() -> None:
     st.markdown('<div class="fe-rule"></div>', unsafe_allow_html=True)
 
 
-def section(title: str, help: str | None = None) -> None:
-    """A full-width rule, then a section title: how a page is divided into parts."""
+def section(title: str, help: str | None = None, *, note: str | None = None) -> None:
+    """A full-width rule, then a section title: how a page is divided into parts.
+    ``note`` is a line of HTML under the title, such as a row of lozenges."""
     rule()
     hint = ""
     if help:
         tip = html.escape(" ".join(help.split()), quote=True)
         hint = f'<span class="fe-eyebrow-help" title="{tip}">i</span>'
+    below = f'<div class="fe-row-meta" style="margin-top:4px">{note}</div>' if note else ""
     st.markdown(
         f'<div class="fe-section-title" role="heading" aria-level="2">'
-        f"{html.escape(title)}{hint}</div>", unsafe_allow_html=True
+        f"{html.escape(title)}{hint}</div>{below}",
+        unsafe_allow_html=True,
     )
 
 
-def strip(cells: list[tuple[str, str, str]]) -> str:
+def strip(cells: list[tuple[str, str, str]], *, inline: bool = False) -> str:
     """A row of headline figures, each ``(label, value, note)``, as HTML. Values
-    and notes may hold markup such as a lozenge; labels are escaped."""
+    and notes may hold markup such as a lozenge; labels are escaped. ``inline``
+    sits the row inside a column rather than across the full width."""
     body = "".join(
         f'<div class="fe-strip-cell"><div class="fe-strip-label">{html.escape(label)}</div>'
         f'<div class="fe-strip-value">{value}</div>'
@@ -332,4 +350,5 @@ def strip(cells: list[tuple[str, str, str]]) -> str:
         + "</div>"
         for label, value, note in cells
     )
-    return f'<div class="fe-strip">{body}</div>'
+    kind = "fe-strip fe-strip-inline" if inline else "fe-strip"
+    return f'<div class="{kind}">{body}</div>'
