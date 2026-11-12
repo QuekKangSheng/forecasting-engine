@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import functools
 import html
+import re
 import time
 from collections.abc import Mapping
 from datetime import datetime
@@ -724,8 +725,24 @@ def _header_html(column: str) -> str:
     )
 
 
+_STANDARD_ERRORS = re.compile(r"^(?P<value>\S+) \((?P<errors>s\.e\. .*)\)$")
+
+
 def _cell_html(cell: Cell) -> str:
-    text = html.escape(cell.text)
+    # A rank IC's two standard errors used to sit in the cell as a long footnote,
+    # "0.1559 (s.e. (h−1 lags) 0.0671; s.e. (test-window lags) 0.0675)". The value
+    # now stands alone with the first error beside it; hovering gives both.
+    match = _STANDARD_ERRORS.match(cell.text)
+    if match:
+        first = re.search(r"\) (\S+?)(;|$)", match["errors"])
+        errors = html.escape(match["errors"], quote=True)
+        text = html.escape(match["value"]) + (
+            f' <span class="fe-row-meta" title="{errors}">± {html.escape(first.group(1))}</span>'
+            if first
+            else ""
+        )
+    else:
+        text = html.escape(cell.text)
     badge = BADGE_LABELS.get(cell.tone)
     if badge is None:
         return text
@@ -877,14 +894,30 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
         _show_fitted_terms(run.shap, is_shap=True)
 
 
+def _show_polynomial_expander(
+    name: str, run: model_runs.ModelRun, target_name: str, *, expanded: bool
+) -> None:
+    with st.expander(f"{name} · {target_name}", expanded=expanded):
+        if name == RESEARCH:
+            st.caption(
+                "HY OAS, IG OAS, VIX and the 2s10s slope, read as levels and "
+                "fixed by the research. Each fold trains on every date before "
+                f"its test window, not the latest {TRAIN_WINDOW}, as the "
+                "research did. " + RESEARCH_CAPTION
+            )
+        _show_polynomial(run)
+
+
 def _show_fitted_terms(description: ModelDescription, *, is_shap: bool) -> None:
     value_col = "Mean |SHAP value|" if is_shap else "Coefficient"
     heading = "Feature attribution (SHAP)" if is_shap else "Fitted terms"
     st.markdown(ui.eyebrow(heading, glossary.term(heading)), unsafe_allow_html=True)
-    rows = [
-        {"Term": term, value_col: coefficient}
-        for term, coefficient in zip(description.terms, description.coefficients, strict=True)
-    ]
+    # Named as the equation above names them, not by Bloomberg field code, and for
+    # SHAP largest first: the order is the point of an attribution.
+    pairs = list(zip(description.terms, description.coefficients, strict=True))
+    if is_shap:
+        pairs.sort(key=lambda pair: abs(pair[1]), reverse=True)
+    rows = [{"Term": label(term), value_col: coefficient} for term, coefficient in pairs]
     if description.intercept is not None:
         rows.append({"Term": "(intercept)", value_col: description.intercept})
     st.dataframe(rows, width="stretch", hide_index=True)
@@ -1311,21 +1344,27 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     _show_table({name: run.result for name, run in runs.items()})
     if RESEARCH in runs:
         st.caption(f"{RESEARCH}: {RESEARCH_CAPTION}")
+
+    # The fitted function is the deliverable the sponsor can use directly, so the one
+    # that matters (the active polynomial, else the derived one) is shown open, right
+    # under the table, instead of in the second of five closed expanders below.
+    polynomials = [name for name in (DERIVED, RESEARCH, USER) if name in runs]
+    current = active_model.get_active_model(role)
+    featured = (
+        current.model_name
+        if current is not None and current.model_name in polynomials
+        else (polynomials[0] if polynomials else None)
+    )
+    for name in polynomials:
+        if name == featured:
+            _show_polynomial_expander(name, runs[name], target_name, expanded=True)
     _show_directional(role, runs, target_name)
     _show_active_picker(role, runs, target_name, settings)
 
     _show_screening(runs, target_name)
-    for name in (DERIVED, RESEARCH, USER):
-        if name in runs:
-            with st.expander(f"{name} · {target_name}"):
-                if name == RESEARCH:
-                    st.caption(
-                        "HY OAS, IG OAS, VIX and the 2s10s slope, read as levels and "
-                        "fixed by the research. Each fold trains on every date before "
-                        f"its test window, not the latest {TRAIN_WINDOW}, as the "
-                        "research did. " + RESEARCH_CAPTION
-                    )
-                _show_polynomial(runs[name])
+    for name in polynomials:
+        if name != featured:
+            _show_polynomial_expander(name, runs[name], target_name, expanded=False)
     if FF5 in runs and role == TargetRole.EQUITY:
         with st.expander(f"Fama-French 5 · {target_name}"):
             _show_famafrench(runs[FF5])

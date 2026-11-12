@@ -24,6 +24,13 @@ SECURITY_LABELS: Mapping[str, str] = {
     "LF98OAS Index": "US HY credit spread",
     "USGGBE10 Index": "US 10y breakeven",
     "JPMVXYG7 Index": "G7 FX implied vol",
+    # The rest of the 30 Sep 2026 Bloomberg pull, which showed as bare tickers such as
+    # "JPMVXYGL Index (last price)" beside named signals in the same equation.
+    "JPMVXYGL Index": "Global FX implied vol",
+    "LF98TRUU Index": "US high yield bond",
+    "DXY Curncy": "US dollar index",
+    "USGG10YR Index": "US 10y Treasury yield",
+    "USYC2Y10 Index": "US 2s10s curve",
 }
 
 #: Bloomberg field mnemonic to its label.

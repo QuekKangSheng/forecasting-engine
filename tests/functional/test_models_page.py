@@ -432,6 +432,25 @@ def test_the_comparison_table_has_one_row_per_completed_model_with_every_metric_
         assert cells[headers.index("Crash Recall")] == "0.5000"
 
 
+def test_a_rank_ics_standard_errors_are_a_hover_not_a_footnote_in_the_cell():
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
+
+    table = _table(app)
+    assert "± " in table
+    # Both errors are still there, in full, for anyone who hovers.
+    assert 'title="s.e. (h−1 lags)' in table
+    assert "(s.e. (h−1 lags)" not in re.sub(r'title="[^"]*"', "", table)
+
+
+def test_the_derived_function_is_shown_open_under_the_results():
+    app = _page({EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run()}})
+
+    (function,) = [e for e in app.expander if e.label == f"{POLY} · S&P 500"]
+    assert function.proto.expanded
+    (ml,) = [e for e in app.expander if e.label == "Machine learning · S&P 500"]
+    assert not ml.proto.expanded
+
+
 def test_the_table_shows_rows_scored():
     table = _table(_page({EQUITY: {POLY: _polynomial_run()}}))
     assert "Rows scored" in table

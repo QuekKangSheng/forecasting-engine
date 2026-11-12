@@ -241,6 +241,10 @@ _CSS = """
   .fe-strip .fe-lozenge { white-space: normal; }
   .fe-strip-note { font-size: 12px; color: var(--fe-muted); margin-top: 2px; }
 
+  /* A long fitted equation scrolls sideways inside its own box instead of being
+     cut off at the column's edge. */
+  .katex-display { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+
   /* Streamlit's metrics at the size of a strip value, so the two sit level. */
   [data-testid="stMetricValue"] { font-size: 20px; font-weight: 600; line-height: 28px; }
   [data-testid="stMetricLabel"] p { font-size: 12px; font-weight: 600; color: var(--fe-muted); }
