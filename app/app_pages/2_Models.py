@@ -735,6 +735,8 @@ def _cell_html(cell: Cell) -> str:
     match = _STANDARD_ERRORS.match(cell.text)
     if match:
         first = re.search(r"\) (\S+?)(;|$)", match["errors"])
+        if first and first.group(1) == "—":  # no error to give for a value not computed
+            first = None
         errors = html.escape(match["errors"], quote=True)
         text = html.escape(match["value"]) + (
             f' <span class="fe-row-meta" title="{errors}">± {html.escape(first.group(1))}</span>'

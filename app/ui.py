@@ -203,14 +203,13 @@ _CSS = """
     vertical-align: 1px;
   }
 
-  /* A strip of headline figures: one cell each, divided by vertical hairlines,
-     with a rule above and below that runs the full width. */
+  /* A strip of headline figures under the page header's rule: one cell each,
+     divided by vertical hairlines, with a rule beneath that runs the full width. */
   .fe-strip {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-    border-top: 1px solid var(--fe-border);
     border-bottom: 1px solid var(--fe-border);
-    margin: 0 calc(-1 * var(--fe-gutter));
+    margin: -1rem calc(-1 * var(--fe-gutter)) 0.5rem;
     padding: 0 var(--fe-gutter);
   }
   .fe-strip-cell {

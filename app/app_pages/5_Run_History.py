@@ -98,7 +98,7 @@ def _model_fits() -> None:
             "OOS Rank IC": table["oos_rank_ic"],
             "RMSE": table["rmse"],
             "Data": table["dataset_sha256"].str[:12],
-            "Code": table["code_version"],
+            "Code": table["code_version"].fillna("—"),
         }
     )
     st.dataframe(
@@ -360,7 +360,7 @@ def _compare_runs(table: pd.DataFrame) -> None:
                 + " to "
                 + table["end_date"].astype(str),
                 "Key": table["run_key"].str[:12],
-                "Code": table["code_version"],
+                "Code": table["code_version"].fillna("—"),
             }
         ),
         hide_index=True,
