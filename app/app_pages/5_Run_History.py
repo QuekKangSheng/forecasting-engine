@@ -25,12 +25,10 @@ from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.store import active_model, lineage, portfolio_runs, runs, uploads
 
-ui.inject()
-
-st.title("Run history")
-st.caption(
+ui.page_header(
+    "Run history",
     "Every model fit and every distinct portfolio result, newest first: when it ran, on "
-    "which data, under which settings, and what came out. Nothing here refits a model."
+    "which data, under which settings, and what came out. Nothing here refits a model.",
 )
 
 OPEN_RUN_KEY = "open_portfolio_run"

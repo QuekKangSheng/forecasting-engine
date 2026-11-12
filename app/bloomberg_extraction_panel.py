@@ -165,8 +165,10 @@ def _parse_and_merge(files) -> _UploadResult:
 
 
 def render() -> None:
-    ui.inject()
-    st.header("Bloomberg data extraction", anchor=False, divider="grey")
+    ui.page_header(
+        "Data",
+        "Upload the Bloomberg exports, check them, and commit them for the other pages to use.",
+    )
 
     if st.button(
         "Clear Data",

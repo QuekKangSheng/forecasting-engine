@@ -31,11 +31,10 @@ ROLES: tuple[TargetRole, ...] = (TargetRole.EQUITY, TargetRole.BOND)
 ROLE_NAMES = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
 NAIVE = MODEL_ORDER[0]
 
-ui.inject()
-st.title("Forecasting Engine")
-st.caption(
-    "Forecasts short-horizon returns for liquid equity and bond indices, validates them "
-    "against overfitting, and turns them into an equity/bond allocation."
+ui.page_header(
+    "Forecasting Engine",
+    "Tests whether forecasts of S&P 500 and US bond returns hold up on data they never saw, "
+    "and only then uses them to split a portfolio between the two.",
 )
 
 merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)

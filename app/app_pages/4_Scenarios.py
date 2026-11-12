@@ -47,13 +47,11 @@ PATHS_KEY = "monte_carlo_paths"
 REOPTIMISE_KEY = "scenario_reoptimise"
 KIND_LABELS = {shock.ShockKind.ABSOLUTE: "New value", shock.ShockKind.PERCENT: "% change"}
 
-ui.inject()
-
-st.title("Scenarios")
-st.caption(
+ui.page_header(
+    "Scenarios",
     "Shock one or more signals the active polynomials read, and see how each index's "
     "forecast changes. Nothing is refitted: the active functions are evaluated again on "
-    "the shocked inputs."
+    "the shocked inputs.",
 )
 
 merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)

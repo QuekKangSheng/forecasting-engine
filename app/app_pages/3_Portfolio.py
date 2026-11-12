@@ -65,13 +65,11 @@ from model_settings import EMBARGO_DAYS, TRAIN_WINDOW
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 
-ui.inject()
-
-st.title("Portfolio Optimizer")
-st.caption(
-    "A long-only, two-asset allocation that targets the chosen risk level's volatility "
-    "and tilts towards whichever index the active models' signals favour, re-derived "
-    "every forecast horizon."
+ui.page_header(
+    "Portfolio Optimizer",
+    "A long-only split between the two indices that targets the chosen risk level's "
+    "volatility and tilts towards whichever index the active models favour, re-set every "
+    "forecast horizon.",
 )
 
 equity_active = active_model.get_active_model(EQUITY)

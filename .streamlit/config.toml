@@ -6,83 +6,104 @@
 maxUploadSize = 30
 
 
-# Colours are GitHub Primer's, which an internal analytics tool has no reason to
-# depart from: an enterprise blue accent, neutral greys carrying the structure,
-# and semantic green/amber/red reserved for state. Atlassian's system is built on
-# the same bones. Primer publishes exact values for both themes, so the dark side
-# is a designed palette rather than an inversion of the light one.
-#
-# https://primer.style/foundations/color
+[client]
+# No "Deploy" button or developer menu in the toolbar: the sponsor uses this app,
+# they don't deploy it.
+toolbarMode = "minimal"
+
+
+# Atlassian Design System tokens (https://atlassian.design/foundations/color):
+# navy text on white, a single blue for actions, neutral greys carrying the
+# structure, and green/yellow/red reserved for state. Corners are 3px, the
+# classic Atlassian radius, so controls and panels read as squared-off rather
+# than as rounded cards. Headings are small and set in the system font, as in
+# Jira and Confluence, so the figures carry the page rather than the titles.
 
 [theme]
 base = "light"
-font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif"
+font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
 codeFont = "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace"
-baseFontSize = 15
-baseRadius = "0.375rem"
-buttonRadius = "0.375rem"
+baseFontSize = 14
+headingFontSizes = ["24px", "20px", "16px", "14px", "12px", "12px"]
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+baseRadius = "3px"
+buttonRadius = "3px"
 showWidgetBorder = true
 showSidebarBorder = true
 linkUnderline = false
 
 [theme.light]
-backgroundColor = "#FFFFFF"           # canvas.default
-secondaryBackgroundColor = "#F6F8FA"  # canvas.subtle
-textColor = "#1F2328"                 # fg.default
-primaryColor = "#0969DA"              # accent.fg
-linkColor = "#0969DA"
-borderColor = "#D1D9E0"               # border.default
-dataframeBorderColor = "#D1D9E0"
-dataframeHeaderBackgroundColor = "#F6F8FA"
-codeBackgroundColor = "#F6F8FA"
-codeTextColor = "#1F2328"
+backgroundColor = "#FFFFFF"           # elevation.surface
+secondaryBackgroundColor = "#F7F8F9"  # elevation.surface.sunken
+textColor = "#172B4D"                 # color.text
+primaryColor = "#0C66E4"              # color.background.brand.bold
+linkColor = "#0C66E4"                 # color.link
+borderColor = "#DCDFE4"               # color.border, on white
+dataframeBorderColor = "#DCDFE4"
+dataframeHeaderBackgroundColor = "#F7F8F9"
+codeBackgroundColor = "#F1F2F4"
+codeTextColor = "#172B4D"
+chartCategoricalColors = ["#0C66E4", "#8590A2", "#6E5DC6", "#1D7F8C", "#C25100", "#AE2E24"]
 
-greenColor = "#1A7F37"                # success.fg
-greenTextColor = "#1A7F37"
-greenBackgroundColor = "#DAFBE1"      # success.subtle
-yellowColor = "#9A6700"               # attention.fg
-yellowTextColor = "#9A6700"
-yellowBackgroundColor = "#FFF8C5"     # attention.subtle
-orangeColor = "#BC4C00"               # severe.fg
-orangeTextColor = "#BC4C00"
-orangeBackgroundColor = "#FFF1E5"
-redColor = "#D1242F"                  # danger.fg
-redTextColor = "#D1242F"
-redBackgroundColor = "#FFEBE9"        # danger.subtle
-blueColor = "#0969DA"
-blueTextColor = "#0969DA"
-blueBackgroundColor = "#DDF4FF"       # accent.subtle
-grayColor = "#59636E"                 # fg.muted
-grayTextColor = "#59636E"
-grayBackgroundColor = "#F6F8FA"
+greenColor = "#1F845A"                # color.text.success
+greenTextColor = "#216E4E"
+greenBackgroundColor = "#DCFFF1"      # color.background.success
+yellowColor = "#B38600"
+yellowTextColor = "#7F5F01"           # color.text.warning
+yellowBackgroundColor = "#FFF7D6"     # color.background.warning
+orangeColor = "#C25100"
+orangeTextColor = "#A54800"
+orangeBackgroundColor = "#FFF3EB"
+redColor = "#C9372C"                  # color.text.danger
+redTextColor = "#AE2E24"
+redBackgroundColor = "#FFECEB"        # color.background.danger
+blueColor = "#0C66E4"
+blueTextColor = "#0055CC"             # color.text.information
+blueBackgroundColor = "#E9F2FF"       # color.background.information
+grayColor = "#626F86"                 # color.text.subtlest
+grayTextColor = "#44546F"             # color.text.subtle
+grayBackgroundColor = "#F1F2F4"       # color.background.neutral
+
+[theme.light.sidebar]
+backgroundColor = "#F7F8F9"
+secondaryBackgroundColor = "#F1F2F4"
+textColor = "#44546F"
+borderColor = "#DCDFE4"
 
 [theme.dark]
-backgroundColor = "#0D1117"
-secondaryBackgroundColor = "#151B23"
-textColor = "#F0F6FC"
-primaryColor = "#4493F8"
-linkColor = "#4493F8"
-borderColor = "#3D444D"
-dataframeBorderColor = "#3D444D"
-dataframeHeaderBackgroundColor = "#151B23"
-codeBackgroundColor = "#151B23"
-codeTextColor = "#F0F6FC"
+backgroundColor = "#1D2125"           # elevation.surface
+secondaryBackgroundColor = "#161A1D"  # elevation.surface.sunken
+textColor = "#B6C2CF"                 # color.text
+primaryColor = "#579DFF"
+linkColor = "#579DFF"
+borderColor = "#38414A"
+dataframeBorderColor = "#38414A"
+dataframeHeaderBackgroundColor = "#161A1D"
+codeBackgroundColor = "#22272B"
+codeTextColor = "#B6C2CF"
+chartCategoricalColors = ["#579DFF", "#8C9BAB", "#9F8FEF", "#6CC3E0", "#FEA362", "#F87168"]
 
-greenColor = "#3FB950"
-greenTextColor = "#3FB950"
-greenBackgroundColor = "#0F2417"
-yellowColor = "#D29922"
-yellowTextColor = "#D29922"
-yellowBackgroundColor = "#272115"
-orangeColor = "#DB6D28"
-orangeTextColor = "#DB6D28"
-orangeBackgroundColor = "#2A1D14"
-redColor = "#F85149"
-redTextColor = "#F85149"
-redBackgroundColor = "#2A1618"
-blueColor = "#4493F8"
-blueTextColor = "#4493F8"
-blueBackgroundColor = "#121D2F"
-grayColor = "#9198A1"
-grayTextColor = "#9198A1"
-grayBackgroundColor = "#151B23"
+greenColor = "#4BCE97"
+greenTextColor = "#7EE2B8"
+greenBackgroundColor = "#164B35"
+yellowColor = "#F5CD47"
+yellowTextColor = "#F5CD47"
+yellowBackgroundColor = "#533F04"
+orangeColor = "#FEA362"
+orangeTextColor = "#FEC195"
+orangeBackgroundColor = "#5F3811"
+redColor = "#F87168"
+redTextColor = "#FD9891"
+redBackgroundColor = "#5D1F1A"
+blueColor = "#579DFF"
+blueTextColor = "#85B8FF"
+blueBackgroundColor = "#09326C"
+grayColor = "#8C9BAB"
+grayTextColor = "#9FADBC"
+grayBackgroundColor = "#2C333A"
+
+[theme.dark.sidebar]
+backgroundColor = "#161A1D"
+secondaryBackgroundColor = "#22272B"
+textColor = "#9FADBC"
+borderColor = "#38414A"

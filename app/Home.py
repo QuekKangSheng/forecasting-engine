@@ -5,7 +5,9 @@ Run with: uv run streamlit run app/Home.py
 
 import streamlit as st
 
-st.set_page_config(page_title="Forecasting Engine", page_icon=":material/monitoring:")
+st.set_page_config(
+    page_title="Forecasting Engine", page_icon=":material/monitoring:", layout="wide"
+)
 
 pg = st.navigation(
     [

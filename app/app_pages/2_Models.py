@@ -179,14 +179,13 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 #: but the naive baseline is gated on Signal Rank IC and t.
 RESULT_VERSION = 5
 
-st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
-ui.inject()
-
-st.header("Models")
-st.caption(
-    "Run the ticked model families together for each target through the shared "
-    "walk-forward harness, then compare them side by side.",
-    help=glossary.term("Promotion gate"),
+st.set_page_config(
+    page_title="Models · Forecasting Engine", page_icon=":material/functions:", layout="wide"
+)
+ui.page_header(
+    "Models",
+    "Fit each forecasting model on past data, score it only on the periods it never saw, "
+    "and choose the one the portfolio uses.",
 )
 
 if bloomberg_extraction_panel.offer_last_commit():
