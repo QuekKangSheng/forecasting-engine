@@ -54,6 +54,7 @@ ui.page_header(
     "the shocked inputs.",
 )
 
+bloomberg_extraction_panel.restore_last_commit()
 merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)
 target_columns = st.session_state.get(bloomberg_extraction_panel.COMMITTED_TARGETS_KEY, {})
 if merged is None or not target_columns:

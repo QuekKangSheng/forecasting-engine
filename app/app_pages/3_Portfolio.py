@@ -72,6 +72,7 @@ ui.page_header(
     "forecast horizon.",
 )
 
+bloomberg_extraction_panel.restore_last_commit()
 equity_active = active_model.get_active_model(EQUITY)
 bond_active = active_model.get_active_model(BOND)
 missing = [

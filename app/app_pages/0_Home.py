@@ -37,6 +37,7 @@ ui.page_header(
     "and only then uses them to split a portfolio between the two.",
 )
 
+bloomberg_extraction_panel.restore_last_commit()
 merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)
 report = st.session_state.get(bloomberg_extraction_panel.COMMITTED_REPORT_KEY)
 targets: dict[TargetRole, str] = st.session_state.get(

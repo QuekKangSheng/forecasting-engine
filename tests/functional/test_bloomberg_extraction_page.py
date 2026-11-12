@@ -251,15 +251,14 @@ def test_a_dropped_column_is_listed_in_the_committed_data_quality_report(page):
     assert dropped["Column"].tolist() == ["JPMVXYGL_Index_PX_BID"]
 
 
-def test_the_data_committed_last_time_is_shown_on_the_data_page_once_used_again(page):
+def test_a_new_window_loads_the_data_committed_last_time_by_itself(page):
     result = upload(page, [("spx.csv", SPX, "text/csv"), ("vix.csv", VIX, "text/csv")])
     next(b for b in result.button if b.label == "Use Updated Data").click().run()
 
     app = AppTest.from_file(str(PAGE), default_timeout=30).run()  # a new window
-    next(b for b in app.button if b.label == "Use the data committed last time").click().run()
 
     assert not app.exception
-    assert "Using the data committed last time" in texts(app.success)
+    assert "Using the data committed" in texts(app.success)
     assert "Upload target index files" not in texts(app.info)
     assert {m.label for m in app.metric} >= {"Flagged"}
 
@@ -654,3 +653,15 @@ def test_uploads_stay_visible_after_leaving_the_page_and_coming_back(page):
     assert "In use from your last upload: **spx.csv**" in shown
     assert "In use from your last upload: **vix.csv**" in shown
     assert "Merged 1 file(s) into 2 rows, 1 data columns" in texts(back.success)
+
+
+def test_clear_data_is_not_undone_by_reloading_the_last_commit(page):
+    result = upload(page, [("spx.csv", SPX, "text/csv"), ("vix.csv", VIX, "text/csv")])
+    next(b for b in result.button if b.label == "Use Updated Data").click().run()
+
+    app = AppTest.from_file(str(PAGE), default_timeout=30).run()  # a new window
+    next(b for b in app.button if b.label == "Clear Data").click().run()
+
+    assert not app.exception
+    assert "Using the data committed" not in texts(app.success)
+    assert "Upload target index files" in texts(app.info)

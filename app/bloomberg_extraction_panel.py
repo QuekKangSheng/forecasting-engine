@@ -19,6 +19,7 @@ import pickle
 from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -88,6 +89,12 @@ _COMMITTED_KEYS = (
 #: Relative, like the active-model DuckDB, so it sits under the app's working
 #: directory.
 LAST_COMMIT_PATH = Path("data") / "last_commit.pkl"
+#: Set once a session has looked for the last commit, so it is loaded at most once:
+#: after Clear Data the page stays clear rather than reloading it.
+_RESTORE_CHECKED_KEY = "_last_commit_checked"
+#: When the data now committed was loaded from the last commit rather than uploaded
+#: in this window: the time it was originally committed.
+RESTORED_AT_KEY = "_last_commit_restored_at"
 
 #: What the merged file is called in the upload log and under data/uploads.
 MERGED_NAME = "bloomberg_merged.csv"
@@ -192,6 +199,7 @@ def render() -> None:
             COMMITTED_SOURCES_KEY,
             COMMITTED_DROPPED_KEY,
             _LOGGED_KEY,
+            RESTORED_AT_KEY,
         ):
             st.session_state.pop(key, None)
         # Old results are stale once the data they were fit on is cleared.
@@ -201,8 +209,7 @@ def render() -> None:
         )
         st.rerun()
 
-    if offer_last_commit():
-        st.rerun()
+    restore_last_commit()
 
     version = st.session_state.get(_UPLOADER_VERSION_KEY, 0)
 
@@ -306,10 +313,7 @@ def render() -> None:
         # empty page.
         committed = st.session_state.get(COMMITTED_KEY)
         if committed is not None:
-            st.success(
-                "Using the data committed last time. Upload files above to replace it.",
-                icon=":material/history:",
-            )
+            st.success(restored_notice(), icon=":material/history:")
             _render_report(
                 st.session_state.get(COMMITTED_REPORT_KEY) or validation.validate(committed),
                 committed,
@@ -360,6 +364,7 @@ def render() -> None:
                 combined.columns,
             )
             st.session_state[COMMITTED_DROPPED_KEY] = _dropped()
+            st.session_state.pop(RESTORED_AT_KEY, None)
             _save_last_commit()
         st.success(
             "This cleaned dataset is now committed and available throughout the application.",
@@ -632,30 +637,39 @@ def _save_last_commit() -> None:
     tmp.replace(LAST_COMMIT_PATH)
 
 
-def offer_last_commit() -> bool:
-    """Offer the data committed last time, in a window that has none committed.
+def restore_last_commit() -> bool:
+    """Load the data committed last time into a session that has none.
 
-    Returns whether it was restored. Closing the window loses what was committed
-    in it, but not a Run left going in the background (``model_jobs``); this is
-    how its results come back without uploading every file again."""
+    Every page calls this first, so opening the app, or reloading it, picks up where
+    the last window left off instead of asking for every file again; results already
+    run on that data, and a Run left going in the background (``model_jobs``), come
+    back with it. It looks once per session, so Clear Data stays cleared. Returns
+    whether anything was loaded."""
+    if st.session_state.get(_RESTORE_CHECKED_KEY):
+        return False
+    st.session_state[_RESTORE_CHECKED_KEY] = True
     if COMMITTED_KEY in st.session_state or not LAST_COMMIT_PATH.exists():
         return False
     try:
         bundle = pickle.loads(LAST_COMMIT_PATH.read_bytes())
-        frame = bundle[COMMITTED_KEY]
+        bundle[COMMITTED_KEY]
     except Exception:  # an unreadable file is the same as none
         return False
+    st.session_state.update(bundle)
+    st.session_state[RESTORED_AT_KEY] = datetime.fromtimestamp(LAST_COMMIT_PATH.stat().st_mtime)
+    return True
+
+
+def restored_notice() -> str:
+    """One line saying the data in use was loaded from the last commit, and when."""
+    frame = st.session_state[COMMITTED_KEY]
     dates = frame[bloomberg_csv.DATE_COLUMN]
-    st.info(
-        f"Data was committed in an earlier window: {len(frame.columns) - 1} columns, "
-        f"{_fmt(dates.min())} to {_fmt(dates.max())}. Use it again to pick up any results "
-        "already run on it, without uploading the files again.",
-        icon=":material/history:",
+    when = st.session_state.get(RESTORED_AT_KEY)
+    committed = f"committed {when:%d %b %Y %H:%M}" if when is not None else "committed last time"
+    return (
+        f"Using the data {committed}: {len(frame.columns) - 1} columns, "
+        f"{_fmt(dates.min())} to {_fmt(dates.max())}. Upload files above to replace it."
     )
-    if st.button("Use the data committed last time", icon=":material/history:"):
-        st.session_state.update(bundle)
-        return True
-    return False
 
 
 def quality_issue_count(report: ValidationReport) -> int:

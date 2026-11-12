@@ -189,8 +189,7 @@ ui.page_header(
     "and choose the one the portfolio uses.",
 )
 
-if bloomberg_extraction_panel.offer_last_commit():
-    st.rerun()
+bloomberg_extraction_panel.restore_last_commit()
 merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)
 if merged is None:
     st.info('No data committed yet — click "Use Updated Data" on the Data page first.')

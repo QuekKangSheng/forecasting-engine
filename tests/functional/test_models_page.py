@@ -1249,9 +1249,8 @@ def test_a_new_window_can_pick_up_the_data_committed_last_time(stub_ml):
     path.write_bytes(pickle.dumps(bundle))
 
     app = AppTest.from_file(str(PAGE), default_timeout=60).run()  # a new window
-    assert "committed in an earlier window" in " ".join(i.value for i in app.info)
-    next(b for b in app.button if b.label == "Use the data committed last time").click().run()
 
+    # Loaded without asking: a reload must not lose the data or the results run on it.
     assert not app.exception
     assert "Machine Learning" in _table(app)
 
