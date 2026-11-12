@@ -42,6 +42,7 @@ from forecasting_engine.ingest.upload import (
     frame_csv_bytes,
     keep_source,
 )
+from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.store import lineage
 
 #: The two uploaders' own working copies — refreshed on every new upload,
@@ -334,24 +335,15 @@ def render() -> None:
     if file_id:
         _keep_and_log(combined, file_id=file_id)
 
-    # Reserved here so the summary stays in its usual position, but filled in
-    # further down — after the "Use Updated Data" button has had a chance to
-    # run in this same script pass. That lets a same-click commit show up
-    # without an st.rerun(), which would tear down and repaint the whole page
-    # (the "flash" a full rerun causes here).
-    summary_slot = st.container()
-
-    _render_gap_review(combined)
-
-    st.divider()
-    st.markdown(ui.eyebrow("Using this data"), unsafe_allow_html=True)
+    # Committing is the one thing every other page waits on, so it comes straight
+    # after the uploads, not under the whole quality report and gap review, where
+    # it used to be the last control on a page about 3,700px long.
+    ui.section("Use this data")
     st.caption(
-        "This dataset must be uploaded here before it can be used anywhere else in "
-        "the application — every other page reads whichever dataset was last "
-        "committed here, and none of them update on every gap-review edit. Make "
-        "your include/clean choices above, then click below to push them through."
+        "Every other page reads whichever dataset was last committed here. Check the "
+        "roles and fields above, then commit."
     )
-    if st.button("Use Updated Data", icon=":material/publish:"):
+    if st.button("Use Updated Data", icon=":material/publish:", type="primary"):
         with st.spinner("Validating the cleaned dataset…"):
             st.session_state[COMMITTED_KEY] = combined
             st.session_state[COMMITTED_REPORT_KEY] = validation.validate(combined)
@@ -370,18 +362,26 @@ def render() -> None:
             "This cleaned dataset is now committed and available throughout the application.",
             icon=":material/check_circle:",
         )
+    elif COMMITTED_KEY in st.session_state and st.session_state[COMMITTED_KEY].equals(combined):
+        st.caption("This dataset is the one committed for the other pages.")
     elif COMMITTED_KEY in st.session_state:
-        st.caption("A dataset is committed for Home and Models.")
+        st.caption(
+            "The other pages are using an earlier commit, not these files. Commit to "
+            "switch them to these."
+        )
     else:
         st.caption("Nothing committed yet — Home and Models have no data yet.")
 
-    # Filled in now (not where reserved above) so this reflects a commit made
-    # by the button just above it, in this same run — no rerun needed.
-    with summary_slot:
-        committed_report = st.session_state.get(COMMITTED_REPORT_KEY, validation.validate(combined))
-        committed_merged = st.session_state.get(COMMITTED_KEY, combined)
-        committed_dropped = st.session_state.get(COMMITTED_DROPPED_KEY, _dropped())
-        _render_report(committed_report, committed_merged, committed_dropped)
+    # The report describes the files on screen. Since the last commit loads by itself,
+    # the committed data can be an earlier one than these uploads.
+    ui.section("Data quality report")
+    just_committed = st.session_state.get(COMMITTED_KEY) is combined
+    report = (
+        st.session_state[COMMITTED_REPORT_KEY]
+        if just_committed and COMMITTED_REPORT_KEY in st.session_state
+        else validation.validate(combined)
+    )
+    _render_report(report, combined, _dropped())
 
     st.download_button(
         "Bloomberg merged (.csv)",
@@ -604,18 +604,25 @@ def _keep_and_log(merged: pd.DataFrame, *, file_id: str) -> AcceptedUpload:
     return accepted
 
 
-def _render_gap_review(merged: pd.DataFrame) -> None:
+def _render_gap_review(merged: pd.DataFrame, label=lambda name: name) -> bool:
     """List every row missing a value. Nothing here is filled: each model
     aligns its signals to its own target's calendar on the Models page."""
     remaining = bloomberg_csv.missing_row_report(merged)
     if remaining.empty:
-        return
+        return False
 
     st.markdown(ui.eyebrow("Rows missing a value"), unsafe_allow_html=True)
     st.caption(
         "Nothing is filled here. On the Models page each target keeps only the dates "
         "it has a price, and each signal takes its latest value on or before each of "
         f"those dates, for up to {MAX_STALENESS} rows."
+    )
+    remaining = remaining.assign(
+        **{
+            "Missing columns": remaining["Missing columns"].map(
+                lambda names: ", ".join(label(n.strip()) for n in str(names).split(","))
+            )
+        }
     )
     st.dataframe(
         bloomberg_csv.with_display_dates(remaining),
@@ -627,6 +634,7 @@ def _render_gap_review(merged: pd.DataFrame) -> None:
             "Likely reason": st.column_config.TextColumn(width="medium"),
         },
     )
+    return True
 
 
 def _save_last_commit() -> None:
@@ -689,12 +697,30 @@ def _dropped() -> list[str]:
 # --- the data quality report ------------------------------------------------
 
 
-def _render_report(report: ValidationReport, merged: pd.DataFrame, dropped: list[str]) -> None:
+def _render_report(
+    report: ValidationReport,
+    merged: pd.DataFrame,
+    dropped: list[str],
+    *,
+    gaps: pd.DataFrame | None = None,
+) -> None:
+    """The verdict and coverage figures in view, the detail in tabs under them: the
+    detail is for checking, and stacked one part after another it used to fill most
+    of the page."""
     _render_verdict(report)
     _render_coverage(report, merged)
-    _render_dropped(dropped)
-    _render_completeness(report)
-    _render_breakdown(report)
+    label = labeller([c for c in merged.columns if c != bloomberg_csv.DATE_COLUMN])
+    completeness, moves, gaps_tab = st.tabs(["Completeness", "Unusual moves", "Missing rows"])
+    with completeness:
+        _render_dropped(dropped)
+        if not _render_completeness(report, label) and not dropped:
+            st.caption("Every column has a value on every date.")
+    with moves:
+        if not _render_breakdown(report, label):
+            st.caption("Nothing flagged.")
+    with gaps_tab:
+        if not _render_gap_review(merged if gaps is None else gaps, label):
+            st.caption("No row is missing a value.")
 
 
 def _render_dropped(dropped: list[str]) -> None:
@@ -739,7 +765,9 @@ def _render_verdict(report: ValidationReport) -> None:
 def _render_coverage(report: ValidationReport, merged: pd.DataFrame) -> None:
     rows, signals, flag_col = st.columns(3)
     rows.metric("Rows", f"{len(merged):,}", icon=":material/table_rows:")
-    signals.metric("Signals", len(merged.columns) - 1, icon=":material/show_chart:")
+    # Every column, targets' fields included: Home counts signals alone, so the two
+    # pages' numbers differ and need different names.
+    signals.metric("Data columns", len(merged.columns) - 1, icon=":material/show_chart:")
     flag_col.metric("Flagged", _flagged_count(report), icon=":material/flag:")
 
     dates = merged["Date"].dropna()
@@ -747,14 +775,14 @@ def _render_coverage(report: ValidationReport, merged: pd.DataFrame) -> None:
         st.caption(f"Covering {_fmt(dates.min())} to {_fmt(dates.max())}")
 
 
-def _render_completeness(report: ValidationReport) -> None:
+def _render_completeness(report: ValidationReport, label) -> bool:
     incomplete = {k: v for k, v in report.missing_pct.items() if v > 0}
     if not incomplete:
-        return
+        return False
     st.markdown(ui.eyebrow("Completeness by column"), unsafe_allow_html=True)
     st.dataframe(
         [
-            {"Column": name, "Missing %": pct}
+            {"Column": label(name), "Missing %": pct}
             for name, pct in sorted(incomplete.items(), key=lambda kv: -kv[1])
         ],
         width="stretch",
@@ -764,16 +792,21 @@ def _render_completeness(report: ValidationReport) -> None:
             "Missing %": st.column_config.NumberColumn("Missing %", format="%.1f%%"),
         },
     )
+    return True
 
 
-def _render_breakdown(report: ValidationReport) -> None:
+def _render_breakdown(report: ValidationReport, label) -> bool:
     has_findings = (
         report.duplicate_date_values or report.weekend_date_values or not report.big_moves.empty
     )
     if not has_findings:
-        return
+        return False
 
     st.markdown(ui.eyebrow("Flagged observations"), unsafe_allow_html=True)
+    st.caption(
+        "For information, worth a look: a statistically unusual move is a day's change "
+        "far larger than that column's typical one. None of these stops a run."
+    )
 
     if report.duplicate_date_values:
         row = _dates_row(report.duplicate_dates, report.duplicate_date_values)
@@ -787,9 +820,10 @@ def _render_breakdown(report: ValidationReport) -> None:
 
     for column, moves in _by_column(report.big_moves):
         with st.expander(
-            f"{column} — {len(moves)} statistically unusual "
+            f"{label(column)} — {len(moves)} statistically unusual "
             f"move{'s' if len(moves) != 1 else ''}"
         ):
+            st.caption(f"Column {column}")
             rows_html = "".join(
                 ui.finding_row(
                     ui.lozenge("Info", "info"),
@@ -800,6 +834,7 @@ def _render_breakdown(report: ValidationReport) -> None:
                 for move in moves
             )
             st.markdown(rows_html, unsafe_allow_html=True)
+    return True
 
 
 def _dates_row(count: int, values: tuple[str, ...]) -> str:

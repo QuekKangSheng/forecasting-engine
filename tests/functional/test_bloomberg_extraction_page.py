@@ -162,7 +162,7 @@ def test_the_coverage_metrics_are_shown_for_a_clean_file(page):
 
     labels = {m.label: m.value for m in result.metric}
     assert labels["Rows"] == "2"
-    assert labels["Signals"] == "1"
+    assert labels["Data columns"] == "1"
     assert labels["Flagged"] == "0"
     assert "Nothing flagged" in texts(result.success)
     assert "02/01/2020 to 03/01/2020" in texts(result.caption)
@@ -194,7 +194,7 @@ def test_a_statistically_unusual_move_is_flagged_as_info_and_never_blocks_the_co
     assert "none of them stop a run" in texts(result.success)
 
     expander = next(e for e in result.expander if "statistically unusual move" in e.label)
-    assert expander.label == "A_Index_PX_LAST — 1 statistically unusual move"
+    assert expander.label == "A Index (last price) — 1 statistically unusual move"
     assert dates[30].strftime("%d/%m/%Y") in texts(result.markdown)
     assert "day-over-day change" in texts(result.markdown)
     assert "x the typical move" in texts(result.markdown)
@@ -304,7 +304,7 @@ def test_the_full_report_renders_once_committed_and_home_points_to_it(page):
     assert "1 observation flagged below for information" in texts(result.success)
     assert "none of them stop a run" in texts(result.success)
     expander = next(e for e in result.expander if "statistically unusual move" in e.label)
-    assert expander.label == "A_Index_PX_LAST — 1 statistically unusual move"
+    assert expander.label == "A Index (last price) — 1 statistically unusual move"
     assert dates[30].strftime("%d/%m/%Y") in texts(result.markdown)
 
     home = _home(result)
@@ -324,7 +324,8 @@ def test_completeness_by_column_renders_once_committed_for_a_partially_filled_si
     (completeness,) = [
         d.value for d in result.dataframe if list(d.value.columns) == ["Column", "Missing %"]
     ]
-    row = completeness.loc[completeness["Column"] == "LF98TRUU_Index_PX_LAST"].iloc[0]
+    # Named as every other page names it, not by Bloomberg field code.
+    row = completeness.loc[completeness["Column"] == "US high yield bond"].iloc[0]
     assert row["Missing %"] == pytest.approx(100 / 3)
 
 
@@ -376,7 +377,7 @@ def test_a_gap_on_a_known_market_holiday_is_classified_not_left_unexplained(page
     ]
     row = gaps.loc[gaps["Date"] == "05/09/2016"].iloc[0]
     assert row["Likely reason"] == "Likely NYSE market holiday"
-    assert "LF98TRUU_Index_PX_LAST" in row["Missing columns"]
+    assert "US high yield bond" in row["Missing columns"]
 
 
 def test_committing_records_each_columns_security_and_field(page):
