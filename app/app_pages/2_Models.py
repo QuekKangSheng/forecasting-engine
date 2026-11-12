@@ -21,6 +21,7 @@ import pandas as pd
 import streamlit as st
 
 import bloomberg_extraction_panel
+import charts
 import glossary
 import model_jobs
 import model_runs
@@ -1102,12 +1103,17 @@ def _show_directional(
         ui.eyebrow("Would the forecast's direction have paid?", glossary.term("Directional P&L")),
         unsafe_allow_html=True,
     )
-    name = st.selectbox(
-        "Forecasts from",
-        options,
-        index=_directional_default(role, options, runs),
-        key=f"pnl_model_{key}",
-    )
+    # Runs finish one by one and the naive baseline first. A selectbox keeps the
+    # value it was first given, so without this it stayed on the baseline, whose
+    # long/cash line is buy-and-hold, once the models it should default to arrived.
+    # Re-default whenever the models on offer or the active one change.
+    picker_key = f"pnl_model_{key}"
+    current = active_model.get_active_model(role)
+    offered = (tuple(options), None if current is None else current.model_name)
+    if st.session_state.get(f"pnl_offered_{key}") != offered:
+        st.session_state[f"pnl_offered_{key}"] = offered
+        st.session_state[picker_key] = options[_directional_default(role, options, runs)]
+    name = st.selectbox("Forecasts from", options, key=picker_key)
     result = runs[name].result
     try:
         whole = directional_pnl(result.forecast, result.realised, horizon=horizon)
@@ -1173,13 +1179,17 @@ def _show_directional(
     metric_cols[3].metric(
         "Days invested", f"{pnl.share_invested:.0%}", help=glossary.term("Days invested")
     )
-    st.line_chart(
-        {
-            "Long/cash strategy": pnl.strategy_cumulative * 100,
-            "Buy and hold": pnl.buy_and_hold_cumulative * 100,
-        },
-        x_label="Forecast date",
-        y_label="Cumulative return (%)",
+    st.altair_chart(
+        charts.line_chart(
+            pd.DataFrame(
+                {
+                    "Long/cash strategy": pnl.strategy_cumulative,
+                    "Buy and hold": pnl.buy_and_hold_cumulative,
+                }
+            ),
+            "Cumulative return",
+        ),
+        width="stretch",
     )
     if pnl.no_forecast:
         st.caption(
