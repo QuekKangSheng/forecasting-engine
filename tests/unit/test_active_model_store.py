@@ -390,6 +390,23 @@ def test_each_role_reads_its_own_function(db):
     assert get_active_function(TargetRole.BOND, db_path=db) == USER
 
 
+def test_a_function_that_kept_no_terms_can_still_be_set_active(db):
+    # A derived polynomial whose latest fold kept nothing is its intercept alone.
+    # Setting it active used to crash: DuckDB refuses an empty executemany.
+    constant = ActiveFunction(
+        Origin.DERIVED,
+        ModelDescription(name="DerivedPolynomial", terms=(), coefficients=(), intercept=0.0014),
+        {},
+    )
+
+    set_active_model(
+        TargetRole.BOND, "Polynomial", _result(), high_risk=False, function=constant,
+        db_path=db, **SETTINGS,
+    )
+
+    assert get_active_function(TargetRole.BOND, db_path=db) == constant
+
+
 def test_no_active_model_has_no_function(db):
     assert get_active_function(TargetRole.BOND, db_path=db) is None
 

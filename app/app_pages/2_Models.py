@@ -1029,6 +1029,13 @@ def _show_active_picker(
         key=f"active_select_{key}",
         label_visibility="collapsed",
     )
+    description = runs[selected].description
+    if _active_function(selected, runs[selected]) is not None and description is not None:
+        if not description.terms:
+            st.caption(
+                f"{selected}'s latest fit kept no signals, so it "
+                "forecasts a constant: its intercept. It can still be set active."
+            )
     # A pending confirmation is kept in session state: its buttons are clicked on
     # a later run, when "Set as active" no longer reads as pressed.
     pending_key = f"pending_active_{key}"

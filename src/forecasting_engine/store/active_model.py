@@ -239,28 +239,35 @@ def _insert_function(conn, record: ActiveModelRecord, function: ActiveFunction) 
         "VALUES (?, ?, ?, ?, ?)",
         [*key, function.origin.value, description.name, description.intercept],
     )
-    conn.executemany(
-        "INSERT INTO active_model_terms (role, set_at, position, term, coefficient) "
-        "VALUES (?, ?, ?, ?, ?)",
-        [
-            (*key, position, term, float(coefficient))
-            for position, (term, coefficient) in enumerate(
-                zip(description.terms, description.coefficients, strict=True)
-            )
-        ],
-    )
+    # A fit can keep no terms at all and be its intercept alone. DuckDB refuses an
+    # empty executemany, so the term and input rows are only written when there are
+    # some; reading back an intercept-only function then finds none, as it should.
+    terms = [
+        (*key, position, term, float(coefficient))
+        for position, (term, coefficient) in enumerate(
+            zip(description.terms, description.coefficients, strict=True)
+        )
+    ]
+    if terms:
+        conn.executemany(
+            "INSERT INTO active_model_terms (role, set_at, position, term, coefficient) "
+            "VALUES (?, ?, ?, ?, ?)",
+            terms,
+        )
     bounds = description.input_bounds or {}
     centre = description.standardisation or {}
-    conn.executemany(
-        "INSERT INTO active_model_inputs "
-        "(role, set_at, signal, transform, clip_low, clip_high, mean, sd) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-            (*key, signal, transform.value, *bounds.get(signal, (None, None)),
-             *centre.get(signal, (None, None)))
-            for signal, transform in function.transforms.items()
-        ],
-    )
+    inputs = [
+        (*key, signal, transform.value, *bounds.get(signal, (None, None)),
+         *centre.get(signal, (None, None)))
+        for signal, transform in function.transforms.items()
+    ]
+    if inputs:
+        conn.executemany(
+            "INSERT INTO active_model_inputs "
+            "(role, set_at, signal, transform, clip_low, clip_high, mean, sd) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            inputs,
+        )
 
 
 def get_active_function(
