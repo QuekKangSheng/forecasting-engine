@@ -13,6 +13,7 @@ import streamlit as st
 
 import charts
 import glossary
+import page_cache
 import ui
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.reporting.portfolio_comparison import (
@@ -104,7 +105,10 @@ def _line(paths: pd.DataFrame, value: str, *, window: int | None = None, percent
     )
 
 
+@st.fragment
 def render(run: portfolio_runs.SavedRun) -> None:
+    """The opened run, as the Portfolio page showed it. A fragment, so switching
+    between after and before costs redraws the run alone, not the list above it."""
     results = run.results
     names = {role: results["names"][role.value] for role in (EQUITY, BOND)}
     backtest = results["backtest"]
@@ -128,7 +132,7 @@ def render(run: portfolio_runs.SavedRun) -> None:
     for line in results["how_set"]:
         st.caption(line)
 
-    paths = portfolio_runs.saved_paths(run.run_key)
+    paths = page_cache.saved_paths(run.run_key)
     st.markdown(ui.eyebrow("Weights per rebalance"), unsafe_allow_html=True)
     # A run saved before its weight limits were kept is drawn without them.
     limits = results["settings"].get("bounds")

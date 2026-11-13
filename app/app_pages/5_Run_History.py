@@ -65,6 +65,10 @@ RUN_COLUMNS = [0.5, 2.4, 1.6, 1.6, 1.6, 0.7]
 RUN_HEADINGS = ["Run", "Name", "First shown", "Equity model", "Bond model", "Risk"]
 
 
+# Each tab is a fragment: a control on one redraws that tab alone. Run as one page,
+# opening a portfolio run also read the fits table back, a fit's forecasts and its
+# chart, and choosing a fit redrew every portfolio run row.
+@st.fragment
 def _model_fits() -> None:
     TARGETS = {"All": None, "Equity": TargetRole.EQUITY, "Bond": TargetRole.BOND}
     target = st.segmented_control("Target", list(TARGETS), default="All", required=True)
@@ -287,6 +291,7 @@ NOT_SAVED = (
 )
 
 
+@st.fragment
 def _portfolio_runs() -> None:
     table = portfolio_runs.portfolio_runs_table()
     if table.empty:
