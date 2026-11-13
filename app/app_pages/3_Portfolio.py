@@ -70,6 +70,7 @@ ui.page_header(
     "A long-only split between the two indices that targets the chosen risk level's "
     "volatility and tilts towards whichever index the active models favour, re-set every "
     "forecast horizon.",
+    kicker="03 / Allocate",
 )
 
 bloomberg_extraction_panel.restore_last_commit()

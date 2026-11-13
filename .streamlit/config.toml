@@ -5,6 +5,10 @@
 # size-limit message. Keep this the looser of the two.
 maxUploadSize = 30
 
+# The app serves its own typefaces from app/static, so they load with no network
+# beyond the app's own.
+enableStaticServing = true
+
 
 [client]
 # No "Deploy" button or developer menu in the toolbar: the sponsor uses this app,
@@ -12,98 +16,80 @@ maxUploadSize = 30
 toolbarMode = "minimal"
 
 
-# Atlassian Design System tokens (https://atlassian.design/foundations/color):
-# navy text on white, a single blue for actions, neutral greys carrying the
-# structure, and green/yellow/red reserved for state. Corners are 3px, the
-# classic Atlassian radius, so controls and panels read as squared-off rather
-# than as rounded cards. Headings are small and set in the system font, as in
-# Jira and Confluence, so the figures carry the page rather than the titles.
+# An operations console: a near-black field, hairlines carrying the structure, small
+# spaced capitals in a monospace face for labels, and one blue for whatever can be
+# acted on. One theme, dark, designed as such rather than flipped from a light one.
+#
+# Every colour here is also in app/tokens.py, which the stylesheet (app/ui.py) and
+# the charts (app/charts.py) draw from; tests/unit/test_tokens.py fails if the two
+# drift apart.
 
 [theme]
-base = "light"
-font = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
-codeFont = "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace"
+base = "dark"
+font = "'IBM Plex Sans', -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+headingFont = "'IBM Plex Sans', -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
+codeFont = "'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
 baseFontSize = 14
-headingFontSizes = ["24px", "20px", "16px", "14px", "12px", "12px"]
-headingFontWeights = [600, 600, 600, 600, 600, 600]
-baseRadius = "3px"
-buttonRadius = "3px"
+headingFontSizes = ["28px", "20px", "16px", "14px", "12px", "12px"]
+headingFontWeights = [400, 500, 600, 600, 600, 600]
+baseRadius = "2px"
+buttonRadius = "2px"
 showWidgetBorder = true
 showSidebarBorder = true
 linkUnderline = false
 
-[theme.light]
-backgroundColor = "#FFFFFF"           # elevation.surface
-secondaryBackgroundColor = "#F7F8F9"  # elevation.surface.sunken
-textColor = "#172B4D"                 # color.text
-primaryColor = "#0C66E4"              # color.background.brand.bold
-linkColor = "#0C66E4"                 # color.link
-borderColor = "#DCDFE4"               # color.border, on white
-dataframeBorderColor = "#DCDFE4"
-dataframeHeaderBackgroundColor = "#F7F8F9"
-codeBackgroundColor = "#F1F2F4"
-codeTextColor = "#172B4D"
-chartCategoricalColors = ["#0C66E4", "#8590A2", "#6E5DC6", "#1D7F8C", "#C25100", "#AE2E24"]
+backgroundColor = "#0B0D11"
+secondaryBackgroundColor = "#171C24"
+textColor = "#E9ECF1"
+primaryColor = "#4C90F0"
+linkColor = "#8ABBFF"
+borderColor = "#212833"
+dataframeBorderColor = "#212833"
+dataframeHeaderBackgroundColor = "#10141A"
+codeBackgroundColor = "#10141A"
+codeTextColor = "#B7BFCA"
+chartCategoricalColors = ["#4C90F0", "#8F99A8", "#CF7A1E", "#32A467", "#D4609A", "#B07CE8"]
 
-greenColor = "#1F845A"                # color.text.success
-greenTextColor = "#216E4E"
-greenBackgroundColor = "#DCFFF1"      # color.background.success
-yellowColor = "#B38600"
-yellowTextColor = "#7F5F01"           # color.text.warning
-yellowBackgroundColor = "#FFF7D6"     # color.background.warning
-orangeColor = "#C25100"
-orangeTextColor = "#A54800"
-orangeBackgroundColor = "#FFF3EB"
-redColor = "#C9372C"                  # color.text.danger
-redTextColor = "#AE2E24"
-redBackgroundColor = "#FFECEB"        # color.background.danger
-blueColor = "#0C66E4"
-blueTextColor = "#0055CC"             # color.text.information
-blueBackgroundColor = "#E9F2FF"       # color.background.information
-grayColor = "#626F86"                 # color.text.subtlest
-grayTextColor = "#44546F"             # color.text.subtle
-grayBackgroundColor = "#F1F2F4"       # color.background.neutral
+greenColor = "#32A467"
+greenTextColor = "#72CA9B"
+greenBackgroundColor = "#11281E"
+yellowColor = "#D1980B"
+yellowTextColor = "#FBD065"
+yellowBackgroundColor = "#2C2410"
+orangeColor = "#C87619"
+orangeTextColor = "#FBB360"
+orangeBackgroundColor = "#2E2112"
+redColor = "#CD4246"
+redTextColor = "#FA999C"
+redBackgroundColor = "#301719"
+blueColor = "#4C90F0"
+blueTextColor = "#8ABBFF"
+blueBackgroundColor = "#13233D"
+grayColor = "#8B95A4"
+grayTextColor = "#B7BFCA"
+grayBackgroundColor = "#1B2029"
 
-[theme.light.sidebar]
-backgroundColor = "#F7F8F9"
-secondaryBackgroundColor = "#F1F2F4"
-textColor = "#44546F"
-borderColor = "#DCDFE4"
+[theme.sidebar]
+backgroundColor = "#07090C"
+secondaryBackgroundColor = "#10141A"
+textColor = "#B7BFCA"
+borderColor = "#212833"
 
-[theme.dark]
-backgroundColor = "#1D2125"           # elevation.surface
-secondaryBackgroundColor = "#161A1D"  # elevation.surface.sunken
-textColor = "#B6C2CF"                 # color.text
-primaryColor = "#579DFF"
-linkColor = "#579DFF"
-borderColor = "#38414A"
-dataframeBorderColor = "#38414A"
-dataframeHeaderBackgroundColor = "#161A1D"
-codeBackgroundColor = "#22272B"
-codeTextColor = "#B6C2CF"
-chartCategoricalColors = ["#579DFF", "#8C9BAB", "#9F8FEF", "#6CC3E0", "#FEA362", "#F87168"]
+# IBM Plex, under the SIL Open Font License (app/static/OFL.txt).
+[[theme.fontFaces]]
+family = "IBM Plex Sans"
+url = "app/static/IBMPlexSans-Variable.woff2"
+weight = "300 700"
+style = "normal"
 
-greenColor = "#4BCE97"
-greenTextColor = "#7EE2B8"
-greenBackgroundColor = "#164B35"
-yellowColor = "#F5CD47"
-yellowTextColor = "#F5CD47"
-yellowBackgroundColor = "#533F04"
-orangeColor = "#FEA362"
-orangeTextColor = "#FEC195"
-orangeBackgroundColor = "#5F3811"
-redColor = "#F87168"
-redTextColor = "#FD9891"
-redBackgroundColor = "#5D1F1A"
-blueColor = "#579DFF"
-blueTextColor = "#85B8FF"
-blueBackgroundColor = "#09326C"
-grayColor = "#8C9BAB"
-grayTextColor = "#9FADBC"
-grayBackgroundColor = "#2C333A"
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url = "app/static/IBMPlexMono-Regular.woff2"
+weight = 400
+style = "normal"
 
-[theme.dark.sidebar]
-backgroundColor = "#161A1D"
-secondaryBackgroundColor = "#22272B"
-textColor = "#9FADBC"
-borderColor = "#38414A"
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url = "app/static/IBMPlexMono-Medium.woff2"
+weight = 500
+style = "normal"

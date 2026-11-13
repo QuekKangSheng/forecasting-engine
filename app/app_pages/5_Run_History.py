@@ -29,6 +29,7 @@ ui.page_header(
     "Run history",
     "Every model fit and every distinct portfolio result, newest first: when it ran, on "
     "which data, under which settings, and what came out. Nothing here refits a model.",
+    kicker="05 / Audit trail",
 )
 
 OPEN_RUN_KEY = "open_portfolio_run"

@@ -37,6 +37,7 @@ ui.page_header(
     "Forecasting Engine",
     "Tests whether forecasts of S&P 500 and US bond returns hold up on data they never saw, "
     "and only then uses them to split a portfolio between the two.",
+    kicker="00 / Status",
 )
 
 bloomberg_extraction_panel.restore_last_commit()
@@ -101,6 +102,7 @@ def _tick(ok: bool) -> str:
 
 
 def _data_card() -> None:
+    st.markdown(ui.kicker_line("01 / Ingest", small=True), unsafe_allow_html=True)
     st.subheader("Data")
     if merged is None:
         not_yet = ui.status_row("Committed", ui.lozenge("Not yet", "neutral"))
@@ -144,6 +146,7 @@ def _fmt(value: float, decimals: int) -> str:
 
 
 def _models_card() -> None:
+    st.markdown(ui.kicker_line("02 / Forecast", small=True), unsafe_allow_html=True)
     st.subheader("Models")
     if merged is None:
         st.caption("Commit data first.")
@@ -185,6 +188,7 @@ def _models_card() -> None:
 
 
 def _portfolio_card() -> None:
+    st.markdown(ui.kicker_line("03 / Allocate", small=True), unsafe_allow_html=True)
     st.subheader("Portfolio Optimizer")
     both = all(actives[role] is not None for role in ROLES)
     st.markdown(ui.status_row("Both active models set", _tick(both)), unsafe_allow_html=True)
@@ -248,7 +252,9 @@ if step is None:
     )
 else:
     st.info(f"**Next step:** {step}", icon=":material/arrow_forward:")
-data_col, models_col, portfolio_col = st.columns(3)
+# The three stages in pipeline order, numbered as the sidebar numbers them. Models
+# gets the most room: it lists every model's result for both indices.
+data_col, models_col, portfolio_col = st.columns([5, 7, 5])
 with data_col, st.container(border=True):
     _data_card()
 with models_col, st.container(border=True):

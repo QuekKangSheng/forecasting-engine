@@ -188,6 +188,7 @@ ui.page_header(
     "Models",
     "Fit each forecasting model on past data, score it only on the periods it never saw, "
     "and choose the one the portfolio uses.",
+    kicker="02 / Forecast",
 )
 
 bloomberg_extraction_panel.restore_last_commit()
