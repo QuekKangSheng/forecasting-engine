@@ -355,14 +355,13 @@ with weights_col:
         unsafe_allow_html=True,
     )
     renamed = schedule.rename(columns={EQUITY: equity_name, BOND: bond_name})
-    st.altair_chart(
+    charts.draw(
         charts.weights_chart(
             renamed,
             limits=(lower, upper),
             # The last allocation is held to the last day both indices have a price.
             until=min(series.index[-1] for series in prices.values()),
-        ),
-        width="stretch",
+        )
     )
     st.caption(
         f"The line is {equity_name}'s weight and the rest is {bond_name}; each step is a "
@@ -517,9 +516,8 @@ with volatility_col:
             icon=":material/info:",
         )
     else:
-        st.altair_chart(
-            charts.line_chart(volatility, "Rolling volatility").properties(height=280),
-            width="stretch",
+        charts.draw(
+            charts.line_chart(volatility, "Rolling volatility", height=charts.WEIGHTS_HEIGHT)
         )
         st.caption(
             f"Annualised standard deviation of the previous {ROLLING_VOL_WINDOW} trading "
@@ -580,7 +578,8 @@ st.caption(
 )
 
 cumulative = cumulative_paths(backtest, basis)
-st.altair_chart(charts.line_chart(cumulative, "Cumulative return"), width="stretch")
+st.markdown(ui.eyebrow("Cumulative return"), unsafe_allow_html=True)
+charts.draw(charts.line_chart(cumulative, "Cumulative return"))
 
 drawdown_col, sharpe_col = st.columns(2, gap="large")
 
@@ -589,7 +588,7 @@ drawdown_col, sharpe_col = st.columns(2, gap="large")
 with drawdown_col:
     st.markdown(ui.eyebrow("Drawdown", glossary.term("Drawdown")), unsafe_allow_html=True)
     drawdowns = drawdown_paths(backtest, basis, index_names)
-    st.altair_chart(charts.line_chart(drawdowns, "Drawdown"), width="stretch")
+    charts.draw(charts.line_chart(drawdowns, "Drawdown"))
     st.caption(
         "Fall from the highest value reached so far, at each day, counting the start of "
         "the backtest as the first high. Each index is held alone, with no trading costs; "
@@ -614,14 +613,13 @@ with sharpe_col:
             icon=":material/info:",
         )
     else:
-        st.altair_chart(
+        charts.draw(
             charts.line_chart(
                 rolling_sharpes,
                 "Rolling Sharpe",
                 percent=False,
                 title=f"Rolling Sharpe, {ROLLING_SHARPE_WINDOW}-day window",
-            ),
-            width="stretch",
+            )
         )
         st.caption(
             f"Annualised Sharpe of the previous {ROLLING_SHARPE_WINDOW} trading days' "

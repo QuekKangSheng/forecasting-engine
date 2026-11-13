@@ -1230,7 +1230,7 @@ def _show_directional(
     metric_cols[3].metric(
         "Days invested", f"{pnl.share_invested:.0%}", help=glossary.term("Days invested")
     )
-    st.altair_chart(
+    charts.draw(
         charts.line_chart(
             pd.DataFrame(
                 {
@@ -1239,8 +1239,7 @@ def _show_directional(
                 }
             ),
             "Cumulative return",
-        ),
-        width="stretch",
+        )
     )
     if pnl.no_forecast:
         st.caption(

@@ -100,9 +100,7 @@ def _line(paths: pd.DataFrame, value: str, *, window: int | None = None, percent
         return
     st.markdown(ui.eyebrow(value, glossary.term(value)), unsafe_allow_html=True)
     chart_title = None if window is None else f"{value}, {window}-day window"
-    st.altair_chart(
-        charts.line_chart(paths, value, percent=percent, title=chart_title), width="stretch"
-    )
+    charts.draw(charts.line_chart(paths, value, percent=percent, title=chart_title))
 
 
 @st.fragment
@@ -136,13 +134,12 @@ def render(run: portfolio_runs.SavedRun) -> None:
     st.markdown(ui.eyebrow("Weights per rebalance"), unsafe_allow_html=True)
     # A run saved before its weight limits were kept is drawn without them.
     limits = results["settings"].get("bounds")
-    st.altair_chart(
+    charts.draw(
         charts.weights_chart(
             paths.optimised.weights.rename(columns={role: names[role] for role in (EQUITY, BOND)}),
             limits=None if limits is None else (limits[0], limits[1]),
             until=paths.end,
-        ),
-        width="stretch",
+        )
     )
     st.caption(
         f"The line is {names[EQUITY]}'s weight and the rest is {names[BOND]}; each step is "
@@ -218,9 +215,8 @@ def render(run: portfolio_runs.SavedRun) -> None:
         )
 
     windows = results["windows"]
-    st.altair_chart(
-        charts.line_chart(cumulative_paths(paths, basis), "Cumulative return"), width="stretch"
-    )
+    st.markdown(ui.eyebrow("Cumulative return"), unsafe_allow_html=True)
+    charts.draw(charts.line_chart(cumulative_paths(paths, basis), "Cumulative return"))
     _line(
         rolling_volatility_paths(paths, basis, names, window=windows["rolling_volatility"]),
         "Rolling volatility",

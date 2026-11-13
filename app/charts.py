@@ -1,29 +1,38 @@
 """Charts both the Portfolio page and an opened run draw, so a saved run looks the same
-as the page that first showed it."""
+as the page that first showed it.
+
+A chart is a Vega-Lite specification written out here as a plain dict, with its
+figures beside it as named tables. Two things follow, and both are why a click no
+longer waits on the charts:
+
+- Nothing is built or validated on the server. The charts used to be assembled
+  through Altair, which checks every chart against the whole Vega-Lite schema each
+  time it is drawn: a third of a second for a page of five, on every rerun.
+- A chart's specification never holds its figures, so it is the same from one rerun
+  to the next and only the tables change. The browser then keeps the chart it has
+  drawn and swaps the figures in, where a changed specification makes it throw the
+  chart away and build it again.
+"""
 
 from __future__ import annotations
 
-import altair as alt
+from typing import Any
+
 import numpy as np
 import pandas as pd
+import streamlit as st
+
+import tokens
 
 # One colour per series, the same on every chart, so a line means the same thing
 # wherever it is drawn: the optimised portfolio is always blue and the 50/50
 # benchmark always grey, the equity index orange and the bond index green.
-#
-# The three hues are Atlassian's blue, orange and green, and were chosen by
-# measurement rather than by eye: every pair stays apart under simulated red-green
-# colour blindness and for full colour vision, and each clears 3:1 against both the
-# light and the dark page (so one set serves both themes). The earlier purple for
-# the equity index did not: beside the optimised portfolio's blue, on the three-line
-# risk charts, the two were hard to tell apart even with full colour vision. Grey is
-# kept for whatever a chart is read against: a benchmark, or what really happened.
-OPTIMISED = "#0C66E4"
-BENCHMARK = "#8590A2"
-EQUITY_INDEX = "#E56910"
-BOND_INDEX = "#22A06B"
-BASELINE = "#CD519D"
-_OTHERS = ("#AE2E24", "#946F00", "#943D73", "#216E4E")
+OPTIMISED = tokens.SERIES_OURS
+BENCHMARK = tokens.SERIES_REFERENCE
+EQUITY_INDEX = tokens.SERIES_EQUITY
+BOND_INDEX = tokens.SERIES_BOND
+BASELINE = tokens.SERIES_BASELINE
+_OTHERS = tokens.SERIES_OTHERS
 
 _FIXED = {
     "Optimised": OPTIMISED,
@@ -46,9 +55,55 @@ MAX_HOVER_TARGETS = 600
 #: The most rows a line chart is drawn from: more than that and it is thinned (``_drawn``).
 MAX_DRAWN_ROWS = 1_500
 
+#: A line chart's height unless told otherwise, and the weights chart's.
+LINE_HEIGHT = 300
+WEIGHTS_HEIGHT = 280
+
 #: Canvas, not Streamlit's default SVG: SVG makes every day's point a page element,
 #: thousands per chart, which stalls scrolling and every redraw.
-_CANVAS = {"embedOptions": {"renderer": "canvas"}}
+_CANVAS = {"embedOptions": {"renderer": "canvas", "actions": False}}
+
+#: How every chart is dressed. Stated in full and drawn with ``theme=None``, so a chart
+#: looks the same whatever Streamlit's own chart theme does: quiet horizontal
+#: gridlines, no box, monospace figures on the axes, the legend underneath.
+_CONFIG: dict[str, Any] = {
+    "background": "transparent",
+    "font": tokens.SANS,
+    "padding": {"left": 2, "right": 8, "top": 6, "bottom": 2},
+    "view": {"stroke": None},
+    "axis": {
+        # The text face, whose figures have a plain zero: at this size the monospace
+        # face's dotted zero reads as an eight.
+        "labelFont": tokens.SANS,
+        "labelFontSize": 11.5,
+        "labelColor": tokens.MUTED,
+        "labelPadding": 8,
+        "titleFont": tokens.MONO,
+        "titleFontSize": 11,
+        "titleFontWeight": "normal",
+        "titleColor": tokens.MUTED,
+        "gridColor": tokens.BORDER,
+        "domainColor": tokens.BORDER_STRONG,
+        "tickColor": tokens.BORDER_STRONG,
+        "tickSize": 4,
+    },
+    "axisX": {"grid": False, "labelFlush": False},
+    "axisY": {"domain": False, "ticks": False},
+    "legend": {
+        "labelFont": tokens.SANS,
+        "labelFontSize": 12,
+        "labelColor": tokens.TEXT_SECONDARY,
+        "symbolStrokeWidth": 2,
+        "symbolSize": 140,
+        "columnPadding": 20,
+        "padding": 0,
+        "offset": 14,
+    },
+    "line": {"strokeJoin": "round", "strokeCap": "round"},
+}
+
+#: What every index this app is given is called, and so says nothing where space is short.
+_SUFFIX = " (total return)"
 
 
 def series_colour(name: str, position: int = 0) -> str:
@@ -64,30 +119,53 @@ def series_colour(name: str, position: int = 0) -> str:
     return _OTHERS[position % len(_OTHERS)]
 
 
-#: What every index this app is given is called, and so says nothing where space is short.
-_SUFFIX = " (total return)"
-
-
 def short_name(name: str) -> str:
     """An index's name without "(total return)", for a legend, a tooltip or a narrow label."""
     return name.replace(_SUFFIX, "")
 
 
-def _legend(**overrides) -> alt.Legend:
+def _legend(**overrides: Any) -> dict[str, Any]:
     """A legend under the chart, its labels shortened so three fit across a
     half-width chart: "(total return)" says nothing the reader needs here."""
-    return alt.Legend(
-        title=None,
-        orient="bottom",
-        labelLimit=0,
-        labelExpr=f"replace(datum.label, '{_SUFFIX}', '')",
+    return {
+        "title": None,
+        "orient": "bottom",
+        "labelLimit": 0,
+        "labelExpr": f"replace(datum.label, '{_SUFFIX}', '')",
         **overrides,
-    )
+    }
 
 
-def colour_scale(names: list[str]) -> alt.Scale:
+def colour_scale(names: list[str]) -> dict[str, Any]:
     """An explicit domain and range, so Vega cannot reassign colours by order."""
-    return alt.Scale(domain=names, range=[series_colour(n, i) for i, n in enumerate(names)])
+    return {"domain": names, "range": [series_colour(n, i) for i, n in enumerate(names)]}
+
+
+def _colour(field: str, names: list[str], **legend: Any) -> dict[str, Any]:
+    return {
+        "field": field,
+        "type": "nominal",
+        "scale": colour_scale(names),
+        "sort": names,
+        "legend": _legend(**legend),
+    }
+
+
+def _years() -> dict[str, Any]:
+    return {
+        "field": "date",
+        "type": "temporal",
+        "title": None,
+        "axis": {"tickCount": "year", "format": "%Y"},
+    }
+
+
+def draw(chart: dict[str, Any]) -> None:
+    """Show ``chart`` across the width of wherever it is called.
+
+    ``theme=None``: the chart states its own dress (``_CONFIG``), and Streamlit's chart
+    theme would otherwise restyle the axes and legend over it."""
+    st.vega_lite_chart(chart, width="stretch", theme=None)
 
 
 def weights_chart(
@@ -95,7 +173,7 @@ def weights_chart(
     *,
     limits: tuple[float, float] | None = None,
     until: pd.Timestamp | None = None,
-) -> alt.LayerChart:
+) -> dict[str, Any]:
     """Each named asset's share of the portfolio over time, stepping at each
     rebalance: the weights hold between rebalances, so a step is what actually
     happened, and a time axis shows the years rather than 99 date labels.
@@ -118,70 +196,114 @@ def weights_chart(
     # on the boundary between the bands whatever the assets are called.
     long["position"] = long["Asset"].map({name: i for i, name in enumerate(names)})
 
-    x = alt.X("date:T", title=None, axis=alt.Axis(tickCount="year", format="%Y"))
-
-    def y(field: str, **kwargs) -> alt.Y:
+    def y(field: str, **extra: Any) -> dict[str, Any]:
         # Every layer states the same axis: layers that left it out fell back to
         # Vega's own ticks, and the merged axis dropped half the labels.
-        return alt.Y(
-            field,
-            title=None,
-            axis=alt.Axis(format="%", values=[0, 0.2, 0.4, 0.6, 0.8, 1]),
-            scale=alt.Scale(domain=[0, 1]),
-            **kwargs,
-        )
+        return {
+            "field": field,
+            "type": "quantitative",
+            "title": None,
+            "axis": {"format": "%", "values": [0, 0.2, 0.4, 0.6, 0.8, 1]},
+            "scale": {"domain": [0, 1]},
+            **extra,
+        }
 
-    # The legend's swatches at full strength, not the bands' tint.
-    legend = _legend(symbolOpacity=1)
-    bands = (
-        alt.Chart(long)
-        .mark_area(interpolate="step-after", opacity=0.28)
-        .encode(
-            x=x,
-            y=y("Weight:Q", stack="zero"),
-            color=alt.Color("Asset:N", scale=colour_scale(names), sort=names, legend=legend),
-            order=alt.Order("position:Q", sort="ascending"),
-        )
-    )
     first = names[0]
-    boundary = (
-        alt.Chart(wide)
-        .mark_line(interpolate="step-after", strokeWidth=2, color=series_colour(first))
-        .encode(x=x, y=y(f"{first}:Q"))
-    )
+    bands = {
+        "data": {"name": "shares"},
+        "mark": {"type": "area", "interpolate": "step-after", "opacity": 0.16},
+        "encoding": {
+            "x": _years(),
+            "y": y("Weight", stack="zero"),
+            # The legend's swatches at full strength, not the bands' tint.
+            "color": _colour("Asset", names, symbolOpacity=1, symbolType="square"),
+            "order": {"field": "position", "type": "quantitative", "sort": "ascending"},
+        },
+    }
+    boundary = {
+        "data": {"name": "weights"},
+        "mark": {
+            "type": "line",
+            "interpolate": "step-after",
+            "strokeWidth": 2,
+            "color": series_colour(first),
+        },
+        "encoding": {"x": _years(), "y": y(first)},
+    }
     # A step line only answers a hover within a pixel of one of its corners, so an
     # unseen point per rebalance takes it: the nearest rebalance to the pointer is
     # marked and shows its date and every asset's weight.
-    nearest = alt.selection_point(
-        nearest=True, on="pointerover", clear="pointerout", empty=False, encodings=["x"]
-    )
-    points = (
-        alt.Chart(wide)
-        .mark_point(filled=True, size=50, color=series_colour(first))
-        .encode(
-            x=x,
-            y=y(f"{first}:Q"),
-            opacity=alt.condition(nearest, alt.value(1), alt.value(0)),
-            tooltip=[
-                alt.Tooltip("date:T", title="From", format="%d %b %Y"),
+    points = {
+        "data": {"name": "weights"},
+        "name": "rebalances",
+        "mark": {"type": "point", "filled": True, "size": 60, "color": series_colour(first)},
+        "encoding": {
+            "x": _years(),
+            "y": y(first),
+            "opacity": {"condition": {"param": "nearest", "value": 1, "empty": False}, "value": 0},
+            "tooltip": [
+                {"field": "date", "type": "temporal", "title": "From", "format": "%d %b %Y"},
                 *(
-                    alt.Tooltip(f"{name}:Q", title=short_name(name), format=".0%")
+                    {
+                        "field": name,
+                        "type": "quantitative",
+                        "title": short_name(name),
+                        "format": ".0%",
+                    }
                     for name in names
                 ),
             ],
-        )
-        .add_params(nearest)
-    )
+        },
+    }
     layers = [bands, boundary, points]
+    datasets = {"shares": long, "weights": wide}
     if limits is not None:
-        bounds = pd.DataFrame({"Limit": sorted(set(limits))})
+        datasets["limits"] = pd.DataFrame({"Limit": sorted(set(limits))})
         layers.insert(
             2,
-            alt.Chart(bounds)
-            .mark_rule(strokeDash=[4, 4], strokeWidth=1, color=BENCHMARK)
-            .encode(y=y("Limit:Q")),
+            {
+                "data": {"name": "limits"},
+                "mark": {
+                    "type": "rule",
+                    "strokeDash": [4, 4],
+                    "strokeWidth": 1,
+                    "color": tokens.MUTED,
+                },
+                "encoding": {"y": y("Limit")},
+            },
         )
-    return alt.layer(*layers).properties(height=280, usermeta=_CANVAS)
+    return {
+        "config": _CONFIG,
+        "height": WEIGHTS_HEIGHT,
+        "layer": layers,
+        "params": [
+            {
+                "name": "nearest",
+                "select": {
+                    "type": "point",
+                    "nearest": True,
+                    "on": "pointerover",
+                    "clear": "pointerout",
+                    "encodings": ["x"],
+                },
+                "views": ["rebalances"],
+            }
+        ],
+        "usermeta": _CANVAS,
+        "datasets": datasets,
+    }
+
+
+def _extremes(values: np.ndarray, starts: np.ndarray, stretch: np.ndarray) -> np.ndarray:
+    """The row of the highest figure in each stretch of ``values`` (``starts`` are the
+    stretches' first rows, ``stretch`` each row's stretch), leaving out a stretch with
+    no figure at all. Pass ``-values`` for the lowest."""
+    filled = np.where(np.isnan(values), -np.inf, values)
+    highest = np.maximum.reduceat(filled, starts)
+    at_highest = np.flatnonzero((filled == highest[stretch]) & np.isfinite(filled))
+    # The first row at its stretch's highest: ``at_highest`` is in row order.
+    _, first = np.unique(stretch[at_highest], return_index=True)
+    return at_highest[first]
 
 
 def _drawn(wide: pd.DataFrame, names: list[str]) -> pd.DataFrame:
@@ -198,24 +320,28 @@ def _drawn(wide: pd.DataFrame, names: list[str]) -> pd.DataFrame:
     if len(wide) <= MAX_DRAWN_ROWS or stretches < 1:
         return wide
     edges = np.linspace(0, len(wide), stretches + 1).astype(int)
-    keep = {0, len(wide) - 1}
+    starts = edges[:-1]
+    stretch = np.repeat(np.arange(stretches), np.diff(edges))
+    keep = [np.array([0, len(wide) - 1])]
     for name in names:
         values = wide[name].to_numpy(dtype=float)
-        for start, end in zip(edges[:-1], edges[1:], strict=True):
-            stretch = values[start:end]
-            if np.isnan(stretch).all():
-                continue  # the line has no figure anywhere in this stretch
-            keep.add(start + int(np.nanargmin(stretch)))
-            keep.add(start + int(np.nanargmax(stretch)))
-    return wide.iloc[sorted(keep)]
+        keep.append(_extremes(values, starts, stretch))
+        keep.append(_extremes(-values, starts, stretch))
+    return wide.iloc[np.unique(np.concatenate(keep))]
 
 
 def line_chart(
-    paths: pd.DataFrame, value: str, *, percent: bool = True, title: str | None = None
-) -> alt.LayerChart:
+    paths: pd.DataFrame,
+    value: str,
+    *,
+    percent: bool = True,
+    title: str | None = None,
+    height: int = LINE_HEIGHT,
+) -> dict[str, Any]:
     """A line per column of ``paths`` on one time axis, in percent unless told it is a
     ratio. Hovering or tapping anywhere marks that day on every line and shows its date
-    and each line's value.
+    and each line's value. ``title`` labels the vertical axis; without one the axis is
+    left to the heading the page puts above the chart.
 
     The chart is sent one row per day and unfolded into its lines in the browser, and
     a hover lands on one unseen target per day. A long chart is thinned to what can be
@@ -226,25 +352,87 @@ def line_chart(
     four charts, every time their figures changed."""
     names = [str(c) for c in paths.columns]
     wide = paths.set_axis(names, axis=1).rename_axis("date").reset_index()
-    x = alt.X("date:T", title=None, axis=alt.Axis(tickCount="year", format="%Y"))
-    y = alt.Y(
-        f"{value}:Q", title=title or value, axis=alt.Axis(format="%" if percent else ".1f")
-    )
-    colour = alt.Color("Series:N", scale=colour_scale(names), sort=names, legend=_legend())
+    ours = [name for name in names if series_colour(name) == OPTIMISED]
+    y = {
+        "field": value,
+        "type": "quantitative",
+        "title": title,
+        "axis": {
+            "format": "%" if percent else ".1f",
+            "tickCount": 6,
+            # The zero line a little stronger than the rest: a return, a drawdown and
+            # a Sharpe ratio are all read against it.
+            "gridColor": {
+                "condition": {"test": "datum.value === 0", "value": tokens.BORDER_STRONG},
+                "value": tokens.BORDER,
+            },
+        },
+    }
+    colour = _colour("Series", names, symbolType="stroke")
     figure = ".2%" if percent else ".2f"
-    unfold = {"fold": names, "as_": ["Series", value]}
-    lines = (
-        alt.Chart(_drawn(wide, names))
-        .transform_fold(**unfold)
-        .mark_line()
-        .encode(x=x, y=y, color=colour)
-    )
+    unfold = {"fold": names, "as": ["Series", value]}
+    hovering = {"filter": {"param": "nearest", "empty": False}}
+    lines = {
+        "data": {"name": "drawn"},
+        "transform": [unfold],
+        "mark": {"type": "line"},
+        "encoding": {
+            "x": _years(),
+            "y": y,
+            "color": colour,
+            # The app's own line a little heavier than the ones it is read against.
+            "strokeWidth": {
+                "condition": {
+                    "test": {"field": "Series", "oneOf": ours},
+                    "value": 2,
+                },
+                "value": 1.5,
+            },
+        },
+    }
     # Vega only shows a line's tooltip within a pixel or two of one of its days, too
     # fine to tap. So the day nearest the pointer, wherever in the chart that is, is
     # the one marked: a rule down it, a dot on each line, every line's value shown.
-    nearest = alt.selection_point(
-        nearest=True, on="pointerover", clear="pointerout", fields=["date"], empty=False
-    )
+    crosshair = {
+        "data": {"name": "hover"},
+        "transform": [hovering],
+        "mark": {"type": "rule", "color": tokens.MUTED, "strokeWidth": 1},
+        "encoding": {"x": _years()},
+    }
+    dots = {
+        "data": {"name": "hover"},
+        "transform": [unfold, hovering],
+        "mark": {
+            "type": "point",
+            "filled": True,
+            "size": 56,
+            "opacity": 1,
+            # A ring in the page's colour, so a dot stays whole where lines cross.
+            "stroke": tokens.BG,
+            "strokeWidth": 2,
+        },
+        "encoding": {"x": _years(), "y": y, "color": colour},
+    }
+    targets = {
+        "data": {"name": "hover"},
+        "name": "days",
+        "mark": {"type": "point", "opacity": 0},
+        "encoding": {
+            "x": _years(),
+            "tooltip": [
+                {"field": "date", "type": "temporal", "title": "Date", "format": "%d %b %Y"},
+                *(
+                    {
+                        "field": name,
+                        "type": "quantitative",
+                        "title": short_name(name),
+                        "format": figure,
+                    }
+                    for name in names
+                ),
+            ],
+        },
+    }
     # No more targets than a chart has room to tell apart: finding which of four
     # thousand days is nearest the pointer was the rest of what the browser did with
     # each chart. A hover lands on the nearest day kept and shows that day's own
@@ -253,28 +441,23 @@ def line_chart(
     kept = wide.iloc[::every]
     if len(wide) and kept.index[-1] != wide.index[-1]:
         kept = pd.concat([kept, wide.iloc[[-1]]])  # the latest day can always be read
-    hovered = alt.Chart(kept)
-    targets = (
-        hovered.mark_point(opacity=0)
-        .encode(
-            x=x,
-            tooltip=[
-                alt.Tooltip("date:T", title="Date", format="%d %b %Y"),
-                *(
-                    alt.Tooltip(f"{name}:Q", title=short_name(name), format=figure)
-                    for name in names
-                ),
-            ],
-        )
-        .add_params(nearest)
-    )
-    crosshair = (
-        hovered.mark_rule(color=BENCHMARK, strokeWidth=1).encode(x=x).transform_filter(nearest)
-    )
-    dots = (
-        hovered.transform_fold(**unfold)
-        .transform_filter(nearest)
-        .mark_point(filled=True, size=40, opacity=1)
-        .encode(x=x, y=y, color=colour)
-    )
-    return alt.layer(lines, crosshair, dots, targets).properties(usermeta=_CANVAS)
+    return {
+        "config": _CONFIG,
+        "height": height,
+        "layer": [lines, crosshair, dots, targets],
+        "params": [
+            {
+                "name": "nearest",
+                "select": {
+                    "type": "point",
+                    "nearest": True,
+                    "on": "pointerover",
+                    "clear": "pointerout",
+                    "fields": ["date"],
+                },
+                "views": ["days"],
+            }
+        ],
+        "usermeta": _CANVAS,
+        "datasets": {"drawn": _drawn(wide, names), "hover": kept},
+    }
