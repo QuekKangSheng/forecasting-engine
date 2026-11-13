@@ -1290,6 +1290,74 @@ def test_a_failing_model_reports_its_error_after_a_background_run(monkeypatch):
     assert set(_stored_runs(app)) == {NAIVE}
 
 
+def _full_disk_once(monkeypatch) -> None:
+    """The first save fails as a full disk would; every later one is written."""
+    save, saves = model_jobs._save, []
+
+    def save_unless_first(key, result):
+        saves.append(key)
+        if len(saves) == 1:
+            raise OSError(28, "No space left on device")
+        save(key, result)
+
+    monkeypatch.setattr(model_jobs, "_save", save_unless_first)
+
+
+def test_a_result_that_cannot_be_saved_fails_its_row_with_the_reason(stub_ml, monkeypatch):
+    _full_disk_once(monkeypatch)  # the baseline, the first model the Run fits
+    app = _press_run(_untick(_page(), "Polynomial", "Fama-French 5"))
+
+    assert not app.exception
+    errors = " ".join(e.value for e in app.error)
+    assert f"{NAIVE}: fitted, but its result could not be saved" in errors
+    assert "No space left on device" in errors
+    assert set(_stored_runs(app)) == {"Machine Learning"}
+    failed = [r for r in run_history.list_runs() if r.status == "failed"]
+    assert [r.model_name for r in failed] == [NAIVE]
+    assert "No space left on device" in failed[0].error
+
+
+def test_a_failed_save_does_not_stop_the_worker_or_the_run_queued_behind_it(monkeypatch):
+    """A save that failed used to kill the one worker thread: that Run showed
+    "fitting" for ever, its Run button stayed disabled, and nothing queued behind it
+    was ever fitted, until the app was restarted."""
+    monkeypatch.setattr(model_jobs, "INLINE", False)
+    _full_disk_once(monkeypatch)
+    queued = threading.Event()
+
+    def first():  # holds the worker until the second Run is queued behind this one
+        queued.wait(10)
+        return 1.0
+
+    ahead = model_jobs.submit(
+        "ahead",
+        "S&P 500",
+        {NAIVE: first, "Other": lambda: 2.0},
+        {NAIVE: "k1", "Other": "k2"},
+        expected_errors=(),
+    )
+    behind = model_jobs.submit(
+        "behind", "US Aggregate Bond", {NAIVE: lambda: 3.0}, {NAIVE: "k3"}, expected_errors=()
+    )
+    queued.set()
+    _wait_for_runs(timeout=10)
+
+    assert ahead.status == {NAIVE: model_jobs.FAILED, "Other": model_jobs.DONE}
+    assert "No space left on device" in ahead.errors[NAIVE]
+    assert behind.status == {NAIVE: model_jobs.DONE}
+    assert model_jobs.load("k3") == 3.0
+
+
+def test_a_result_that_cannot_be_pickled_is_reported_not_raised():
+    job = model_jobs.submit(
+        "unpicklable", "S&P 500", {NAIVE: threading.Lock}, {NAIVE: "key"}, expected_errors=()
+    )
+
+    assert job.status[NAIVE] == model_jobs.FAILED
+    assert "could not be saved" in job.errors[NAIVE]
+    assert "TypeError" in job.errors[NAIVE]
+
+
 def test_run_all_targets_queues_every_tabs_ticked_models(stub_ml):
     app = _page(bond=True)
     for box in [c for c in app.checkbox if c.label in ("Polynomial", "Fama-French 5")]:
