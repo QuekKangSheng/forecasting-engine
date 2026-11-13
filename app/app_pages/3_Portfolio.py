@@ -282,21 +282,54 @@ how_set = [
     f"{breakdown.unconstrained:.0%}{cap}{unreliable}."
 ]
 st.caption(how_set[0])
+
+
+def _band(width: float) -> str:
+    """A band's half-width, with a second decimal where one would round it to nothing."""
+    return f"±{width:.1%}" if width >= 0.0005 else f"±{width:.2%}"
+
+
 no_trade_lines = []
 if breakdown.held:
     no_trade_lines.append(
         f"Held: within the no-trade band. Since the last rebalance the portfolio had "
-        f"drifted to {breakdown.drifted:.1%} {equity_name}, within the ±{breakdown.band:.1%} "
+        f"drifted to {breakdown.drifted:.1%} {equity_name}, within the {_band(breakdown.band)} "
         f"band around it, so it was left as it was rather than pay to trade."
     )
-elif breakdown.drifted is not None:
+elif breakdown.drifted is not None and not lower <= breakdown.drifted <= upper:
+    # Outside the limits the band doesn't apply: it goes back to the nearest limit.
     no_trade_lines.append(
         f"Since the last rebalance the portfolio had drifted to {breakdown.drifted:.1%} "
-        f"{equity_name}. Trading costs set a no-trade band of ±{breakdown.band:.1%} around "
+        f"{equity_name}, outside the {lower:.0%}–{upper:.0%} limits, so it was traded back "
+        f"to the nearest limit, {breakdown.equity:.1%}."
+    )
+elif breakdown.drifted is not None and breakdown.band > 0:
+    no_trade_lines.append(
+        f"Since the last rebalance the portfolio had drifted to {breakdown.drifted:.1%} "
+        f"{equity_name}. Trading costs set a no-trade band of {_band(breakdown.band)} around "
         f"it, so it traded only to the band's edge, {breakdown.equity:.1%}."
     )
+elif breakdown.drifted is not None:
+    # No band to stop at: "a band of ±0.0%" and "the band's edge" described nothing.
+    no_trade_lines.append(
+        f"Since the last rebalance the portfolio had drifted to {breakdown.drifted:.1%} "
+        f"{equity_name}. There is no no-trade band at this rebalance, so it traded all the "
+        f"way back to its target, {breakdown.equity:.1%}."
+    )
 after_first = list(breakdowns.values())[1:]
-if after_first:
+if after_first and not any(b.band > 0 for b in after_first):
+    # Saying "0 of 98 were held by the no-trade band" would suggest there was one.
+    why = (
+        f"level {risk_level} goes back to its lowest-risk mix whatever that costs"
+        if risk_level == optimize.RISK_LEVELS[-1]
+        else "the band is as wide as the weight a forecast can move per unit of trading "
+        "cost, and here that is nothing"
+    )
+    no_trade_lines.append(
+        f"None of the {len(after_first)} rebalances after the first had a no-trade band, so "
+        f"each traded to its target: {why}."
+    )
+elif after_first:
     held = sum(b.held for b in after_first)
     no_trade_lines.append(
         f"{held} of {len(after_first)} rebalances after the first ({held / len(after_first):.0%}) "

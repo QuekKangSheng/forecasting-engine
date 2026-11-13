@@ -660,6 +660,22 @@ def test_the_no_trade_band_is_explained_with_the_share_of_rebalances_it_held():
     assert "Held: within the no-trade band." in captions or "no-trade band of ±" in captions
 
 
+def test_the_lowest_risk_level_says_it_has_no_band_rather_than_one_of_zero_width():
+    """Level 5's band is nothing wide. The page used to say the portfolio "traded only
+    to the band's edge" of "a no-trade band of ±0.0%", and that 0 of its rebalances
+    were held by it."""
+    app = _happy_page()
+
+    app.select_slider[0].set_value(5).run()
+
+    assert not app.exception
+    captions = _captions(app)
+    assert "There is no no-trade band at this rebalance" in captions
+    assert "had a no-trade band, so each traded to its target" in captions
+    assert "±0.0%" not in captions and "band's edge" not in captions
+    assert "were held by the no-trade band." not in captions
+
+
 # --- FYP-20 / FYP-52: is the outperformance statistically significant? --------------
 
 _VERDICTS = (
