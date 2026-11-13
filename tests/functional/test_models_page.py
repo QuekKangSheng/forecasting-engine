@@ -1404,7 +1404,9 @@ def test_the_directional_check_replays_the_whole_period_with_no_window_to_set():
     assert not [n for n in app.number_input if "Window" in n.label]
     captions = _captions(app)
     assert "all 100 out-of-sample trading days" in captions
-    assert "scroll to zoom, drag to pan and double-click to reset" in captions
+    assert "Narrow the window with the slider" in captions
+    # The chart neither zooms nor pans, so the caption must not tell the reader to.
+    assert "scroll to zoom" not in captions
 
 
 def test_a_window_picked_with_the_slider_recomputes_every_figure():

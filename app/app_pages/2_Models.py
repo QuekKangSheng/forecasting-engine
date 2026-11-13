@@ -1200,8 +1200,7 @@ def _show_directional(
         f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: {span}, {pnl.calls} "
         f"calls ({steps}). Gross of transaction costs; cash earns nothing. Narrow the "
         "window with the slider: every figure and the chart are recomputed for it, starting "
-        "from zero on its first day. On the chart, scroll to zoom, drag to pan and "
-        "double-click to reset."
+        "from zero on its first day."
     )
     metric_cols = st.columns(4)
     metric_cols[0].metric(
