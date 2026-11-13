@@ -1347,9 +1347,11 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if RESEARCH in runs:
         st.caption(f"{RESEARCH}: {RESEARCH_CAPTION}")
 
+    # What each model fitted, together and straight under the table that scores it.
     # The fitted function is the deliverable the sponsor can use directly, so the one
-    # that matters (the active polynomial, else the derived one) is shown open, right
-    # under the table, instead of in the second of five closed expanders below.
+    # that matters (the active polynomial, else the derived one) is the one open. The
+    # others sit closed beside it rather than further down, past the chart and the
+    # picker, where a reader had to go looking for the rest of the set.
     polynomials = [name for name in (DERIVED, RESEARCH, USER) if name in runs]
     current = active_model.get_active_model(role)
     featured = (
@@ -1358,21 +1360,17 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         else (polynomials[0] if polynomials else None)
     )
     for name in polynomials:
-        if name == featured:
-            _show_polynomial_expander(name, runs[name], target_name, expanded=True)
-    _show_directional(role, runs, target_name)
-    _show_active_picker(role, runs, target_name, settings)
-
-    _show_screening(runs, target_name)
-    for name in polynomials:
-        if name != featured:
-            _show_polynomial_expander(name, runs[name], target_name, expanded=False)
+        _show_polynomial_expander(name, runs[name], target_name, expanded=name == featured)
     if FF5 in runs and role == TargetRole.EQUITY:
         with st.expander(f"Fama-French 5 · {target_name}"):
             _show_famafrench(runs[FF5])
     if ML in runs:
         with st.expander(f"Machine learning · {target_name}"):
             _show_ml(runs[ML])
+    _show_screening(runs, target_name)
+
+    _show_directional(role, runs, target_name)
+    _show_active_picker(role, runs, target_name, settings)
 
 
 roles = [role for role in TargetRole if role in target_columns]

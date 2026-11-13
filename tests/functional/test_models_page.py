@@ -442,6 +442,39 @@ def test_a_rank_ics_standard_errors_are_a_hover_not_a_footnote_in_the_cell():
     assert "(s.e. (h−1 lags)" not in re.sub(r'title="[^"]*"', "", table)
 
 
+def _in_page_order(block) -> list[str]:
+    """Each expander's label and each widget's label under ``block``, top to bottom."""
+    found = []
+    for child in block.children.values():
+        if child.type in ("expander", "selectbox", "slider", "button"):
+            found.append(child.label)
+        if hasattr(child, "children"):
+            found += _in_page_order(child)
+    return found
+
+
+def test_every_models_details_sit_together_between_the_table_and_the_direction_check():
+    """One model's details used to open under the table and the rest lay below the
+    direction chart and the active-model picker, so the set read as split in two."""
+    forecast, realised = _oos([0.01, -0.01] * 50), _oos([0.02, -0.03] * 50)
+    result = _with_forecast(forecast, realised)
+    app = _page({EQUITY: {POLY: _polynomial_run(result), "Machine Learning": _ml_run(result)}})
+
+    order = _in_page_order(app.main)
+
+    details = [
+        f"{POLY} · S&P 500",
+        "Machine learning · S&P 500",
+        "Signal screening · S&P 500",
+    ]
+    start = order.index(details[0])
+    assert order[start : start + len(details)] == details
+    assert order.index("Run") < start
+    assert order.index(details[-1]) < order.index("Forecasts from") < order.index(
+        "Model to set active"
+    )
+
+
 def test_the_derived_function_is_shown_open_under_the_results():
     app = _page({EQUITY: {POLY: _polynomial_run(), "Machine Learning": _ml_run()}})
 
