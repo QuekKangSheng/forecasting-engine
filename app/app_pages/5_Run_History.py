@@ -107,17 +107,22 @@ def _model_fits() -> None:
             "Code": table["code_version"].fillna("—"),
         }
     )
+    # Formatted through the frame's own styler so a figure a run doesn't have (the
+    # naive baseline has no gate figures, a failed run has none at all) is a dash. A
+    # number column's format left those cells reading "None".
+    figures = {
+        "Seconds": "{:.1f}",
+        "Signal Rank IC": "{:+.3f}",
+        "t": "{:.2f}",
+        "OOS Rank IC": "{:+.3f}",
+        "RMSE": "{:.4f}",
+    }
     st.dataframe(
-        shown,
+        shown.style.format(figures, na_rep="—"),
         hide_index=True,
         width="stretch",
         column_config={
             "Started": st.column_config.DatetimeColumn(format="D MMM YYYY, HH:mm"),
-            "Seconds": st.column_config.NumberColumn(format="%.1f"),
-            "Signal Rank IC": st.column_config.NumberColumn(format="%+.3f"),
-            "t": st.column_config.NumberColumn(format="%.2f"),
-            "OOS Rank IC": st.column_config.NumberColumn(format="%+.3f"),
-            "RMSE": st.column_config.NumberColumn(format="%.4f"),
             "Data": st.column_config.TextColumn(help=glossary.term("Dataset hash")),
             "Active": st.column_config.TextColumn(
                 help="The target whose active model this run produced, if any."
