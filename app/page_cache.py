@@ -104,7 +104,9 @@ def _schedule_inputs(
     )
 
 
-@st.cache_data(show_spinner=False, max_entries=_SOLVE_ENTRIES)
+# The one slow step a visitor can meet, the first time a level is solved on new data
+# or models: it says what it is doing rather than leaving the page half drawn.
+@st.cache_data(show_spinner="Solving the allocation…", max_entries=_SOLVE_ENTRIES)
 def schedules(
     signals: Mapping[TargetRole, pd.Series],
     baselines: Mapping[TargetRole, pd.Series],

@@ -21,6 +21,7 @@ import streamlit as st
 from streamlit.delta_generator import DeltaGenerator
 
 import bloomberg_extraction_panel
+import forecasting_engine
 import portfolio_summary
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
@@ -28,6 +29,7 @@ from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
 from forecasting_engine.store import active_model
+from forecasting_engine.store.runs import code_version
 
 ROLE_NAMES = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
 
@@ -119,10 +121,22 @@ def frame(run_page: Callable[[], None]) -> None:
     drawing happens however the page ends, ``st.stop()`` included."""
     slot = st.empty()
     render(slot)
+    st.sidebar.markdown(sidebar_foot(), unsafe_allow_html=True)
     try:
         run_page()
     finally:
         render(slot)
+
+
+def sidebar_foot() -> str:
+    """Which build is running, at the foot of the sidebar, as HTML: the first thing
+    asked when two people see different figures."""
+    build = code_version() or "not a git checkout"
+    return (
+        '<div class="fe-side-foot">'
+        f"<div>Version <b>{html.escape(forecasting_engine.__version__)}</b></div>"
+        f"<div>Build <b>{html.escape(build)}</b></div></div>"
+    )
 
 
 def render(slot: DeltaGenerator | None = None) -> None:

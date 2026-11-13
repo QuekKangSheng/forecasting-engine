@@ -1406,5 +1406,6 @@ tabs = st.tabs([f"{ROLE_NAMES[r]} · {label(target_columns[r])}" for r in roles]
 for role, tab in zip(roles, tabs, strict=True):
     with tab:
         _render_tab(role, target_columns[role])
+ui.page_link("portfolio", "Next · 03 Portfolio Optimizer")
 if submitted and not model_jobs.INLINE:
     st.rerun()

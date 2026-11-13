@@ -159,6 +159,17 @@ baselines = {
 equity_name = label(target_columns[EQUITY])
 bond_name = label(target_columns[BOND])
 
+# The page is long, so its sections stay one click away under the status bar.
+ui.section_nav(
+    [
+        ("Allocation", "allocation"),
+        ("Performance", "performance"),
+        ("Significance", "significance"),
+        ("Tail risk", "tail-risk"),
+        ("Monte Carlo", "monte-carlo"),
+    ]
+)
+
 # --- FYP-53: the models every result below comes from ------------------------------
 # Both active models are read afresh on every run, so one set active on the Models
 # page re-solves the whole page on its next run. Naming them first says which.
@@ -249,7 +260,7 @@ if schedule.empty:
 
 latest_date = schedule.index[-1]
 latest = schedule.loc[latest_date]
-ui.section("Allocation")
+ui.section("Allocation", anchor="allocation")
 st.markdown(
     ui.eyebrow(f"Latest weights, {latest_date:%d %b %Y}", f"As of {latest_date:%d %b %Y}"),
     unsafe_allow_html=True,
@@ -257,12 +268,28 @@ st.markdown(
 # The weights first, then the figures that say whether to trust them. Those come
 # from the backtest further down, so their place is held here and filled there.
 # Wide enough for an index's short name on one line at a 1280px window.
-cols = st.columns([1.2, 1.2, 5.6], gap="medium")
-# Without "(total return)": a metric cuts a label that doesn't fit off with an ellipsis,
-# and the full names are in the Active models rows above.
-cols[0].metric(charts.short_name(equity_name), f"{latest[EQUITY]:.0%}")
-cols[1].metric(charts.short_name(bond_name), f"{latest[BOND]:.0%}")
-headline_slot = cols[2].empty()
+weights_side, figures_side = st.columns([2.6, 5.4], gap="medium")
+with weights_side:
+    pair = st.columns(2)
+    # Without "(total return)": a metric cuts a label that doesn't fit off with an
+    # ellipsis, and the full names are in the Active models rows above.
+    pair[0].metric(charts.short_name(equity_name), f"{latest[EQUITY]:.0%}")
+    pair[1].metric(charts.short_name(bond_name), f"{latest[BOND]:.0%}")
+    # The two weights as one bar: the split is seen before either number is read, and
+    # the ticks show whether the weight is sitting on one of its limits.
+    st.markdown(
+        ui.split_bar(
+            [
+                (charts.short_name(equity_name), float(latest[EQUITY]), charts.EQUITY_INDEX),
+                (charts.short_name(bond_name), float(latest[BOND]), charts.BOND_INDEX),
+            ],
+            limits=(lower, upper),
+            # The two figures above it are its labels, in the same order.
+            labelled=False,
+        ),
+        unsafe_allow_html=True,
+    )
+headline_slot = figures_side.empty()
 
 latest_signal = optimize.expected_returns(pd.DatetimeIndex([latest_date]), signals).iloc[0]
 breakdown = breakdowns[latest_date]
@@ -363,10 +390,11 @@ with weights_col:
             until=min(series.index[-1] for series in prices.values()),
         )
     )
-    st.caption(
-        f"The line is {equity_name}'s weight and the rest is {bond_name}; each step is a "
-        f"rebalance. Dashed lines mark the {lower:.0%} and {upper:.0%} limits."
-    )
+    with ui.note("How to read this", "weights"):
+        st.caption(
+            f"The line is {equity_name}'s weight and the rest is {bond_name}; each step is "
+            f"a rebalance. Dashed lines mark the {lower:.0%} and {upper:.0%} limits."
+        )
 
 
 # --- FYP-19: the optimised allocation against the equal-weight benchmark -----------
@@ -519,15 +547,18 @@ with volatility_col:
         charts.draw(
             charts.line_chart(volatility, "Rolling volatility", height=charts.WEIGHTS_HEIGHT)
         )
-        st.caption(
-            f"Annualised standard deviation of the previous {ROLLING_VOL_WINDOW} trading "
-            "days' returns, at each day. Each index is held alone, with no trading costs; "
-            f"the optimised portfolio is {basis_label.lower()}, the same basis as the "
-            "table below."
-        )
+        with ui.note("Method", "volatility"):
+            st.caption(
+                f"Annualised standard deviation of the previous {ROLLING_VOL_WINDOW} trading "
+                "days' returns, at each day. Each index is held alone, with no trading "
+                f"costs; the optimised portfolio is {basis_label.lower()}, the same basis as "
+                "the table below."
+            )
 
 ui.section(
-    "Performance against the equal-weight benchmark", glossary.term("Equal-weight benchmark")
+    "Performance against the equal-weight benchmark",
+    glossary.term("Equal-weight benchmark"),
+    anchor="performance",
 )
 st.caption(
     f"Backtest {backtest.start:%d %b %Y} to {backtest.end:%d %b %Y}. The optimised "
@@ -559,14 +590,24 @@ header = "".join(
     )
 )
 no_forecast_rows = comparison_rows(no_forecast_backtest, basis)
+
+
+def _difference_cell(difference: str) -> str:
+    """The difference, green where it favours the optimised portfolio and red where
+    it doesn't. Its sign says the same, so the colour is never the only sign of it."""
+    kind = {"+": ' class="fe-pos"', "-": ' class="fe-neg"', "−": ' class="fe-neg"'}
+    return f"<td{kind.get(difference.strip()[:1], '')}>{difference}</td>"
+
+
 body = "".join(
     f"<tr>{_metric_cell(row.metric)}<td>{row.optimised}</td><td>{row.baseline}</td>"
-    f"<td>{level_row.optimised}</td><td>{row.difference}</td></tr>"
+    f"<td>{level_row.optimised}</td>{_difference_cell(row.difference)}</tr>"
     for row, level_row in zip(comparison_rows(backtest, basis), no_forecast_rows, strict=True)
 )
+# Figures against the right edge of their columns, the optimised portfolio's marked.
 st.markdown(
-    f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{header}</tr></thead>'
-    f"<tbody>{body}</tbody></table></div>",
+    '<div class="fe-table-wrap fe-num fe-ours2"><table class="fe-table"><thead>'
+    f"<tr>{header}</tr></thead><tbody>{body}</tbody></table></div>",
     unsafe_allow_html=True,
 )
 st.caption(
@@ -589,12 +630,13 @@ with drawdown_col:
     st.markdown(ui.eyebrow("Drawdown", glossary.term("Drawdown")), unsafe_allow_html=True)
     drawdowns = drawdown_paths(backtest, basis, index_names)
     charts.draw(charts.line_chart(drawdowns, "Drawdown"))
-    st.caption(
-        "Fall from the highest value reached so far, at each day, counting the start of "
-        "the backtest as the first high. Each index is held alone, with no trading costs; "
-        f"the optimised portfolio is {basis_label.lower()}, and its lowest point is the "
-        "max drawdown in the table above."
-    )
+    with ui.note("Method", "drawdown"):
+        st.caption(
+            "Fall from the highest value reached so far, at each day, counting the start "
+            "of the backtest as the first high. Each index is held alone, with no trading "
+            f"costs; the optimised portfolio is {basis_label.lower()}, and its lowest point "
+            "is the max drawdown in the table above."
+        )
 
 # --- FYP-279 / FYP-280: how risk-adjusted return has moved over the backtest ----------
 
@@ -621,16 +663,20 @@ with sharpe_col:
                 title=f"Rolling Sharpe, {ROLLING_SHARPE_WINDOW}-day window",
             )
         )
-        st.caption(
-            f"Annualised Sharpe of the previous {ROLLING_SHARPE_WINDOW} trading days' "
-            "returns, at each day. Each index is held alone, with no trading costs; the "
-            f"optimised portfolio is {basis_label.lower()}, the same basis as the table above."
-        )
+        with ui.note("Method", "sharpe"):
+            st.caption(
+                f"Annualised Sharpe of the previous {ROLLING_SHARPE_WINDOW} trading days' "
+                "returns, at each day. Each index is held alone, with no trading costs; the "
+                f"optimised portfolio is {basis_label.lower()}, the same basis as the table "
+                "above."
+            )
 
 # --- FYP-20 / FYP-52: is the outperformance more than noise? ------------------------
 
 significance = significance_summary(backtest, basis)
-ui.section("Is the outperformance genuine?", glossary.term("Spread t-statistic"))
+ui.section(
+    "Is the outperformance genuine?", glossary.term("Spread t-statistic"), anchor="significance"
+)
 st.markdown(
     ui.status_row(
         "Spread t-statistic",
@@ -670,7 +716,11 @@ def _var95(portfolio: str) -> float:
 net_value = forecast_value_summary(backtest, no_forecast_backtest, "net")
 net_optimised = backtest.metrics[("optimised", "net")]
 net_baseline = backtest.metrics[("baseline", "net")]
-behind = net_optimised.sharpe < net_baseline.sharpe
+# Each figure beside what it is measured against: the gap to the 50/50 benchmark, with
+# an arrow for its direction and green or red for whether that direction is the good
+# one. For the Sharpe ratio that is up; for a loss it is down.
+sharpe_gap = net_optimised.sharpe - net_baseline.sharpe
+var_gap = _var95("optimised") - _var95("baseline")
 headline_slot.markdown(
     ui.strip(
         [
@@ -678,8 +728,8 @@ headline_slot.markdown(
             (
                 "Sharpe after costs",
                 f"{net_optimised.sharpe:.2f}",
-                f"{net_baseline.sharpe:.2f} for 50/50"
-                + (" · behind the benchmark" if behind else ""),
+                ui.delta(sharpe_gap, f"{abs(sharpe_gap):.2f}")
+                + f" vs {net_baseline.sharpe:.2f} for 50/50",
             ),
             (
                 "Forecast value after costs",
@@ -689,7 +739,8 @@ headline_slot.markdown(
             (
                 "1-day VaR 95%",
                 f"{_var95('optimised'):.2%}",
-                f"{_var95('baseline'):.2%} for 50/50",
+                ui.delta(var_gap, f"{abs(var_gap) * 100:.2f} pts", higher_is_better=False)
+                + f" vs {_var95('baseline'):.2%} for 50/50",
             ),
         ],
         inline=True,
@@ -802,6 +853,7 @@ ui.section(
     glossary.term("Historical tail risk"),
     note=f"Methods: {lozenges}"
     + ("" if MONTE_CARLO in ran else " · run the simulation below to fill the Monte Carlo rows"),
+    anchor="tail-risk",
 )
 
 
@@ -831,12 +883,12 @@ tail_body = "".join(
     for row in rows_by_method
 )
 st.markdown(
-    f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{tail_header}</tr>'
-    f"</thead><tbody>{tail_body}</tbody></table></div>",
+    '<div class="fe-table-wrap fe-num3 fe-ours3"><table class="fe-table"><thead>'
+    f"<tr>{tail_header}</tr></thead><tbody>{tail_body}</tbody></table></div>",
     unsafe_allow_html=True,
 )
 tail = backtest.tail_risk[("optimised", basis)]
-st.caption(
+tail_caption = (
     f"{basis_label}, over the same {tail.days:,} trading days as the table above. VaR and "
     "CVaR are one-day losses read from the realised returns, shown as positive numbers: "
     "lower is better. Max drawdown is as in the table above. Each "
@@ -856,6 +908,9 @@ st.caption(
         else "."
     )
 )
+# Seven sentences on how the table was made: wanted once, so kept one click away.
+with ui.note("How to read this table", "tail"):
+    st.caption(tail_caption)
 
 
 # --- FYP-36: Monte Carlo VaR, CVaR and drawdown over the next horizon ---------------
@@ -874,6 +929,7 @@ SIMULATED_TERMS = {
 ui.section(
     f"Monte Carlo over the next {equity_active.horizon} days",
     glossary.term("Simulated tail risk"),
+    anchor="monte-carlo",
 )
 st.segmented_control(
     "Sampling method",
@@ -932,8 +988,8 @@ else:
         for row in monte_carlo_rows(simulated)
     )
     st.markdown(
-        f'<div class="fe-table-wrap"><table class="fe-table"><thead><tr>{simulated_header}'
-        f"</tr></thead><tbody>{simulated_body}</tbody></table></div>",
+        '<div class="fe-table-wrap fe-num fe-ours2"><table class="fe-table"><thead>'
+        f"<tr>{simulated_header}</tr></thead><tbody>{simulated_body}</tbody></table></div>",
         unsafe_allow_html=True,
     )
     base = simulated.forecasts
@@ -967,3 +1023,5 @@ if saved_number is not None:
         latest_saved=False,
         number=saved_number,
     )
+
+ui.page_link("scenarios", "Next · 04 Scenarios")

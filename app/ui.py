@@ -29,6 +29,8 @@ No emoji anywhere: an internal analytical tool should read as a tool.
 from __future__ import annotations
 
 import html
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from string import Template
 
 import streamlit as st
@@ -114,6 +116,7 @@ $TONES
     text-transform: uppercase;
     overflow: hidden;
     white-space: nowrap;
+    position: relative;
   }
   /* Where the bar is short of room the model names give way first (their full text
      is in the cell's tooltip); the data's dates never do. */
@@ -670,6 +673,219 @@ $TONES
   #vg-tooltip-element.vg-tooltip td.key { color: var(--fe-muted) !important; }
   #vg-tooltip-element.vg-tooltip td.value { color: var(--fe-text) !important; }
 
+  /* ---- Work under way ------------------------------------------------------------------
+     A light runs along the status bar's lower edge while the app is computing, so a
+     click is seen to have been taken. It waits a quarter of a second before showing:
+     most clicks are answered sooner, and a flash on every one would read as lag. */
+  @keyframes fe-working {
+    from { transform: translateX(-100%); }
+    to   { transform: translateX(500%); }
+  }
+  .fe-statusbar::after {
+    content: "";
+    position: absolute;
+    left: 0; bottom: 0;
+    height: 1px; width: 20%;
+    background: linear-gradient(90deg, transparent, var(--fe-accent-bright), transparent);
+    transform: translateX(-100%);
+  }
+  [data-testid="stApp"][data-test-script-state="running"] .fe-statusbar::after {
+    animation: fe-working 1.1s linear 250ms infinite;
+  }
+
+  /* ---- The sidebar's groups and foot ---------------------------------------------------- */
+  [data-testid="stNavSectionHeader"] {
+    font-family: var(--fe-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--fe-muted);
+    padding: 1.1rem 0.75rem 0.35rem;
+  }
+  .fe-side-foot {
+    padding: 0.2rem 0.5rem 0;
+    font-family: var(--fe-mono);
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    line-height: 1.8;
+    color: var(--fe-muted);
+  }
+  .fe-side-foot b { color: var(--fe-text-2); font-weight: 500; }
+
+  /* ---- Where a page's sections are ------------------------------------------------------
+     A long page keeps a line of its sections under the status bar: where you are
+     going is one click away however far down you are. */
+  [data-testid="stElementContainer"]:has(.fe-subnav) {
+    position: sticky;
+    top: var(--fe-bar);
+    z-index: 99;
+    margin: 0 calc(-1 * var(--fe-gutter));
+    width: calc(100% + 2 * var(--fe-gutter));
+    max-width: none;
+  }
+  .fe-subnav {
+    display: flex;
+    align-items: center;
+    gap: 1.6rem;
+    height: 2.2rem;
+    padding: 0 var(--fe-gutter);
+    background: rgba(11, 13, 17, 0.9);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--fe-border);
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .fe-subnav a {
+    font-family: var(--fe-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    text-decoration: none;
+    color: var(--fe-muted);
+    transition: color 120ms ease;
+  }
+  .fe-subnav a:hover, .fe-subnav a:focus-visible { color: var(--fe-text); }
+  .fe-subnav a:focus-visible { outline: 2px solid var(--fe-accent); outline-offset: 3px; }
+  /* A section jumped to stops clear of the two bars above it. */
+  .fe-section-title[id] { scroll-margin-top: 6rem; }
+
+  /* ---- A share of a whole ---------------------------------------------------------------
+     Two weights that sum to one are a split bar before they are two numbers: the
+     proportion is seen at once, and the ticks show the limits it is held within. */
+  .fe-split { position: relative; display: flex; gap: 2px; height: 8px; margin: 10px 0 6px; }
+  .fe-split-part { height: 100%; min-width: 2px; border-radius: 1px; }
+  .fe-split-tick {
+    position: absolute;
+    top: -4px; bottom: -4px;
+    width: 1px;
+    background: var(--fe-text-2);
+  }
+  .fe-split-key {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    font-family: var(--fe-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    color: var(--fe-muted);
+  }
+
+  /* A change against what a figure is compared with: an arrow for its direction, and
+     green or red for whether that direction is the good one, which is not always up. */
+  .fe-delta {
+    font-family: var(--fe-mono);
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .fe-delta-good { color: var(--fe-success-fg); }
+  .fe-delta-bad { color: var(--fe-danger-fg); }
+  .fe-delta-flat { color: var(--fe-muted); }
+
+  /* ---- A chart's key, with each line's latest figure -------------------------------------- */
+  .fe-readout {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 20px;
+    font-size: 12.5px;
+    color: var(--fe-text-2);
+  }
+  .fe-readout-item { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .fe-readout-swatch { width: 14px; height: 2px; border-radius: 1px; flex: none; }
+  .fe-readout-band { width: 9px; height: 9px; }
+  .fe-readout-value {
+    color: var(--fe-text);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .fe-readout-asof {
+    margin-left: auto;
+    font-family: var(--fe-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fe-muted);
+  }
+
+  /* ---- Tables of figures -------------------------------------------------------------------
+     Figures are set against the right edge of their column, so digits of the same
+     weight sit under one another; ``fe-num`` does it from the second column and
+     ``fe-num3`` from the third (a table whose second column is words). ``fe-ours``
+     marks the column that is the app's own result. */
+  .fe-num .fe-table th:not(:first-child), .fe-num .fe-table td:not(:first-child),
+  .fe-num3 .fe-table th:nth-child(n + 3), .fe-num3 .fe-table td:nth-child(n + 3) {
+    text-align: right;
+  }
+  .fe-num .fe-table th:last-child, .fe-num .fe-table td:last-child,
+  .fe-num3 .fe-table th:last-child, .fe-num3 .fe-table td:last-child { padding-right: 12px; }
+  .fe-ours2 .fe-table td:nth-child(2), .fe-ours3 .fe-table td:nth-child(3) {
+    background: rgba(76, 144, 240, 0.07);
+    font-weight: 500;
+  }
+  .fe-ours2 .fe-table th:nth-child(2), .fe-ours3 .fe-table th:nth-child(3) {
+    background: rgba(76, 144, 240, 0.07);
+    color: var(--fe-accent-bright);
+  }
+  .fe-ours2 .fe-table td:nth-child(2), .fe-ours2 .fe-table th:nth-child(2),
+  .fe-ours3 .fe-table td:nth-child(3), .fe-ours3 .fe-table th:nth-child(3) { padding-right: 12px; }
+  .fe-table td.fe-pos { color: var(--fe-success-fg); }
+  .fe-table td.fe-neg { color: var(--fe-danger-fg); }
+
+  /* ---- A note kept one click away ------------------------------------------------------------
+     How a chart was computed is wanted once, not on every visit. It folds into a
+     small label under the chart instead of standing between it and the next one. */
+  [class*="st-key-fe-note"] [data-testid="stExpander"] details {
+    border: none;
+    background: none;
+  }
+  [class*="st-key-fe-note"] [data-testid="stExpander"] summary {
+    width: fit-content;
+    min-height: 0;
+    padding: 2px 6px 2px 0;
+    color: var(--fe-muted);
+  }
+  [class*="st-key-fe-note"] [data-testid="stExpander"] summary:hover {
+    background: none;
+    color: var(--fe-text);
+  }
+  [class*="st-key-fe-note"] [data-testid="stExpander"] summary p {
+    font-family: var(--fe-mono);
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  [class*="st-key-fe-note"] [data-testid="stExpanderDetails"] { padding: 4px 0 0; }
+
+  /* ---- The way on --------------------------------------------------------------------------- */
+  [data-testid="stPageLink"] a {
+    border: 1px solid var(--fe-border-strong);
+    border-radius: 2px;
+    padding: 0.5rem 0.9rem;
+    background: transparent;
+    transition: background-color 120ms ease, border-color 120ms ease;
+  }
+  [data-testid="stPageLink"] a:hover {
+    background: var(--fe-raised);
+    border-color: var(--fe-text-2);
+  }
+  [data-testid="stPageLink"] a:focus-visible {
+    outline: 2px solid var(--fe-accent);
+    outline-offset: 2px;
+  }
+  [data-testid="stPageLink"] p {
+    font-family: var(--fe-mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--fe-text);
+  }
+
   /* The page's opening lines arrive once, on entering the page; nothing else moves
      by itself. Only opacity and position, which the compositor handles alone. */
   @keyframes fe-arrive {
@@ -680,6 +896,11 @@ $TONES
 
   @media (prefers-reduced-motion: reduce) {
     .fe-page-head { animation: none; }
+    [data-testid="stApp"][data-test-script-state="running"] .fe-statusbar::after {
+      animation: none;
+      transform: none;
+      width: 100%;
+    }
     * { transition: none !important; }
   }
 
@@ -809,18 +1030,35 @@ def rule() -> None:
     st.markdown('<div class="fe-rule"></div>', unsafe_allow_html=True)
 
 
-def section(title: str, help: str | None = None, *, note: str | None = None) -> None:
+def section(
+    title: str, help: str | None = None, *, note: str | None = None, anchor: str | None = None
+) -> None:
     """A full-width rule, then a section title: how a page is divided into parts.
-    ``note`` is a line of HTML under the title, such as a row of lozenges."""
+    ``note`` is a line of HTML under the title, such as a row of lozenges. ``anchor``
+    names the section so ``section_nav`` can jump to it."""
     rule()
     hint = ""
     if help:
         tip = html.escape(" ".join(help.split()), quote=True)
         hint = f'<span class="fe-eyebrow-help" title="{tip}">i</span>'
     below = f'<div class="fe-row-meta" style="margin-top:4px">{note}</div>' if note else ""
+    name = f' id="{html.escape(anchor, quote=True)}"' if anchor else ""
     st.markdown(
-        f'<div class="fe-section-title" role="heading" aria-level="2">'
+        f'<div class="fe-section-title" role="heading" aria-level="2"{name}>'
         f"{html.escape(title)}{hint}</div>{below}",
+        unsafe_allow_html=True,
+    )
+
+
+def section_nav(sections: Sequence[tuple[str, str]]) -> None:
+    """A line of a long page's sections, each ``(label, anchor)``, that stays under the
+    status bar as the page scrolls. The anchors are the ones given to ``section``."""
+    links = "".join(
+        f'<a href="#{html.escape(anchor, quote=True)}" target="_self">{html.escape(label)}</a>'
+        for label, anchor in sections
+    )
+    st.markdown(
+        f'<nav class="fe-subnav" aria-label="Sections of this page">{links}</nav>',
         unsafe_allow_html=True,
     )
 
@@ -838,3 +1076,74 @@ def strip(cells: list[tuple[str, str, str]], *, inline: bool = False) -> str:
     )
     kind = "fe-strip fe-strip-inline" if inline else "fe-strip"
     return f'<div class="{kind}">{body}</div>'
+
+
+def split_bar(
+    parts: Sequence[tuple[str, float, str]],
+    *,
+    limits: tuple[float, float] | None = None,
+    labelled: bool = True,
+) -> str:
+    """Shares of a whole as one bar, each part ``(name, share, colour)`` drawn as wide
+    as its share, as HTML. ``limits`` are the lowest and highest share the first part
+    may take, marked with a tick each, so a share pinned at a limit is seen to be.
+
+    The names and figures are written under the bar as well, since the colours alone
+    would not say which part is which. Pass ``labelled=False`` only where they are
+    already written beside it, in the same order."""
+    total = sum(share for _, share, _ in parts) or 1.0
+    segments = "".join(
+        f'<span class="fe-split-part" style="flex:{max(share, 0) / total:.4f} 1 0;'
+        f'background:{colour}"></span>'
+        for _, share, colour in parts
+    )
+    ticks = "".join(
+        f'<span class="fe-split-tick" style="left:{limit:.2%}"></span>' for limit in limits or ()
+    )
+    key = "".join(
+        f"<span>{html.escape(name)} {share:.0%}</span>" for name, share, _ in parts
+    )
+    described = html.escape(", ".join(f"{name} {share:.0%}" for name, share, _ in parts))
+    bar = f'<div class="fe-split" role="img" aria-label="{described}">{segments}{ticks}</div>'
+    return bar + (f'<div class="fe-split-key">{key}</div>' if labelled else "")
+
+
+def delta(change: float, text: str, *, higher_is_better: bool = True) -> str:
+    """A change against what a figure is compared with, as HTML: an arrow for its
+    direction and ``text`` for its size. Green or red says whether the direction is
+    the good one, which for a loss or a risk is down, so the arrow and the colour are
+    two different facts and neither is left to the other."""
+    if change == 0 or change != change:  # nothing moved, or nothing to compare
+        return f'<span class="fe-delta fe-delta-flat">{html.escape(text)}</span>'
+    arrow = "▲" if change > 0 else "▼"
+    good = (change > 0) == higher_is_better
+    kind = "fe-delta-good" if good else "fe-delta-bad"
+    return f'<span class="fe-delta {kind}">{arrow} {html.escape(text)}</span>'
+
+
+@contextmanager
+def note(label: str, key: str) -> Iterator[None]:
+    """A note kept one click away: what is written inside is folded under a small
+    label. For how a figure was computed, which is wanted once and not on every
+    visit. ``key`` tells one note on a page from another."""
+    with st.container(key=f"fe-note-{key}"), st.expander(label):
+        yield
+
+
+#: Page name -> the page, as the entry point registered it (``register_pages``).
+_PAGES: dict[str, object] = {}
+
+
+def register_pages(pages: Mapping[str, object]) -> None:
+    """Tell the pages where each other are, so one can link to the next. Called by the
+    entry point on every run; a page run on its own (a test) has no others to link to."""
+    _PAGES.clear()
+    _PAGES.update(pages)
+
+
+def page_link(name: str, label: str) -> None:
+    """A link to the page registered as ``name``, or nothing where the pages were not
+    registered: a page run on its own has nowhere to go."""
+    page = _PAGES.get(name)
+    if page is not None:
+        st.page_link(page, label=label, icon=":material/arrow_forward:", icon_position="right")

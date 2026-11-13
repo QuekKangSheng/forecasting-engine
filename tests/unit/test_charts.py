@@ -191,7 +191,46 @@ def test_the_weights_charts_specification_holds_none_of_its_figures():
 
 
 def _without_tables(chart: dict) -> dict:
-    return {key: value for key, value in chart.items() if key != "datasets"}
+    """The specification alone: without the figures, and without the key that is
+    written above the chart and never sent with it."""
+    return {key: value for key, value in chart.items() if key not in ("datasets", "key")}
+
+
+def test_a_charts_key_names_each_line_with_its_latest_figure_and_the_day():
+    paths = _paths(30)
+
+    key = charts.line_chart(paths, "Cumulative return")["key"]
+
+    assert "Optimised" in key and "Equal-weight benchmark" in key
+    assert f"{paths['Optimised'].iloc[-1]:.2%}" in key
+    assert f"{paths.index[-1]:%d %b %Y}" in key
+    assert charts.OPTIMISED in key and charts.BENCHMARK in key
+
+
+def test_a_line_that_ends_early_is_keyed_by_its_own_last_figure():
+    paths = _paths(30)
+    paths.iloc[-5:, 1] = float("nan")
+
+    key = charts.line_chart(paths, "Cumulative return")["key"]
+
+    assert f"{paths['Equal-weight benchmark'].dropna().iloc[-1]:.2%}" in key
+
+
+def test_the_weights_charts_key_gives_the_weights_held_now():
+    key = charts.weights_chart(_weights(), until=pd.Timestamp("2024-04-30"))["key"]
+
+    # The name is escaped for the page: an index's name comes from the uploaded data.
+    assert "S&amp;P 500" in key and "80%" in key and "20%" in key
+    assert "30 Apr 2024" in key
+    assert "(total return)" not in key, "the short name is enough beside a swatch"
+
+
+def test_no_chart_draws_a_legend_of_its_own_under_itself():
+    line = charts.line_chart(_paths(30), "Cumulative return")
+    weights = charts.weights_chart(_weights())
+
+    assert line["layer"][0]["encoding"]["color"]["legend"] is None
+    assert weights["layer"][0]["encoding"]["color"]["legend"] is None
 
 
 def test_the_apps_own_line_is_drawn_heavier_than_the_ones_it_is_read_against():

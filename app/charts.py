@@ -16,6 +16,8 @@ longer waits on the charts:
 
 from __future__ import annotations
 
+import html
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -124,16 +126,35 @@ def short_name(name: str) -> str:
     return name.replace(_SUFFIX, "")
 
 
-def _legend(**overrides: Any) -> dict[str, Any]:
-    """A legend under the chart, its labels shortened so three fit across a
-    half-width chart: "(total return)" says nothing the reader needs here."""
-    return {
-        "title": None,
-        "orient": "bottom",
-        "labelLimit": 0,
-        "labelExpr": f"replace(datum.label, '{_SUFFIX}', '')",
-        **overrides,
-    }
+def _key(
+    names: list[str],
+    latest: Mapping[str, float],
+    figure: str,
+    as_of: pd.Timestamp | None,
+    *,
+    bands: bool = False,
+) -> str:
+    """A chart's key, as HTML to stand above it: each series' colour and name, and
+    its latest figure, with the day those figures are for.
+
+    It replaces the legend Vega would draw under the chart. That named the lines and
+    nothing else; where each one stands now, the first thing asked of a chart of
+    returns, had to be read off the axis or found with a hover. The names and figures
+    are in the text colours and only the swatch carries the series colour, so the key
+    reads the same to someone who can't tell the colours apart."""
+    swatch = "fe-readout-swatch fe-readout-band" if bands else "fe-readout-swatch"
+    items = []
+    for position, name in enumerate(names):
+        value = latest.get(name, float("nan"))
+        shown = "—" if value != value else format(value, figure)
+        items.append(
+            '<span class="fe-readout-item">'
+            f'<span class="{swatch}" style="background:{series_colour(name, position)}"></span>'
+            f"{html.escape(short_name(name))}"
+            f'<span class="fe-readout-value">{shown}</span></span>'
+        )
+    when = "" if as_of is None else f'<span class="fe-readout-asof">{as_of:%d %b %Y}</span>'
+    return f'<div class="fe-readout">{"".join(items)}{when}</div>'
 
 
 def colour_scale(names: list[str]) -> dict[str, Any]:
@@ -141,13 +162,14 @@ def colour_scale(names: list[str]) -> dict[str, Any]:
     return {"domain": names, "range": [series_colour(n, i) for i, n in enumerate(names)]}
 
 
-def _colour(field: str, names: list[str], **legend: Any) -> dict[str, Any]:
+def _colour(field: str, names: list[str]) -> dict[str, Any]:
+    # No legend of Vega's: the chart's key stands above it (``_key``).
     return {
         "field": field,
         "type": "nominal",
         "scale": colour_scale(names),
         "sort": names,
-        "legend": _legend(**legend),
+        "legend": None,
     }
 
 
@@ -164,8 +186,12 @@ def draw(chart: dict[str, Any]) -> None:
     """Show ``chart`` across the width of wherever it is called.
 
     ``theme=None``: the chart states its own dress (``_CONFIG``), and Streamlit's chart
-    theme would otherwise restyle the axes and legend over it."""
-    st.vega_lite_chart(chart, width="stretch", theme=None)
+    theme would otherwise restyle the axes and legend over it. The chart's key
+    (``_key``) is written above it, and is not part of what the chart itself is sent."""
+    spec = {name: part for name, part in chart.items() if name != "key"}
+    if chart.get("key"):
+        st.markdown(chart["key"], unsafe_allow_html=True)
+    st.vega_lite_chart(spec, width="stretch", theme=None)
 
 
 def weights_chart(
@@ -215,8 +241,7 @@ def weights_chart(
         "encoding": {
             "x": _years(),
             "y": y("Weight", stack="zero"),
-            # The legend's swatches at full strength, not the bands' tint.
-            "color": _colour("Asset", names, symbolOpacity=1, symbolType="square"),
+            "color": _colour("Asset", names),
             "order": {"field": "position", "type": "quantitative", "sort": "ascending"},
         },
     }
@@ -291,6 +316,13 @@ def weights_chart(
         ],
         "usermeta": _CANVAS,
         "datasets": datasets,
+        "key": _key(
+            names,
+            {} if held.empty else held.iloc[-1].to_dict(),
+            ".0%",
+            None if held.empty else held.index[-1],
+            bands=True,
+        ),
     }
 
 
@@ -368,7 +400,7 @@ def line_chart(
             },
         },
     }
-    colour = _colour("Series", names, symbolType="stroke")
+    colour = _colour("Series", names)
     figure = ".2%" if percent else ".2f"
     unfold = {"fold": names, "as": ["Series", value]}
     hovering = {"filter": {"param": "nearest", "empty": False}}
@@ -460,4 +492,11 @@ def line_chart(
         ],
         "usermeta": _CANVAS,
         "datasets": {"drawn": _drawn(wide, names), "hover": kept},
+        "key": _key(
+            names,
+            # Each line's own latest figure: one may end before another does.
+            {name: series.iloc[-1] for name in names if len(series := wide[name].dropna())},
+            figure,
+            None if wide.empty else wide["date"].iloc[-1],
+        ),
     }

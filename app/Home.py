@@ -6,6 +6,7 @@ Run with: uv run streamlit run app/Home.py
 import streamlit as st
 
 import shell
+import ui
 import warmup
 from forecasting_engine.store import _db
 
@@ -21,14 +22,21 @@ st.set_page_config(
 
 # In pipeline order, which the sidebar numbers: data in, forecasts out of it, an
 # allocation out of those, then what would move it and what has been run.
+pages = {
+    "home": st.Page("app_pages/0_Home.py", title="Home", default=True),
+    "data": st.Page("app_pages/1_Data.py", title="Data"),
+    "models": st.Page("app_pages/2_Models.py", title="Models"),
+    "portfolio": st.Page("app_pages/3_Portfolio.py", title="Portfolio Optimizer"),
+    "scenarios": st.Page("app_pages/4_Scenarios.py", title="Scenarios"),
+    "history": st.Page("app_pages/5_Run_History.py", title="Run history"),
+}
+# So a page can link to the next one without knowing where it lives.
+ui.register_pages(pages)
 pg = st.navigation(
-    [
-        st.Page("app_pages/0_Home.py", title="Home", default=True),
-        st.Page("app_pages/1_Data.py", title="Data"),
-        st.Page("app_pages/2_Models.py", title="Models"),
-        st.Page("app_pages/3_Portfolio.py", title="Portfolio Optimizer"),
-        st.Page("app_pages/4_Scenarios.py", title="Scenarios"),
-        st.Page("app_pages/5_Run_History.py", title="Run history"),
-    ]
+    {
+        "": [pages["home"]],
+        "Pipeline": [pages["data"], pages["models"], pages["portfolio"]],
+        "Analysis": [pages["scenarios"], pages["history"]],
+    }
 )
 shell.frame(pg.run)
