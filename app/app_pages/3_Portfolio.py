@@ -255,9 +255,12 @@ st.markdown(
 )
 # The weights first, then the figures that say whether to trust them. Those come
 # from the backtest further down, so their place is held here and filled there.
-cols = st.columns([1, 1, 6], gap="medium")
-cols[0].metric(equity_name, f"{latest[EQUITY]:.0%}")
-cols[1].metric(bond_name, f"{latest[BOND]:.0%}")
+# Wide enough for an index's short name on one line at a 1280px window.
+cols = st.columns([1.2, 1.2, 5.6], gap="medium")
+# Without "(total return)": a metric cuts a label that doesn't fit off with an ellipsis,
+# and the full names are in the Active models rows above.
+cols[0].metric(charts.short_name(equity_name), f"{latest[EQUITY]:.0%}")
+cols[1].metric(charts.short_name(bond_name), f"{latest[BOND]:.0%}")
 headline_slot = cols[2].empty()
 
 latest_signal = optimize.expected_returns(pd.DatetimeIndex([latest_date]), signals).iloc[0]

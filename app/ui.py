@@ -51,6 +51,7 @@ _CSS = """
     --fe-sunken:     #F7F8F9;
     --fe-text:       #172B4D;
     --fe-muted:      #626F86;
+    --fe-shadow:     rgba(9, 30, 66, 0.20);
     --fe-gutter:     GUTTER;
   }
 
@@ -66,6 +67,7 @@ _CSS = """
       --fe-sunken:     #161A1D;
       --fe-text:       #B6C2CF;
       --fe-muted:      #8C9BAB;
+      --fe-shadow:     rgba(0, 0, 0, 0.55);
     }
   }
 
@@ -153,10 +155,25 @@ _CSS = """
 
   /* A plain table for cells needing an inline lozenge badge — st.dataframe
      can't render those. Rows are divided by hairlines and the header by a
-     heavier rule, with no outer box, as Atlassian's tables are. Every cell is
+     heavier rule, with no outer box, as Atlassian's tables are. Every figure is
      nowrap, so a wide comparison scrolls inside its own box rather than
-     running off the page. */
-  .fe-table-wrap { overflow-x: auto; }
+     running off the page.
+
+     A table that does scroll used to give no sign of it: its last columns were
+     simply cut off at the edge. So a shadow down the right edge says there is
+     more that way and is covered once the end is reached (the first gradient
+     scrolls with the table, the second stays put), and the first column, which
+     names each row, stays in view while the rest scrolls under it. Headings may
+     wrap, so a two-word heading over a four-digit figure doesn't set the
+     column's width and fewer tables need to scroll at all. */
+  .fe-table-wrap {
+    overflow-x: auto;
+    background:
+      linear-gradient(to left, var(--fe-surface) 40%, transparent) right / 48px 100%
+        no-repeat local,
+      linear-gradient(to left, var(--fe-shadow), transparent) right / 16px 100%
+        no-repeat scroll;
+  }
   .fe-table {
     width: 100%;
     border-collapse: collapse;
@@ -164,16 +181,31 @@ _CSS = """
     font-variant-numeric: tabular-nums;
   }
   .fe-table th, .fe-table td {
-    padding: 6px 8px;
+    padding: 6px;
     border-bottom: 1px solid var(--fe-border);
     text-align: left;
     white-space: nowrap;
+    background: transparent;
   }
   .fe-table th {
     font-size: 12px;
     font-weight: 600;
     color: var(--fe-muted);
     border-bottom: 2px solid var(--fe-border);
+    white-space: normal;
+    vertical-align: bottom;
+  }
+  /* The row's name may wrap where the table is short of room, and keeps a line down
+     its right side while the other columns pass under it (a collapsed table's own
+     cell border scrolls away with them). */
+  .fe-table th:first-child, .fe-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--fe-surface);
+    box-shadow: inset -1px 0 0 var(--fe-border);
+    white-space: normal;
+    min-width: 10.5rem;
   }
 
   /* A label above a group of figures: a small heading in the text colour,
@@ -220,10 +252,14 @@ _CSS = """
     border-left: 1px solid var(--fe-border);
     padding-left: 16px;
   }
+  /* Narrower cells than the full-width strip: beside the weights it has about two
+     thirds of the page, and at 170px its fourth figure dropped to a line of its own
+     on a 1280px window. */
   .fe-strip-inline {
     margin: 0;
     padding: 0;
     border: none;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   }
   .fe-strip-inline .fe-strip-cell:first-child {
     border-left: 1px solid var(--fe-border);
