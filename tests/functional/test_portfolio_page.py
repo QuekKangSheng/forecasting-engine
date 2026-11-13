@@ -438,9 +438,10 @@ def _line_chart(app: AppTest, value: str):
 
 
 def _line_data(app: AppTest, value: str) -> pd.DataFrame:
+    """The chart's lines, a column each: it is sent a row per day and unfolded into
+    its lines in the browser."""
     (dataset,) = _line_chart(app, value).proto.datasets
-    long = convert_arrow_bytes_to_pandas_df(dataset.data.data)
-    return long.pivot(index="date", columns="Series", values=value)
+    return convert_arrow_bytes_to_pandas_df(dataset.data.data).set_index("date")
 
 
 def test_rolling_volatility_is_charted_for_both_indices_and_the_optimised_portfolio():

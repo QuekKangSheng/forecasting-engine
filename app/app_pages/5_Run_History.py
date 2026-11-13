@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import html
 
-import altair as alt
 import pandas as pd
 import streamlit as st
 
+import charts
 import glossary
 import saved_run
 import ui
@@ -222,36 +222,18 @@ def _model_fits() -> None:
             ),
             unsafe_allow_html=True,
         )
-        long = (
-            forecasts.rename(
-                columns={"predicted": "Forecast", "baseline": "Baseline", "realised": "Realised"}
-            )
-            .rename_axis("date")
-            .reset_index()
-            .melt("date", var_name="Series", value_name="Return")
+        # The same chart as every other line chart in the app, in the same colours:
+        # realised muted behind the two lines a model drew. Drawn on a canvas like
+        # them too, since three lines of every test date were thousands of page
+        # elements as SVG.
+        shown = forecasts.rename(
+            columns={"predicted": "Forecast", "baseline": "Baseline", "realised": "Realised"}
         )
-        chart = (
-            alt.Chart(long)
-            .mark_line(strokeWidth=1.2)
-            .encode(
-                # One tick a year, labelled with the year: left to itself the axis labels
-                # yearly ticks with the month alone.
-                x=alt.X("date:T", title="Date", axis=alt.Axis(format="%Y", tickCount="year")),
-                y=alt.Y("Return:Q", title="Return over the horizon", axis=alt.Axis(format="%")),
-                color=alt.Color(
-                    "Series:N",
-                    # Realised muted behind the two lines a model drew.
-                    scale=alt.Scale(
-                        domain=["Realised", "Forecast", "Baseline"],
-                        range=["#9198A1", "#4C8DF6", "#E8912D"],
-                    ),
-                    legend=alt.Legend(title=None, orient="bottom"),
-                ),
-                tooltip=["date:T", "Series:N", alt.Tooltip("Return:Q", format=".2%")],
-            )
-            .properties(height=320)
+        ordered = [c for c in ("Realised", "Forecast", "Baseline") if c in shown.columns]
+        st.altair_chart(
+            charts.line_chart(shown[ordered], "Return", title="Return over the horizon"),
+            width="stretch",
         )
-        st.altair_chart(chart, use_container_width=True)
 
 
 def _rename_run(run_key: str, widget: str) -> None:

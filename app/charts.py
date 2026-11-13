@@ -4,6 +4,7 @@ as the page that first showed it."""
 from __future__ import annotations
 
 import altair as alt
+import numpy as np
 import pandas as pd
 
 # One colour per series, the same on every chart, so a line means the same thing
@@ -37,6 +38,13 @@ _FIXED = {
     "Realised": BENCHMARK,
     "Baseline": BASELINE,
 }
+
+#: The most days a line chart lets a hover land on: about one to the pixel across the
+#: widest chart the app draws.
+MAX_HOVER_TARGETS = 600
+
+#: The most rows a line chart is drawn from: more than that and it is thinned (``_drawn``).
+MAX_DRAWN_ROWS = 1_500
 
 #: Canvas, not Streamlit's default SVG: SVG makes every day's point a page element,
 #: thousands per chart, which stalls scrolling and every redraw.
@@ -176,37 +184,97 @@ def weights_chart(
     return alt.layer(*layers).properties(height=280, usermeta=_CANVAS)
 
 
+def _drawn(wide: pd.DataFrame, names: list[str]) -> pd.DataFrame:
+    """The rows of ``wide`` its lines are drawn from: every day, until there are more
+    days than the chart has room to show apart.
+
+    Past ``MAX_DRAWN_ROWS`` the days are cut into equal stretches, each a few pixels
+    wide, and every line keeps its highest and its lowest day in each stretch (and the
+    first and last day of all). So every peak and trough is still drawn, on its own
+    date and at its own value, and the line reads as it did, from a third of the
+    points: twenty years of days is four to the pixel, and drawing them all was most
+    of what the browser spent on each chart."""
+    stretches = MAX_DRAWN_ROWS // (2 * max(len(names), 1))
+    if len(wide) <= MAX_DRAWN_ROWS or stretches < 1:
+        return wide
+    edges = np.linspace(0, len(wide), stretches + 1).astype(int)
+    keep = {0, len(wide) - 1}
+    for name in names:
+        values = wide[name].to_numpy(dtype=float)
+        for start, end in zip(edges[:-1], edges[1:], strict=True):
+            stretch = values[start:end]
+            if np.isnan(stretch).all():
+                continue  # the line has no figure anywhere in this stretch
+            keep.add(start + int(np.nanargmin(stretch)))
+            keep.add(start + int(np.nanargmax(stretch)))
+    return wide.iloc[sorted(keep)]
+
+
 def line_chart(
     paths: pd.DataFrame, value: str, *, percent: bool = True, title: str | None = None
 ) -> alt.LayerChart:
     """A line per column of ``paths`` on one time axis, in percent unless told it is a
-    ratio. Hovering or tapping anywhere marks the nearest day on a line and shows its
-    date and value."""
-    long = paths.rename_axis("date").reset_index().melt("date", var_name="Series", value_name=value)
-    nearest = alt.selection_point(nearest=True, on="pointerover", clear="pointerout", empty=False)
-    lines = alt.Chart(long).encode(
-        x=alt.X("date:T", title=None, axis=alt.Axis(tickCount="year", format="%Y")),
-        y=alt.Y(
-            f"{value}:Q", title=title or value, axis=alt.Axis(format="%" if percent else ".1f")
-        ),
-        color=alt.Color(
-            "Series:N",
-            scale=colour_scale([str(c) for c in paths.columns]),
-            legend=_legend(),
-        ),
+    ratio. Hovering or tapping anywhere marks that day on every line and shows its date
+    and each line's value.
+
+    The chart is sent one row per day and unfolded into its lines in the browser, and
+    a hover lands on one unseen target per day. A long chart is thinned to what can be
+    seen (``_drawn``) and to as many hover targets as can be told apart
+    (``MAX_HOVER_TARGETS``). It used to be sent a row per day per line with an unseen
+    point on each. Over twenty years that is twelve thousand points a chart for the
+    browser to lay out before it could draw: about three seconds of a frozen page for
+    four charts, every time their figures changed."""
+    names = [str(c) for c in paths.columns]
+    wide = paths.set_axis(names, axis=1).rename_axis("date").reset_index()
+    x = alt.X("date:T", title=None, axis=alt.Axis(tickCount="year", format="%Y"))
+    y = alt.Y(
+        f"{value}:Q", title=title or value, axis=alt.Axis(format="%" if percent else ".1f")
     )
-    # Vega only shows a line's tooltip within a pixel or two of one of its days,
-    # too fine to tap; invisible points with a nearest-day selection catch any hover.
-    points = (
-        lines.mark_point(filled=True)
+    colour = alt.Color("Series:N", scale=colour_scale(names), sort=names, legend=_legend())
+    figure = ".2%" if percent else ".2f"
+    unfold = {"fold": names, "as_": ["Series", value]}
+    lines = (
+        alt.Chart(_drawn(wide, names))
+        .transform_fold(**unfold)
+        .mark_line()
+        .encode(x=x, y=y, color=colour)
+    )
+    # Vega only shows a line's tooltip within a pixel or two of one of its days, too
+    # fine to tap. So the day nearest the pointer, wherever in the chart that is, is
+    # the one marked: a rule down it, a dot on each line, every line's value shown.
+    nearest = alt.selection_point(
+        nearest=True, on="pointerover", clear="pointerout", fields=["date"], empty=False
+    )
+    # No more targets than a chart has room to tell apart: finding which of four
+    # thousand days is nearest the pointer was the rest of what the browser did with
+    # each chart. A hover lands on the nearest day kept and shows that day's own
+    # figures, read from the data and not off the drawn line.
+    every = -(-len(wide) // MAX_HOVER_TARGETS) or 1
+    kept = wide.iloc[::every]
+    if len(wide) and kept.index[-1] != wide.index[-1]:
+        kept = pd.concat([kept, wide.iloc[[-1]]])  # the latest day can always be read
+    hovered = alt.Chart(kept)
+    targets = (
+        hovered.mark_point(opacity=0)
         .encode(
-            opacity=alt.condition(nearest, alt.value(1), alt.value(0)),
+            x=x,
             tooltip=[
                 alt.Tooltip("date:T", title="Date", format="%d %b %Y"),
-                "Series:N",
-                alt.Tooltip(f"{value}:Q", format=".2%" if percent else ".2f"),
+                *(
+                    alt.Tooltip(f"{name}:Q", title=short_name(name), format=figure)
+                    for name in names
+                ),
             ],
         )
         .add_params(nearest)
     )
-    return (lines.mark_line() + points).properties(usermeta=_CANVAS)
+    crosshair = (
+        hovered.mark_rule(color=BENCHMARK, strokeWidth=1).encode(x=x).transform_filter(nearest)
+    )
+    dots = (
+        hovered.transform_fold(**unfold)
+        .transform_filter(nearest)
+        .mark_point(filled=True, size=40, opacity=1)
+        .encode(x=x, y=y, color=colour)
+    )
+    return alt.layer(lines, crosshair, dots, targets).properties(usermeta=_CANVAS)
