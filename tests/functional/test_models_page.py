@@ -484,6 +484,20 @@ def test_the_derived_function_is_shown_open_under_the_results():
     assert not ml.proto.expanded
 
 
+def test_a_fit_that_kept_no_signal_says_so_instead_of_showing_an_empty_attribution():
+    constant = ModelDescription("DerivedPolynomial", terms=(), coefficients=(), intercept=0.002)
+    fn = from_description(constant, origin=Origin.DERIVED, target=SPX, horizon=5)
+    run = model_runs.ModelRun(
+        _result(), constant, function=fn, shap=ModelDescription("shap", (), ())
+    )
+
+    app = _page({EQUITY: {POLY: run}})
+
+    assert not app.exception
+    assert "Nothing to attribute" in _captions(app)
+    assert all(len(d.value) for d in app.dataframe), "no table is drawn with nothing in it"
+
+
 def test_the_table_shows_rows_scored():
     table = _table(_page({EQUITY: {POLY: _polynomial_run()}}))
     assert "Rows scored" in table

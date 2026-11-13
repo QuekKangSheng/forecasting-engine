@@ -922,6 +922,14 @@ def _show_fitted_terms(description: ModelDescription, *, is_shap: bool) -> None:
     rows = [{"Term": label(term), value_col: coefficient} for term, coefficient in pairs]
     if description.intercept is not None:
         rows.append({"Term": "(intercept)", value_col: description.intercept})
+    if not rows:
+        # A fit that kept no signal has nothing to attribute. Left to itself the
+        # table was drawn anyway: one grey cell reading "empty".
+        st.caption(
+            "Nothing to attribute: the latest fit kept no signal, so every forecast is the "
+            "same constant."
+        )
+        return
     st.dataframe(rows, width="stretch", hide_index=True)
 
 
