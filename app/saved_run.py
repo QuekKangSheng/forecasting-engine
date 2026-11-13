@@ -56,7 +56,7 @@ def report_button(
     """Generated on the click, not on every rerun of the page. ``on_click="ignore"``
     since downloading changes nothing the page shows."""
     if number is None:
-        number = portfolio_runs.get_saved_run(run_key).run_number
+        number = portfolio_runs.run_number(run_key)
     container.download_button(
         label,
         data=partial(report_bytes, run_key, simulation=simulation, latest_saved=latest_saved),

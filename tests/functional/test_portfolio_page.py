@@ -563,6 +563,94 @@ def test_without_active_models_the_page_explains_what_will_appear():
     assert not [m for m in app.markdown if '<table class="fe-table"' in m.value]
 
 
+#: Everything that estimates, solves or backtests an allocation.
+_SOLVERS = (
+    "forecasting_engine.portfolio.optimize.schedule_inputs",
+    "forecasting_engine.portfolio.optimize.breakdowns_from",
+    "forecasting_engine.portfolio.optimize.schedule_breakdowns",
+    "forecasting_engine.portfolio.backtest.run_backtest",
+)
+
+
+def _count_solves(monkeypatch) -> dict[str, int]:
+    """How often each solver is really called from here on, by its short name."""
+    import importlib
+
+    calls: dict[str, int] = {}
+    for path in _SOLVERS:
+        module_name, name = path.rsplit(".", 1)
+        real = getattr(importlib.import_module(module_name), name)
+
+        def counted(*args, _real=real, _name=name, **kwargs):
+            calls[_name] = calls.get(_name, 0) + 1
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(path, counted)
+    return calls
+
+
+def test_a_rerun_that_changes_no_input_solves_nothing_again(monkeypatch):
+    """After or before costs, and the simulation's settings, move no weight. Each used
+    to re-estimate, re-solve and re-backtest the whole allocation, which is what made
+    every click on this page take seconds."""
+    calls = _count_solves(monkeypatch)
+    app = _happy_page()
+    first = dict(calls)
+    assert first == {"schedule_inputs": 1, "breakdowns_from": 2, "run_backtest": 2}
+    before = _outputs(app)
+
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+    basis.set_value("Before costs").run()
+    (method,) = [c for c in app.segmented_control if c.label == "Sampling method"]
+    method.set_value("parametric").run()
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+    basis.set_value("After costs").run()
+
+    assert not app.exception
+    assert calls == first
+    assert _outputs(app)["weights"] == before["weights"]
+    assert _outputs(app)["comparison"] == before["comparison"]
+
+
+def test_another_risk_level_is_solved_from_the_same_estimates_and_only_once(monkeypatch):
+    calls = _count_solves(monkeypatch)
+    app = _happy_page()
+    level_3 = _outputs(app)
+
+    app.select_slider[0].set_value(1).run()
+    level_1 = _outputs(app)
+
+    # A new level: solved and backtested, with and without forecasts, but the
+    # covariances and trust it is solved from are not estimated again.
+    assert calls == {"schedule_inputs": 1, "breakdowns_from": 4, "run_backtest": 4}
+    assert level_1["comparison"] != level_3["comparison"]
+
+    app.select_slider[0].set_value(3).run()
+
+    # Back to a level already shown: nothing is solved, and it reads as it did.
+    assert calls == {"schedule_inputs": 1, "breakdowns_from": 4, "run_backtest": 4}
+    assert not app.exception
+    assert _outputs(app) == level_3
+
+
+def test_a_newly_set_active_model_is_solved_afresh(monkeypatch):
+    """What is kept is keyed on the models' own forecasts, so another model set active
+    can never be shown the last one's allocation."""
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0))
+    calls = _count_solves(monkeypatch)
+    app = _page(committed)
+    assert calls["schedule_inputs"] == 1
+
+    _set_active(EQUITY, forecast=_leaning(committed, -0.05), name="Machine Learning")
+    app.run()
+
+    assert not app.exception
+    assert calls["schedule_inputs"] == 2
+    assert any("Machine Learning" in m.value for m in app.markdown)
+
+
 def test_the_no_trade_band_is_explained_with_the_share_of_rebalances_it_held():
     app = _happy_page()
 
@@ -1114,8 +1202,8 @@ def test_opening_a_run_refits_nothing_and_leaves_the_active_models(monkeypatch):
     def refused(*_args, **_kwargs):
         raise AssertionError("opening a saved run must not solve or backtest anything")
 
-    monkeypatch.setattr("forecasting_engine.portfolio.optimize.schedule_breakdowns", refused)
-    monkeypatch.setattr("forecasting_engine.portfolio.backtest.run_backtest", refused)
+    for solver in _SOLVERS:
+        monkeypatch.setattr(solver, refused)
     history = _open(_history())
 
     assert any("Polynomial" in c.value for c in history.tabs[1].caption)
@@ -1234,9 +1322,8 @@ def test_generating_the_report_refits_and_resolves_nothing(monkeypatch):
     def refused(*_args, **_kwargs):
         raise AssertionError("a report must be written from the saved run")
 
-    monkeypatch.setattr("forecasting_engine.portfolio.optimize.schedule_breakdowns", refused)
-    monkeypatch.setattr("forecasting_engine.portfolio.backtest.run_backtest", refused)
-    monkeypatch.setattr("forecasting_engine.portfolio.backtest.chain", refused)
+    for solver in (*_SOLVERS, "forecasting_engine.portfolio.backtest.chain"):
+        monkeypatch.setattr(solver, refused)
 
     assert "Spread t-statistics" in _report()
 

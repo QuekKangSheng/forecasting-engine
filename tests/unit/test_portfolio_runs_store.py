@@ -22,6 +22,7 @@ from forecasting_engine.store.portfolio_runs import (
     portfolio_runs_table,
     record_portfolio_run,
     rename_portfolio_run,
+    run_number,
     save_simulation,
     saved_paths,
 )
@@ -303,6 +304,24 @@ def test_a_run_recorded_before_results_were_saved_cannot_be_opened_until_shown_a
 
     assert get_saved_run(INPUTS.run_key, db_path=db).results == RESULTS
     assert portfolio_runs_table(db_path=db)["has_results"].all()
+
+
+def test_a_runs_number_is_read_without_its_results(db):
+    """What the Portfolio page asks on every rerun: is this run recorded with its
+    results, and under which number. One row, not the whole saved run."""
+    other = replace(INPUTS, risk_level=1)
+    assert run_number(INPUTS.run_key, db_path=db) is None
+
+    _record(db)  # recorded, but before results were kept
+    record_portfolio_run(other, RESULT, SCHEDULE, results=RESULTS, db_path=db)
+
+    assert run_number(INPUTS.run_key, db_path=db) == 1
+    assert run_number(INPUTS.run_key, with_results=True, db_path=db) is None
+    assert run_number(other.run_key, with_results=True, db_path=db) == 2
+    assert run_number("no such run", db_path=db) is None
+
+    record_portfolio_run(INPUTS, RESULT, SCHEDULE, results=RESULTS, db_path=db)
+    assert run_number(INPUTS.run_key, with_results=True, db_path=db) == 1
 
 
 def test_the_first_results_saved_for_a_run_are_kept(db):
