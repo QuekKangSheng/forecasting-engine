@@ -9,6 +9,12 @@ maxUploadSize = 30
 # beyond the app's own.
 enableStaticServing = true
 
+# Streamlit otherwise watches every source file for edits. Registering those watches
+# added about two seconds to the first visit to each page after the app started,
+# which is exactly when a demonstration opens them. While developing, turn it back
+# on for a session with:  streamlit run app/Home.py --server.fileWatcherType auto
+fileWatcherType = "none"
+
 
 [client]
 # No "Deploy" button or developer menu in the toolbar: the sponsor uses this app,
