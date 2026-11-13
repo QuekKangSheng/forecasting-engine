@@ -186,10 +186,14 @@ def covariance_at_rebalance(
     horizon: int,
     train_window: int,
     embargo: int,
+    calendar: pd.DatetimeIndex | None = None,
 ) -> pd.DataFrame:
     """Equity/bond daily-return covariance over the training window ending before
-    ``rebalance_date``, scaled from daily to ``horizon``-day terms."""
-    calendar = _common_price_calendar(prices)
+    ``rebalance_date``, scaled from daily to ``horizon``-day terms. ``calendar`` is the
+    two indices' shared calendar, for a caller that already has it: a schedule asks
+    for a covariance at every rebalance, and the calendar is the same each time."""
+    if calendar is None:
+        calendar = _common_price_calendar(prices)
     train_dates = training_window(
         rebalance_date, calendar, horizon=horizon, train_window=train_window, embargo=embargo
     )
@@ -273,10 +277,7 @@ def forecast_trust(
     """``β̂``: how much of the signal difference the models have earned trust for. The
     slope of ``_trust_fit``, clipped to ``[0, 1]`` (Grinold 1994). Zero where there is no
     fit, or where the slope's t-statistic is not above ``gate``."""
-    fit = _trust_fit(rebalance_date, pairs, horizon=horizon)
-    if fit is None or not fit.tvalues[1] > gate:
-        return 0.0
-    return min(max(float(fit.params[1]), 0.0), 1.0)
+    return _trust_and_gate(rebalance_date, pairs, horizon=horizon, gate=gate)[0]
 
 
 def forecast_gate_shut(
@@ -287,8 +288,19 @@ def forecast_gate_shut(
     gate: float = SIGNIFICANCE_T_GATE,
 ) -> bool:
     """Whether there is a fit but its slope's t-statistic is not above ``gate``."""
+    return _trust_and_gate(rebalance_date, pairs, horizon=horizon, gate=gate)[1]
+
+
+def _trust_and_gate(
+    rebalance_date: pd.Timestamp, pairs: pd.DataFrame, *, horizon: int, gate: float
+) -> tuple[float, bool]:
+    """``forecast_trust`` and ``forecast_gate_shut``, from the one fit both read."""
     fit = _trust_fit(rebalance_date, pairs, horizon=horizon)
-    return fit is not None and not fit.tvalues[1] > gate
+    if fit is None:
+        return 0.0, False
+    if not fit.tvalues[1] > gate:
+        return 0.0, True
+    return min(max(float(fit.params[1]), 0.0), 1.0), False
 
 
 @dataclass(frozen=True)
@@ -510,6 +522,177 @@ def schedule_weights(breakdowns: Mapping[pd.Timestamp, WeightBreakdown]) -> pd.D
     )
 
 
+@dataclass(frozen=True)
+class RebalanceInputs:
+    """What one rebalance's target is solved from, before any risk level is chosen."""
+
+    signal: pd.Series
+    """Each asset's signal as of the rebalance: its forecast less its fold's training mean."""
+    covariance: pd.DataFrame
+    premium: float
+    trust: float | None
+    """``forecast_trust`` at the rebalance, or ``None`` where it was not estimated."""
+    gate_shut: bool = False
+    """``forecast_gate_shut`` at the rebalance."""
+
+
+@dataclass(frozen=True)
+class ScheduleInputs:
+    """Everything a weight schedule is solved from that the risk level, the weight
+    bounds and the trading costs leave alone: each rebalance's signals, covariance,
+    long-run premium and forecast trust, and the daily returns the portfolio drifts on
+    between rebalances.
+
+    Estimating these is nearly all of a schedule's work, a covariance and a trust
+    regression per rebalance, and none of it depends on the level. A caller showing
+    one level after another, or a level beside the same level with no forecasts,
+    estimates them once (``schedule_inputs``) and solves each from them
+    (``breakdowns_from``)."""
+
+    rebalances: Mapping[pd.Timestamp, RebalanceInputs]
+    """In date order. A rebalance with a signal missing, or too little history for a
+    covariance, is not in it."""
+    daily_returns: pd.DataFrame
+    """``backtest.asset_returns`` from the first rebalance on. Empty with no rebalance."""
+
+    def solve_inputs(
+        self, date: pd.Timestamp, *, risk_level: int, bounds: tuple[float, float]
+    ) -> SolveInputs:
+        """``solve_inputs_at`` for one of these rebalances, without estimating again."""
+        rebalance = self.rebalances[date]
+        return SolveInputs(
+            date=date,
+            signal=rebalance.signal,
+            covariance=rebalance.covariance,
+            premium=rebalance.premium,
+            trust=_estimated(rebalance),
+            risk_level=risk_level,
+            bounds=bounds,
+        )
+
+
+def schedule_inputs(
+    signals: Mapping[TargetRole, pd.Series],
+    prices: Mapping[TargetRole, pd.Series],
+    *,
+    baselines: Mapping[TargetRole, pd.Series],
+    horizon: int,
+    train_window: int,
+    test_window: int,
+    embargo: int,
+    trust_gate: float = SIGNIFICANCE_T_GATE,
+    estimate_trust: bool = True,
+) -> ScheduleInputs:
+    """Each rebalance's signals, ``forecast_trust``, long-run premium and the covariance
+    over its own training window. ``baselines`` are each forecast's fold training
+    means; ``trust_gate`` is the t-statistic the trust estimate must clear.
+    ``estimate_trust=False`` skips the trust regressions, for a caller that will give
+    its own trust.
+
+    A rebalance whose signal is missing (a model had no prediction that day) or whose
+    training window can't support a covariance estimate is left out rather than
+    guessed at; the portfolio drifts on through it.
+    """
+    rebalance_dates = common_rebalance_dates(
+        prices, horizon=horizon, train_window=train_window, test_window=test_window, embargo=embargo
+    )
+    returns = expected_returns(rebalance_dates, signals)
+    premiums = long_run_premium(prices, horizon=horizon)
+    pairs = trust_pairs(signals, baselines, prices, horizon=horizon)
+    calendar = _common_price_calendar(prices)
+    rebalances: dict[pd.Timestamp, RebalanceInputs] = {}
+    for date in rebalance_dates:
+        row = returns.loc[date]
+        if row.isna().any():
+            continue
+        try:
+            covariance = covariance_at_rebalance(
+                date,
+                prices,
+                horizon=horizon,
+                train_window=train_window,
+                embargo=embargo,
+                calendar=calendar,
+            )
+        except OptimizeDataError:
+            continue
+        trust, gate_shut = (
+            _trust_and_gate(date, pairs, horizon=horizon, gate=trust_gate)
+            if estimate_trust
+            else (None, False)
+        )
+        rebalances[date] = RebalanceInputs(
+            signal=row,
+            covariance=covariance,
+            premium=float(premiums.get(date, 0.0)),
+            trust=trust,
+            gate_shut=gate_shut,
+        )
+    if not rebalances:
+        return ScheduleInputs(rebalances={}, daily_returns=pd.DataFrame(columns=list(ASSETS)))
+    daily_returns = asset_returns(prices, pd.DataFrame(index=pd.DatetimeIndex(list(rebalances))))
+    return ScheduleInputs(rebalances=rebalances, daily_returns=daily_returns)
+
+
+def breakdowns_from(
+    inputs: ScheduleInputs,
+    *,
+    risk_level: int = DEFAULT_RISK_LEVEL,
+    bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
+    costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
+    trust: float | None = None,
+) -> dict[pd.Timestamp, WeightBreakdown]:
+    """How each rebalance's equity weight was reached at ``risk_level``, in date order:
+    the target solved from that rebalance's inputs, then the no-trade band against the
+    weight the last allocation drifted to. Zero costs leave no band, so every
+    rebalance moves to its target. A ``trust`` given is used at every rebalance in
+    place of the estimate; ``trust=0.0`` is the level with no forecasts, under the
+    same band."""
+    targets: dict[pd.Timestamp, tuple[WeightBreakdown, float]] = {}
+    for date, rebalance in inputs.rebalances.items():
+        breakdown = weight_breakdown(
+            rebalance.signal,
+            rebalance.covariance,
+            premium=rebalance.premium,
+            trust=_estimated(rebalance) if trust is None else trust,
+            risk_level=risk_level,
+            bounds=bounds,
+        )
+        scale = _tilt_scale(
+            risk_level, breakdown.level_weight, rebalance.covariance, rebalance.premium
+        )
+        targets[date] = (breakdown, scale)
+    if not targets:
+        return {}
+
+    cost = sum(costs_bps[role] for role in ASSETS) / 1e4
+    # As arrays, like backtest.chain: this runs for every day of the schedule.
+    daily_returns = inputs.daily_returns[list(ASSETS)].to_numpy(dtype=float)
+    held: np.ndarray | None = None
+    breakdowns: dict[pd.Timestamp, WeightBreakdown] = {}
+    for i, day in enumerate(inputs.daily_returns.index):
+        if i > 0 and held is not None:
+            # Drifted as backtest.chain drifts it, so a held rebalance trades nothing.
+            daily = daily_returns[i]
+            held = held * (1 + daily) / (1 + float(held @ daily))
+        if day not in targets:
+            continue
+        breakdown, scale = targets[day]
+        if held is not None and cost > 0:
+            breakdown = _banded(breakdown, float(held[0]), cost * scale, bounds)
+        breakdowns[day] = breakdown
+        held = np.array([breakdown.equity, 1 - breakdown.equity])
+    return breakdowns
+
+
+def _estimated(rebalance: RebalanceInputs) -> float:
+    if rebalance.trust is None:
+        raise ValueError(
+            "these schedule inputs were built with estimate_trust=False, so a trust must be given"
+        )
+    return rebalance.trust
+
+
 def schedule_breakdowns(
     signals: Mapping[TargetRole, pd.Series],
     prices: Mapping[TargetRole, pd.Series],
@@ -537,88 +720,68 @@ def schedule_breakdowns(
     A rebalance whose signal is missing (a model had no prediction that day) or
     whose training window can't support a covariance estimate is left out rather
     than guessed at; the portfolio drifts on through it.
-    """
-    rebalance_dates = common_rebalance_dates(
-        prices, horizon=horizon, train_window=train_window, test_window=test_window, embargo=embargo
-    )
-    returns = expected_returns(rebalance_dates, signals)
-    premiums = long_run_premium(prices, horizon=horizon)
-    pairs = trust_pairs(signals, baselines, prices, horizon=horizon)
-    targets: dict[pd.Timestamp, tuple[WeightBreakdown, float]] = {}
-    for date in rebalance_dates:
-        row = returns.loc[date]
-        if row.isna().any():
-            continue
-        try:
-            covariance = covariance_at_rebalance(
-                date, prices, horizon=horizon, train_window=train_window, embargo=embargo
-            )
-        except OptimizeDataError:
-            continue
-        premium = float(premiums.get(date, 0.0))
-        breakdown = weight_breakdown(
-            row,
-            covariance,
-            premium=premium,
-            trust=forecast_trust(date, pairs, horizon=horizon, gate=trust_gate)
-            if trust is None
-            else trust,
-            risk_level=risk_level,
-            bounds=bounds,
-        )
-        scale = _tilt_scale(risk_level, breakdown.level_weight, covariance, premium)
-        targets[date] = (breakdown, scale)
-    if not targets:
-        return {}
 
-    cost = sum(costs_bps[role] for role in ASSETS) / 1e4
-    daily_returns = asset_returns(prices, pd.DataFrame(index=pd.DatetimeIndex(list(targets))))
-    held: np.ndarray | None = None
-    breakdowns: dict[pd.Timestamp, WeightBreakdown] = {}
-    for i, (day, row) in enumerate(daily_returns[list(ASSETS)].iterrows()):
-        if i > 0 and held is not None:
-            # Drifted as backtest.chain drifts it, so a held rebalance trades nothing.
-            daily = row.to_numpy(dtype=float)
-            held = held * (1 + daily) / (1 + float(held @ daily))
-        if day not in targets:
-            continue
-        breakdown, scale = targets[day]
-        if held is not None and cost > 0:
-            breakdown = _banded(breakdown, float(held[0]), cost * scale, bounds)
-        breakdowns[day] = breakdown
-        held = np.array([breakdown.equity, 1 - breakdown.equity])
-    return breakdowns
+    This is ``schedule_inputs`` then ``breakdowns_from``, for one schedule on its own.
+    """
+    return breakdowns_from(
+        schedule_inputs(
+            signals,
+            prices,
+            baselines=baselines,
+            horizon=horizon,
+            train_window=train_window,
+            test_window=test_window,
+            embargo=embargo,
+            trust_gate=trust_gate,
+            estimate_trust=trust is None,
+        ),
+        risk_level=risk_level,
+        bounds=bounds,
+        costs_bps=costs_bps,
+        trust=trust,
+    )
+
+
+def _terms(covariance: pd.DataFrame) -> tuple[float, float, float]:
+    """``(σ_e², σ_eb, σ_b²)``, found by label, so the frame may be in either order.
+
+    Read from the frame's array. A schedule asks for these a dozen times a rebalance,
+    and a labelled look-up each time cost more than every sum the numbers go into."""
+    equity, bond = ASSETS
+    values = covariance.to_numpy()
+    rows, columns = covariance.index, covariance.columns
+    equity_row, bond_row = rows.get_loc(equity), rows.get_loc(bond)
+    equity_col, bond_col = columns.get_loc(equity), columns.get_loc(bond)
+    return (
+        values[equity_row, equity_col],
+        values[equity_row, bond_col],
+        values[bond_row, bond_col],
+    )
 
 
 def _var_diff(covariance: pd.DataFrame) -> float:
     """``D = σ_e² − 2σ_eb + σ_b²``: the variance of the difference between the
     two indices' returns."""
-    equity, bond = ASSETS
-    return float(
-        covariance.loc[equity, equity]
-        - 2 * covariance.loc[equity, bond]
-        + covariance.loc[bond, bond]
-    )
+    equity_var, cross, bond_var = _terms(covariance)
+    return float(equity_var - 2 * cross + bond_var)
 
 
 def _variance(weight: float, covariance: pd.DataFrame) -> float:
     """The variance of a portfolio holding ``weight`` in equity and the rest in bond."""
-    equity, bond = ASSETS
+    equity_var, cross, bond_var = _terms(covariance)
     return float(
-        weight**2 * covariance.loc[equity, equity]
-        + 2 * weight * (1 - weight) * covariance.loc[equity, bond]
-        + (1 - weight) ** 2 * covariance.loc[bond, bond]
+        weight**2 * equity_var + 2 * weight * (1 - weight) * cross + (1 - weight) ** 2 * bond_var
     )
 
 
 def _min_variance_weight(covariance: pd.DataFrame) -> float | None:
     """``w_mv = (σ_b² − σ_eb) / D``, or ``None`` where ``D ≤ 0``: every mix is then
     equally risky, so no weight is the minimum."""
-    equity, bond = ASSETS
+    _, cross, bond_var = _terms(covariance)
     var_diff = _var_diff(covariance)
     if var_diff <= 0:
         return None
-    return float((covariance.loc[bond, bond] - covariance.loc[equity, bond]) / var_diff)
+    return float((bond_var - cross) / var_diff)
 
 
 def _lowest_risk_weight(minimum: float | None, bounds: tuple[float, float]) -> float:

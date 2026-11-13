@@ -110,18 +110,29 @@ def breaches(returns: pd.Series, confidence: float, *, window: int) -> tuple[int
     at about ``1 − c`` whatever the strategy did. Only a strict excess counts.
     """
     r = returns.dropna().to_numpy(dtype=float)
-    count = 0
-    for day in range(window, len(r)):
-        var, _ = _var_cvar(r[day - window : day], confidence)
-        count += int(-r[day] > var)
-    return count, max(len(r) - window, 0)
+    tested = max(len(r) - window, 0)
+    if window < 1 or not tested:
+        return 0, tested
+    # Every day's window at once, one row each, rather than a sort per day: over a
+    # twenty-year backtest that loop was most of the time the Portfolio page took.
+    # Each row's VaR is its k-th worst return, the same day ``_var_cvar`` picks.
+    k = _tail_size(window, confidence)
+    windows = np.lib.stride_tricks.sliding_window_view(r, window)[:-1]
+    var = -np.partition(windows, k - 1, axis=1)[:, k - 1]
+    return int(np.count_nonzero(-r[window:] > var)), tested
+
+
+def _tail_size(days: int, confidence: float) -> int:
+    """``k``: how many of ``days`` returns make up the tail at ``confidence``, at least 1."""
+    if not 0 < confidence < 1:
+        raise ValueError(f"confidence must be between 0 and 1, got {confidence}")
+    # The guard is for 100 × 0.05 = 5.000000000000001.
+    return max(math.ceil(days * (1 - confidence) - 1e-9), 1)
 
 
 def _var_cvar(r: np.ndarray, confidence: float) -> tuple[float, float]:
-    if not 0 < confidence < 1:
-        raise ValueError(f"confidence must be between 0 and 1, got {confidence}")
+    k = _tail_size(len(r), confidence)
     if len(r) == 0:
         return float("nan"), float("nan")
-    k = math.ceil(len(r) * (1 - confidence) - 1e-9)  # guard 100 × 0.05 = 5.000000000000001
-    worst = np.sort(r)[: max(k, 1)]
+    worst = np.sort(r)[:k]
     return float(-worst[-1]), float(-worst.mean())
