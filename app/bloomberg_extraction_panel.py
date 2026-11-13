@@ -15,6 +15,7 @@ construction, whatever it's named.
 
 from __future__ import annotations
 
+import hashlib
 import pickle
 from collections import Counter
 from collections.abc import Collection
@@ -55,6 +56,9 @@ _TARGET_EXPORTS_KEY = "_target_exports"
 _SIGNAL_EXPORTS_KEY = "_signal_exports"
 _TARGET_DROPPED_KEY = "_target_dropped"
 _SIGNAL_DROPPED_KEY = "_signal_dropped"
+#: Each uploader's files as last read, with what they were read as: see ``_read_once``.
+_TARGET_READ_KEY = "_target_read"
+_SIGNAL_READ_KEY = "_signal_read"
 #: filename -> the Role/Field the user last picked for it, so navigating to
 #: another page and back doesn't lose the choice (a fresh upload resets the
 #: file_uploader widget itself, but this dict is plain session state).
@@ -172,6 +176,22 @@ def _parse_and_merge(files) -> _UploadResult:
     return result
 
 
+def _read_once(files, kept_key: str) -> _UploadResult:
+    """``_parse_and_merge(files)``, done once for each set of files rather than on
+    every rerun. The page reruns for every control on it, so picking a role or a
+    field, or opening a tab of the quality report, read and merged every export
+    again: most of a second each time on twenty years of daily data.
+
+    The files are told apart by name and contents, so the same name uploaded again
+    with other data is read again."""
+    identity = tuple((f.name, hashlib.sha256(f.getvalue()).hexdigest()) for f in files)
+    kept = st.session_state.get(kept_key)
+    if kept is None or kept[0] != identity:
+        kept = (identity, _parse_and_merge(files))
+        st.session_state[kept_key] = kept
+    return kept[1]
+
+
 def render() -> None:
     ui.page_header(
         "Data",
@@ -190,6 +210,8 @@ def render() -> None:
             _TARGET_DROPPED_KEY,
             _TARGET_ROLE_CHOICES_KEY,
             _TARGET_FIELD_CHOICES_KEY,
+            _TARGET_READ_KEY,
+            _SIGNAL_READ_KEY,
             SIGNAL_MERGED_KEY,
             SIGNAL_REPORT_KEY,
             _SIGNAL_EXPORTS_KEY,
@@ -244,7 +266,7 @@ def render() -> None:
     )
     if signal_files:
         with st.spinner("Reading and merging the signal files…"):
-            result = _parse_and_merge(signal_files)
+            result = _read_once(signal_files, _SIGNAL_READ_KEY)
         for message in result.errors:
             st.error(message, icon=":material/error:")
         if result.merged is not None:
@@ -404,7 +426,7 @@ def _render_target_uploader(
     """
     if files:
         with st.spinner("Reading and merging the target files…"):
-            result = _parse_and_merge(files)
+            result = _read_once(files, _TARGET_READ_KEY)
         for message in result.errors:
             st.error(message, icon=":material/error:")
         if result.merged is not None:
