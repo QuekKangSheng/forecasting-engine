@@ -59,10 +59,12 @@ def _metric_value(value: float | None) -> str:
     return f"{value:,.0f}" if float(value).is_integer() and abs(value) >= 1 else f"{value:.4g}"
 RUNS_PER_PAGE = 20
 RUN_NAME_MAX_CHARS = 80
-#: Run, name, first shown, equity model, bond model, risk level. A row's buttons sit on
-#: a line of their own: beside these, the page's width leaves them too narrow to read.
-RUN_COLUMNS = [0.5, 2.4, 1.6, 1.6, 1.6, 0.7]
-RUN_HEADINGS = ["Run", "Name", "First shown", "Equity model", "Bond model", "Risk"]
+#: Run, name, first shown, equity model, bond model, risk level, then the row's buttons.
+#: The buttons had a line of their own while the page was a narrow column; it is the
+#: full width now, and the extra line made the list twice as long, so an opened run
+#: landed a screen or two below the button that opened it.
+RUN_COLUMNS = [0.5, 2.4, 1.5, 1.7, 1.5, 0.6, 2.1]
+RUN_HEADINGS = ["Run", "Name", "First shown", "Equity model", "Bond model", "Risk", ""]
 
 
 # Each tab is a fragment: a control on one redraws that tab alone. Run as one page,
@@ -248,11 +250,15 @@ def _open_run(run_key: str) -> None:
     st.session_state[OPEN_RUN_KEY] = run_key
 
 
+def _close_run() -> None:
+    st.session_state.pop(OPEN_RUN_KEY, None)
+
+
 def _model_cell(name: object) -> str:
     return display_model_name(name) if pd.notna(name) else "—"
 
 
-def _run_row(row) -> None:
+def _run_row(row, *, is_open: bool) -> None:
     cols = st.columns(RUN_COLUMNS, vertical_alignment="center")
     cols[0].markdown(f"**{row.run_number}**")
     widget = f"run_name_{row.run_key}"
@@ -270,15 +276,19 @@ def _run_row(row) -> None:
     cols[3].text(_model_cell(row.equity_model))
     cols[4].text(_model_cell(row.bond_model))
     cols[5].text(f"{row.risk_level:.0f}" if pd.notna(row.risk_level) else "—")
-    buttons = st.container(horizontal=True, horizontal_alignment="right")
-    buttons.button(
-        "Open",
-        key=f"open_run_{row.run_key}",
-        disabled=not row.has_results,
-        help=None if row.has_results else NOT_SAVED,
-        on_click=_open_run,
-        args=(row.run_key,),
-    )
+    buttons = cols[6].container(horizontal=True, horizontal_alignment="right")
+    if is_open:
+        # The run is shown under this row; the same button puts it away again.
+        buttons.button("Close", key=f"close_run_{row.run_key}", on_click=_close_run)
+    else:
+        buttons.button(
+            "Open",
+            key=f"open_run_{row.run_key}",
+            disabled=not row.has_results,
+            help=None if row.has_results else NOT_SAVED,
+            on_click=_open_run,
+            args=(row.run_key,),
+        )
     if row.has_results:
         saved_run.report_button(buttons, row.run_key, label="Report", number=row.run_number)
     else:
@@ -314,22 +324,31 @@ def _portfolio_runs() -> None:
         if pages > 1
         else 1
     )
+    # An opened run is shown straight under its own row, where the click was. At the
+    # foot of the list it was out of sight, so "Open" looked as if it had done nothing.
+    open_key = st.session_state.get(OPEN_RUN_KEY)
+    opened = None if open_key is None else portfolio_runs.get_saved_run(open_key)
+    shown_inline = False
     with st.container(border=True):
         header = st.columns(RUN_COLUMNS)
         for col, heading in zip(header, RUN_HEADINGS, strict=True):
             col.caption(heading)
         start = (page - 1) * RUNS_PER_PAGE
         for row in table.iloc[start : start + RUNS_PER_PAGE].itertuples():
-            _run_row(row)
+            is_open = opened is not None and row.run_key == opened.run_key
+            _run_row(row, is_open=is_open)
+            if is_open:
+                shown_inline = True
+                with st.container(border=True):
+                    saved_run.render(opened)
 
     with st.expander("Compare runs"):
         _compare_runs(table)
 
-    run_key = st.session_state.get(OPEN_RUN_KEY)
-    run = None if run_key is None else portfolio_runs.get_saved_run(run_key)
-    if run is not None:
+    # A run opened from another page of the list has no row here to sit under.
+    if opened is not None and not shown_inline:
         st.divider()
-        saved_run.render(run)
+        saved_run.render(opened)
 
 
 def _compare_runs(table: pd.DataFrame) -> None:

@@ -1228,6 +1228,49 @@ def test_an_opened_run_follows_the_before_costs_toggle_with_its_saved_figures():
         assert sharpe in page_table
 
 
+def _row_order(block) -> list[str]:
+    """Under ``block``, top to bottom: each button by its label and each opened run by
+    its heading."""
+    found = []
+    for child in block.children.values():
+        if child.type == "button":
+            found.append(child.label)
+        elif child.type == "subheader":
+            found.append(child.value)
+        if hasattr(child, "children"):
+            found += _row_order(child)
+    return found
+
+
+def test_an_opened_run_sits_under_its_own_row_and_closes_from_there():
+    """An opened run used to be drawn below the whole list and the Compare box, out
+    of sight of the button that opened it, and there was no way to put it away."""
+    app = _happy_page()
+    app.select_slider[0].set_value(1).run()  # a second run, numbered 2, listed first
+    history = _history()
+    assert _row_order(history.tabs[1]) == ["Open", "Open"]
+
+    _open(history, number=2)
+
+    assert _row_order(history.tabs[1]) == ["Close", "Run 2", "Open"]
+
+    (close,) = [b for b in history.tabs[1].button if b.label == "Close"]
+    close.click().run()
+
+    assert not history.exception
+    assert _row_order(history.tabs[1]) == ["Open", "Open"]
+
+
+def test_opening_another_run_closes_the_one_that_was_open():
+    app = _happy_page()
+    app.select_slider[0].set_value(1).run()
+    history = _open(_history(), number=2)
+
+    _open(history, number=1)
+
+    assert _row_order(history.tabs[1]) == ["Open", "Close", "Run 1"]
+
+
 def test_opening_a_run_refits_nothing_and_leaves_the_active_models(monkeypatch):
     committed = _committed()
     _set_active(EQUITY, forecast=_leaning(committed, +0.05))
