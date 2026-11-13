@@ -556,6 +556,27 @@ def test_drawdown_is_charted_for_both_indices_and_the_optimised_portfolio():
     assert any("Drawdown" in m.value for m in app.markdown)
 
 
+def test_the_weights_chart_marks_the_limits_and_runs_to_the_last_day():
+    committed = _committed()
+    app = _happy_page()
+
+    (chart,) = [
+        c for c in app.get("vega_lite_chart") if '"interpolate": "step-after"' in c.proto.spec
+    ]
+
+    spec = json.loads(chart.proto.spec)
+    marks = [layer["mark"]["type"] for layer in spec["layer"]]
+    assert marks == ["area", "line", "rule", "point"]
+    assert "the 20% and 80% limits" in _captions(app)
+    rows = next(
+        convert_arrow_bytes_to_pandas_df(d.data.data)
+        for d in chart.proto.datasets
+        if "Weight" in convert_arrow_bytes_to_pandas_df(d.data.data).columns
+    )
+    # The last allocation is drawn held to the last day there is a price for.
+    assert pd.Timestamp(rows["date"].max()).date() == committed["Date"].iloc[-1].date()
+
+
 def test_without_active_models_the_page_explains_what_will_appear():
     app = _page(_committed())
 

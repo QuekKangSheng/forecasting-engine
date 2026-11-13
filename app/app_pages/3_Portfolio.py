@@ -351,7 +351,19 @@ with weights_col:
         unsafe_allow_html=True,
     )
     renamed = schedule.rename(columns={EQUITY: equity_name, BOND: bond_name})
-    st.altair_chart(charts.weights_chart(renamed), width="stretch")
+    st.altair_chart(
+        charts.weights_chart(
+            renamed,
+            limits=(lower, upper),
+            # The last allocation is held to the last day both indices have a price.
+            until=min(series.index[-1] for series in prices.values()),
+        ),
+        width="stretch",
+    )
+    st.caption(
+        f"The line is {equity_name}'s weight and the rest is {bond_name}; each step is a "
+        f"rebalance. Dashed lines mark the {lower:.0%} and {upper:.0%} limits."
+    )
 
 
 # --- FYP-19: the optimised allocation against the equal-weight benchmark -----------

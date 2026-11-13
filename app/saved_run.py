@@ -130,11 +130,20 @@ def render(run: portfolio_runs.SavedRun) -> None:
 
     paths = portfolio_runs.saved_paths(run.run_key)
     st.markdown(ui.eyebrow("Weights per rebalance"), unsafe_allow_html=True)
+    # A run saved before its weight limits were kept is drawn without them.
+    limits = results["settings"].get("bounds")
     st.altair_chart(
         charts.weights_chart(
-            paths.optimised.weights.rename(columns={role: names[role] for role in (EQUITY, BOND)})
+            paths.optimised.weights.rename(columns={role: names[role] for role in (EQUITY, BOND)}),
+            limits=None if limits is None else (limits[0], limits[1]),
+            until=paths.end,
         ),
         width="stretch",
+    )
+    st.caption(
+        f"The line is {names[EQUITY]}'s weight and the rest is {names[BOND]}; each step is "
+        "a rebalance."
+        + ("" if limits is None else " Dashed lines mark the weight limits.")
     )
 
     basis_label = st.segmented_control(
