@@ -184,7 +184,7 @@ def test_the_held_weights_contract_survives_the_real_optimizer_path(tmp_path):
     assert impact.weights.to_dict() == pytest.approx(weights)
 
 
-def test_reoptimising_under_a_real_shock_moves_the_schedule_the_way_fyp_246_promises(tmp_path):
+def test_reoptimising_under_a_negative_shock_moves_equity_below_the_held_weight(tmp_path):
     db = tmp_path / "active.duckdb"
     frame, function = _saved_function(db)
     solve_inputs, prices, _ = _real_solve_inputs(frame, trust=1.0)
