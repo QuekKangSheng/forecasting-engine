@@ -141,8 +141,9 @@ date of the price each label reaches, which the splitter uses to purge.
 - **Windows.** Test windows of `DEFAULT_TEST_WINDOW` rows roll forward by that
   many rows. Each training window is the `TRAIN_WINDOW` rows ending `embargo` rows
   before its test window, and may reach back into the tuning period. Both windows
-  are the same for every model on both targets (the research model, §9.1, alone
-  trains on every earlier row, on the same test windows), and fixed rather than settings:
+  are the same for every model on both targets (the research model, §9.1, and the
+  derived polynomial's expanding no-change candidate, §9, train on every earlier
+  row, on the same test windows), and fixed rather than settings:
   trying windows until one scores well is overfitting that no single run can see.
   Every row of the results table is therefore scored on the same dates, and both
   targets forecast the same rebalance days.
@@ -152,8 +153,9 @@ date of the price each label reaches, which the splitter uses to purge.
   window (+0.139) nor one capped at the latest 1,260 rows (+0.117) beat it by more
   than a standard error; on bond both scored below it. Folds of the expanding
   window trained on under five years scored +0.225, those on five years or more
-  +0.075, so a longer history did not help. `splitters.expanding` remains only
-  for the research model (§9.1).
+  +0.075, so a longer history did not help. `splitters.expanding` remains for
+  the research model (§9.1) and for the derived polynomial's no-change fit (§9),
+  which is tried on both windows and kept on whichever selection picks.
 - **Embargo.** `EMBARGO_DAYS`, the longest horizon (20 days), whichever horizon is
   chosen.
 - **Purge.** A training row is dropped if its label's price (`label_end`) is dated
@@ -163,7 +165,9 @@ date of the price each label reaches, which the splitter uses to purge.
 ## 8. Per-fold screening
 
 For the derived polynomial and machine learning, each fold screens every
-candidate signal on its own training window only (`features/screening.py`). A
+candidate signal on its own training window only (`features/screening.py`); the
+derived polynomial's no-change candidates (§9) are the exception, handing every
+input's level to their penalty instead. A
 signal is kept when the absolute rank IC of the signal against the target is
 greater than `INCLUSION_THRESHOLD` (strictly). If a fold keeps no signal, no
 model is fitted on it: the fold forecasts its training window's mean target for
@@ -223,13 +227,17 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
 - **Derived polynomial** (`models/polynomial.run_derived_polynomial`). The grid is
   a Lasso fit (`CANDIDATE_REGULARIZERS`, an L1 share of 1 in `_REGULARIZERS`) at
   every degree in `CANDIDATE_DEGREES`, `models/polynomial.DerivedPolynomial`, plus
-  one shrinkage candidate (`SHRINKAGE`, below): four setups. `MAX_DEGREE` still
-  caps a user's function. Elastic net and degrees 4 and 5 left the grid on 12 Oct
+  one shrinkage candidate (`SHRINKAGE`, below) and, when the data holds at least
+  one rate, spread or gauge, two no-change candidates (`NO_CHANGE`,
+  `NO_CHANGE_EXPANDING`, below): six setups for the equity target. The bond target
+  tries only the two no-change candidates (`NO_CHANGE_ONLY_ROLES`, below).
+  `MAX_DEGREE` still caps a user's function. Elastic net and degrees 4 and 5 left the grid on 12 Oct
   2026: elastic net's forecasts correlated 0.98–1.00 with lasso's at the same
   degree on both targets, so it gave selection nothing to choose between, and
   degrees 4 and 5 were never chosen while a single degree-5 fold took 6–9 minutes
-  ([evidence](evidence/2026-10-12-design-verification.md)). Every candidate fits the signals that
-  fold's screening kept (§8). For the lasso candidates, per fold:
+  ([evidence](evidence/2026-10-12-design-verification.md)). Every candidate but the no-change
+  ones fits the signals that fold's screening kept (§8). For the lasso candidates,
+  per fold:
   1. each raw signal is clipped to its training mean ± `CLIP_SD` standard
      deviations, and those bounds are shown beside the equation;
   2. each clipped signal is standardised with the same mean and SD,
@@ -287,6 +295,88 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   return forecasts and Rapach, Strauss & Zhou (2010) on combining correlated
   predictors. On the Sep 2026 data it was the best candidate for both targets at
   every fold placement tried; degrees 4 and 5 were never chosen.
+
+  **Bond tries only the no-change candidates.** On the bond target the lasso and
+  shrinkage candidates keep no term in about half the folds, so they forecast a flat
+  line, and on the Sep 2026 data at the 20-day horizon their Signal Rank IC was +0.011,
+  +0.027 and +0.051 (lasso, degrees 1 to 3) and −0.037 (shrinkage), against +0.101 for
+  `NO_CHANGE` and +0.137 for `NO_CHANGE_EXPANDING`. So for a target in
+  `NO_CHANGE_ONLY_ROLES` (`derive_polynomial(..., no_change_only=True)`) the grid is
+  those two candidates alone and the better of them is reported. Fallback: with no
+  rate, spread or gauge in the data, or if neither no-change candidate can be fitted
+  on it, the ordinary lasso and shrinkage grid runs instead, so the target is never
+  left without a polynomial, and `DerivedRun.fallback` says why; the Models page shows
+  it. Equity is unchanged.
+
+  The **no-change candidates** (`models/no_change.NoChangePolynomial`) are a
+  degree-1 fit on the levels of the rates, spreads and gauges, `NO_CHANGE` on the
+  page's rolling window and `NO_CHANGE_EXPANDING` on every earlier row
+  (`splitters.expanding` of it). Why: an index's `h`-day return is, to first order,
+  what it earns if nothing moves (for a bond index its yield, its spread and the
+  roll down the curve) less its duration times the same-window move in yields and
+  spreads; over Aug 2016 – Sep 2024 the same-window changes of the rates and gauges
+  explained about 97% of the 20-day bond return. §4 reads a rate as its 1-row
+  difference, so the carry is not in the other candidates' panel, and in about half
+  the bond folds the lasso kept no term. A regression on a rate's level alone does
+  no better: a persistent level whose moves drive the return seems, in one sample,
+  to predict its own later change (Stambaugh bias), which in a simulation where
+  carry is the only truth put the fitted slope at 6 to 16 times the carry. Per
+  fold, on the training rows only:
+  1. the inputs are every signal whose transform (§4) is a level or a difference,
+     never a log return: chosen by kind, not by name (`no_change.state_columns`).
+     Each is read as its level, aligned and lagged by `align_and_lag` exactly as
+     the page's own panel is (`no_change.level_panel`). With no such signal in the
+     data, the two candidates are not offered;
+  2. each input is clipped to its training mean ± `CLIP_SD` standard deviations
+     and standardised with the same mean and SD, `z = (x − mean) / sd`;
+  3. `return(t, t+h) = a + Σ c_j·z_j(t) + Σ b_k·news_k(t) + e` is fitted, where
+     `news_k(t) = level_k(t+h) − level_k(t)` is input `k`'s change over that row's
+     own label window (`no_change.label_window_news`). `a` and the `b` are
+     unpenalised; the `c` carry a lasso penalty chosen as the lasso candidates
+     choose theirs (steps 3 and 4 above: up to `INNER_CV_SPLITS` time-ordered splits
+     with a gap of `h`, `_N_ALPHAS` penalties spanning a factor of `_ALPHA_EPS`, the
+     same term cap), by the validation error of the whole equation, news
+     included. By Frisch-Waugh the lasso is fitted to the target and the `z` with
+     the intercept and the news (each scaled by its training SD) regressed out of
+     both;
+  4. the forecast is `a + Σ c_j·z_j(t)`: the return the training rows say to
+     expect if no input moves over the horizon. The `b` soak up the news, so the
+     `c` are estimated against what is left of the return, and a level's drift
+     through one sample is not credited to it.
+
+  The news looks forward exactly as far as the label does. In a panel of lagged
+  levels the level dated `t` is on the next row, so it reads `h + 1` rows ahead,
+  and it is read on training rows only, whose labels the splitter has already
+  purged against the test window (§7); a row whose label or news is not complete
+  is left out. A fold needs at least `_MIN_TRAINING_ROWS` (`models/no_change`)
+  complete rows, with every input present on a row together, where the other
+  candidates screen a sparse signal out; if any fold has fewer, that candidate is
+  left out of the pick and the page says why, rather than the derived run failing
+  (`DerivedRun.left_out`). The equation is `a + Σ c·z` in the standardised levels,
+  one term per input the penalty kept. The page says when this fit won, and that it
+  screened nothing, shows its inputs' levels' means, SDs and clip bounds, and an
+  active function built from it reads every input as a level (and, for
+  `NO_CHANGE_EXPANDING`, has no train window).
+
+  **Its Signal Rank IC is measured against its own level.** Its level is its own
+  intercept, not the training mean, and against the training mean any gap between
+  the two would be scored as skill: a model forecasting one constant could pass. So
+  it declares `sets_own_level` (`models/base.declares_own_level`), and each fold's
+  forecasts are judged against its mean in-sample forecast over that fold's
+  training rows (`FoldResult.own_level`, `harness.fold_baseline`), which is also
+  the baseline the results carry for the optimiser. A fold that keeps no term
+  forecasts its intercept everywhere and adds exactly zero. Every other model is
+  judged against the training mean as before.
+
+  It comes from the November 2026 model research (`bond/nochange_levels`), where on
+  bond it was the one derivation that gave a usable, sign-stable polynomial: a
+  mean forecast of about 0.25% per 20 days against a carry of about 0.20%, with the
+  10-year yield's level kept, positive, in every refit that kept it. On the Sep
+  2026 data at the page's settings (`h` = 20) the grid picks `NO_CHANGE_EXPANDING`
+  for bond (Signal Rank IC +0.137, t 1.55; `NO_CHANGE` +0.101; the best other
+  candidate, degree-3 lasso, +0.051) and still picks the degree-3 lasso for equity
+  (+0.156, t 2.31; `NO_CHANGE` −0.074, `NO_CHANGE_EXPANDING` +0.026), whose numbers
+  are unchanged.
 - **Machine learning** (`models/boosted.py`). XGBoost and LightGBM, each with
   `_FIXED_PARAMS` and gain feature importance, and minimum leaf size
   (`_LEAF_KEYS`) capped at `LEAF_CAP_SHARE` of a fit's training rows.
@@ -394,7 +484,9 @@ model's sampled SHAP, a polynomial's is computed exactly, since its equation
 is known: each term's value decomposes across its distinct signals by the
 closed-form Shapley value for a product, relative to each factor's mean over
 the displayed fold's own training rows (`validation.splitters.
-last_fold_train_window`, so nothing is refitted). A plain linear term reduces
+last_fold_train_window`, so nothing is refitted): for a derived polynomial won by
+a no-change candidate, the last fold of that candidate's own window, on its level
+inputs. A plain linear term reduces
 to coefficient × (value − training mean); a power of one signal (`x²`)
 attributes wholly to that signal; an interaction splits between its signals so
 their shares always sum back to the term's own contribution. Terms sharing a
@@ -433,7 +525,10 @@ values end to end, then computes once:
   trailing mean ranked future equity returns the wrong way (pooled Rank IC down to
   −0.25 at a 20-day horizon): pooled whole, the level swamped signals that were
   there. `ModelRunResult.baseline` keeps each date's training mean, so the
-  portfolio optimiser can read the signal back.
+  portfolio optimiser can read the signal back. A model that sets its own level
+  (the derived polynomial's no-change candidates, §9) is judged against that
+  level instead, its mean in-sample forecast over the fold's training rows, and
+  that is its baseline.
 - **OOS Rank IC**: the Spearman correlation of the whole forecast, its level
   included, computed as the Pearson correlation of ranks. Shown, not gated.
 - **RMSE.**
@@ -967,6 +1062,10 @@ Values are Python literals as the code holds them.
 | `MAX_DEGREE` | `forecasting_engine.models.polynomial` | `5` |
 | `CANDIDATE_DEGREES` | `forecasting_engine.models.polynomial` | `(1, 2, 3)` |
 | `SHRINKAGE` | `forecasting_engine.models.polynomial` | `"shrinkage"` |
+| `NO_CHANGE` | `forecasting_engine.models.polynomial` | `"no_change"` |
+| `NO_CHANGE_EXPANDING` | `forecasting_engine.models.polynomial` | `"no_change_expanding"` |
+| `NO_CHANGE_ONLY_ROLES` | `forecasting_engine.models.polynomial` | `("bond",)` |
+| `_MIN_TRAINING_ROWS` | `forecasting_engine.models.no_change` | `30` |
 | `CLIP_SD` | `forecasting_engine.models.shrinkage` | `4.0` |
 | `COMMON_SLOPE_SCALE` | `forecasting_engine.models.shrinkage` | `0.2` |
 | `MAX_OVERLAP` | `forecasting_engine.models.shrinkage` | `63.0` |

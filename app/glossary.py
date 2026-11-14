@@ -26,9 +26,10 @@ TERMS: Mapping[str, str] = {
         "a setting changed."
     ),
     "Function source": (
-        "Choose one. **Derive automatically** searches a small grid of polynomial "
-        "degrees and regularizers and reports the best one. Regularization pushes "
-        "weak terms to exactly zero, so the result stays short enough to read.\n\n"
+        "Choose one. **Derive automatically** searches a small grid and reports the "
+        "best one: for equity Lasso at degrees 1 to 3, a shrinkage fit and a no-change "
+        "fit on the levels of the rates, spreads and gauges; for bond the no-change fit "
+        "alone, with the others only if it cannot be fitted.\n\n"
         "**Use your own function** takes the shape you write, using placeholders "
         "such as x and y that you then point at signals, and fits only a scale "
         "and an intercept to it on each training window, so the forecast is a "
@@ -46,6 +47,16 @@ TERMS: Mapping[str, str] = {
         "and signs were chosen in that research on data overlapping this test "
         "period, so treat its score as optimistic. The derived polynomial makes "
         "every such choice inside each fold instead."
+    ),
+    "No-change fit": (
+        "A derived candidate for rates, spreads and gauges: their level is what an "
+        "index earns (a bond's yield), their moves what it gains or loses. Each "
+        "training day's own moves over the horizon are taken out before the levels "
+        "are fitted, so a level is credited with what it earns, not with how it "
+        "happened to move in that sample. The forecast is the return expected if "
+        "none of them moves. It is tried on the latest 504 dates and on every "
+        "earlier date, and its Signal Rank IC is measured against its own average "
+        "forecast, not the training average."
     ),
     "Max terms": (
         "The most terms the derived equation may keep. The cap works through the "
@@ -73,8 +84,9 @@ TERMS: Mapping[str, str] = {
         "a setting: every model on both targets studies the latest 504 days (about "
         "two years), long enough to span more than one market episode but short "
         "enough to follow a change in how the markets behave. Trying windows until "
-        "one scores well would itself be a way to overfit. The research model is "
-        "the one exception: it trains on every earlier date, as its research did."
+        "one scores well would itself be a way to overfit. The research model "
+        "trains on every earlier date instead, as its research did, and the derived "
+        "polynomial tries its no-change fit both ways."
     ),
     "Walk-forward test window (days)": (
         "The days right after each training block, used only for grading: 20 "
@@ -107,7 +119,8 @@ TERMS: Mapping[str, str] = {
         "the model never trained on. The headline number, and the one the "
         "promotion gate is set on. The training average is left out because it "
         "moves with recent performance whatever the signals say, so it can drown "
-        "a real signal or pass a model that has none. The two s.e.s beside it "
+        "a real signal or pass a model that has none. A model that sets its own "
+        "level is read against its own average forecast instead. The two s.e.s beside it "
         "are standard errors, one allowing for overlapping labels, one for errors "
         "shared within a test window; t divides the score by the larger."
     ),

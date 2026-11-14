@@ -26,7 +26,7 @@ import pandas as pd
 
 from forecasting_engine.features.screening import screen_over_folds
 from forecasting_engine.ingest.align import FeaturePanel
-from forecasting_engine.models.base import Forecaster, ModelDescription
+from forecasting_engine.models.base import Forecaster, ModelDescription, declares_own_level
 from forecasting_engine.reporting.model_metrics import (
     ConstantForecasts,
     FoldTerms,
@@ -95,6 +95,11 @@ class FoldResult:
     ``evaluate()`` ran without screening."""
     horizon: int = 1
     """The panel's label horizon, which sets how far apart errors stay correlated."""
+    own_level: float | None = None
+    """For a forecaster that sets its own level (``models.base.declares_own_level``),
+    the level its forecasts are judged against: its mean in-sample forecast over this
+    fold's training rows. ``None`` for every other forecaster, which is judged against
+    the training-mean target."""
 
 
 def evaluate(
@@ -157,9 +162,21 @@ def evaluate(
                 description=forecaster.describe(),
                 screening=screening,
                 horizon=panel.horizon,
+                own_level=_own_level(predicted_train) if declares_own_level(forecaster) else None,
             )
         )
     return tuple(results)
+
+
+def _own_level(predicted_train: pd.Series) -> float:
+    """A forecaster's mean in-sample forecast, over the training rows it forecast. A
+    forecast that is one value throughout is that value exactly, not a mean carrying
+    rounding dust, so a fold that forecasts it everywhere adds exactly zero signal."""
+    values = predicted_train.dropna()
+    if values.empty:
+        return float("nan")
+    first = float(values.iloc[0])
+    return first if bool((values == first).all()) else float(values.mean())
 
 
 def _training_mean_fold(
@@ -203,10 +220,11 @@ def summarize(
     fit shares.
 
     The gates read the Signal Rank IC, the pooled Rank IC of what the signals
-    add to each fold's training-mean return (``signal_forecasts``), and its t. The
-    plain pooled Rank IC also scores the forecast's level, which shifts with
-    each fold's training mean whatever the signals say, so a model with no
-    signal can score there and one with a real signal can be swamped there.
+    add to each fold's training-mean return, or to the level of a forecaster that
+    sets its own (``signal_forecasts``), and its t. The plain pooled Rank IC also
+    scores the forecast's level, which shifts with each fold's training mean
+    whatever the signals say, so a model with no signal can score there and one
+    with a real signal can be swamped there.
 
     Requires at least one fold. Callers should check ``evaluate()``'s output is
     non-empty themselves and raise their own domain-appropriate error message
@@ -252,16 +270,25 @@ def select_best_candidate(per_candidate: dict[str, tuple[FoldResult, ...]]) -> s
     choose between — the derived polynomial's grid, ``BoostedForecaster``'s tuned
     XGBoost vs. tuned LightGBM. Selection and the gate both use the Signal Rank IC.
     """
-    scores = {
-        name: _finite(metrics.rank_ic(signal_forecasts(folds), pooled(folds)[1]))
-        for name, folds in per_candidate.items()
-    }
+    scores = {name: _finite(score) for name, score in candidate_scores(per_candidate).items()}
     return max(scores, key=scores.__getitem__)
 
 
+def candidate_scores(per_candidate: dict[str, tuple[FoldResult, ...]]) -> dict[str, float]:
+    """Each candidate's Signal Rank IC, the figure ``select_best_candidate`` compares
+    (NaN where it is undefined)."""
+    return {
+        name: metrics.rank_ic(signal_forecasts(folds), pooled(folds)[1])
+        for name, folds in per_candidate.items()
+    }
+
+
 def fold_baseline(fold: FoldResult) -> float:
-    """The fold's training-window mean target: what the naive baseline forecasts
-    for it, and so the level a forecast is judged relative to."""
+    """The level a fold's forecasts are judged relative to: its training-window mean
+    target, which the naive baseline forecasts for it, or, for a forecaster that sets
+    its own level, that level (``FoldResult.own_level``)."""
+    if fold.own_level is not None:
+        return fold.own_level
     return float(fold.realised_train.mean())
 
 
@@ -275,6 +302,12 @@ def signal_forecasts(folds: tuple[FoldResult, ...]) -> pd.Series:
     signal or pass one that has none. Taking the training mean away leaves what
     the model itself contributes. A fold that forecasts its training mean
     contributes exactly zero.
+
+    A forecaster that sets its own level (the derived polynomial's no-change fit)
+    is judged against that level instead, its mean in-sample forecast. Against the
+    training mean, any gap between the two would be scored as skill, so a model
+    forecasting one constant could pass. A fold of such a forecaster that forecasts
+    one value throughout contributes exactly zero too.
     """
     return pd.concat([f.predicted - fold_baseline(f) for f in folds])
 

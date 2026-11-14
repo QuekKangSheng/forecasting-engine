@@ -15,6 +15,7 @@ from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest.align import Transform
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import TuningLog
 from forecasting_engine.models.famafrench import FactorCoverage
@@ -39,6 +40,13 @@ class ModelRun:
     """Shown with the result, e.g. that an older saved factor file was used."""
     tuning: TuningLog | None = None
     """Which tune each fold used, for the machine-learning run only."""
+    input_transforms: Mapping[str, Transform] | None = None
+    """How each of the fitted function's inputs was read, for a run that does not read
+    them by the page's transform map: the derived polynomial, when its no-change fit
+    won, reads every input as its level. ``None``: by the page's map."""
+    expanding_window: bool = False
+    """Every fold trained on every earlier date rather than the page's rolling window,
+    as the derived polynomial's expanding no-change fit does."""
 
 
 @dataclass
