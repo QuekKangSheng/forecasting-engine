@@ -185,8 +185,21 @@ def _fit(job: Job) -> None:
             traceback.print_exc()
             outcome, message = FAILED, f"{type(exc).__name__}: {exc}"
         else:
-            _save(job.keys[name], result)
-            outcome, message = DONE, None
+            try:
+                _save(job.keys[name], result)
+            except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+                # A full disk, a locked file or a result that can't be pickled. The
+                # page shows only what was saved, so the fit counts as failed; and
+                # the worker must carry on, or this Run would show "fitting" for ever
+                # and nothing queued behind it would run.
+                traceback.print_exc()
+                result, outcome = None, FAILED
+                message = (
+                    "fitted, but its result could not be saved, so it isn't shown: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            else:
+                outcome, message = DONE, None
         with _lock:
             job.status[name] = outcome
             job.finished[name] = time.time()

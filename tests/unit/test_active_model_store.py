@@ -211,6 +211,50 @@ def test_with_no_active_model_the_forecast_is_none(db):
     assert get_active_model_forecast(TargetRole.EQUITY, db_path=db) is None
 
 
+def test_an_earlier_models_series_are_still_read_by_when_it_was_set(db):
+    """A page that read an active model reads that model's series, even after
+    another has been set: the log is append-only, so they are still there."""
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    first, second = datetime(2026, 8, 30), datetime(2026, 8, 31)
+    for at, name, values in (
+        (first, "Polynomial", [0.01, 0.02]),
+        (second, "Machine Learning", [0.05, 0.06]),
+    ):
+        forecast = pd.Series(values, index=dates)
+        result = replace(_result(forecast=forecast), baseline=forecast * 0 + 0.001)
+        set_active_model(
+            TargetRole.EQUITY, name, result, high_risk=False, db_path=db, set_at=at, **SETTINGS
+        )
+
+    def read(reader, at):
+        return list(reader(TargetRole.EQUITY, set_at=at, db_path=db))
+
+    assert read(get_active_model_forecast, first) == [0.01, 0.02]
+    assert read(get_active_model_forecast, second) == [0.05, 0.06]
+    assert read(get_active_model_signal, first) == pytest.approx([0.009, 0.019])
+    assert read(get_active_model_baseline, first) == [0.001, 0.001]
+    # With no time given it is still the current one, as before.
+    assert list(get_active_model_forecast(TargetRole.EQUITY, db_path=db)) == [0.05, 0.06]
+
+
+def test_a_time_no_model_was_set_at_has_no_series(db):
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    set_active_model(
+        TargetRole.EQUITY,
+        "Polynomial",
+        _result(forecast=pd.Series([0.01, 0.02], index=dates)),
+        high_risk=False,
+        db_path=db,
+        set_at=datetime(2026, 8, 30),
+        **SETTINGS,
+    )
+
+    never = datetime(2020, 1, 1)
+    assert get_active_model_forecast(TargetRole.EQUITY, set_at=never, db_path=db) is None
+    assert get_active_model_signal(TargetRole.EQUITY, set_at=never, db_path=db) is None
+    assert get_active_model_baseline(TargetRole.EQUITY, set_at=never, db_path=db) is None
+
+
 # --- settings_match -------------------------------------------------------------
 
 
@@ -388,6 +432,23 @@ def test_each_role_reads_its_own_function(db):
 
     assert get_active_function(TargetRole.EQUITY, db_path=db) == DERIVED
     assert get_active_function(TargetRole.BOND, db_path=db) == USER
+
+
+def test_a_function_that_kept_no_terms_can_still_be_set_active(db):
+    # A derived polynomial whose latest fold kept nothing is its intercept alone.
+    # Setting it active used to crash: DuckDB refuses an empty executemany.
+    constant = ActiveFunction(
+        Origin.DERIVED,
+        ModelDescription(name="DerivedPolynomial", terms=(), coefficients=(), intercept=0.0014),
+        {},
+    )
+
+    set_active_model(
+        TargetRole.BOND, "Polynomial", _result(), high_risk=False, function=constant,
+        db_path=db, **SETTINGS,
+    )
+
+    assert get_active_function(TargetRole.BOND, db_path=db) == constant
 
 
 def test_no_active_model_has_no_function(db):

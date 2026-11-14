@@ -157,3 +157,31 @@ def test_a_series_too_short_to_test_reports_no_breach_rate():
 def test_an_unknown_confidence_is_refused():
     with pytest.raises(ValueError, match="between 0 and 1"):
         historical_var(LADDER, 1.5)
+
+
+# --- the breach count, every window at once ---------------------------------------
+
+
+def _breaches_a_day_at_a_time(returns: pd.Series, confidence: float, window: int):
+    """The definition spelt out: each day against the VaR of the ``window`` before it."""
+    r = returns.dropna().reset_index(drop=True)
+    count = 0
+    for day in range(window, len(r)):
+        var, _ = historical_var(r.iloc[day - window : day], confidence)
+        count += int(-r.iloc[day] > var)
+    return count, max(len(r) - window, 0)
+
+
+@pytest.mark.parametrize("confidence", VAR_CONFIDENCES)
+@pytest.mark.parametrize("window", [1, 7, 20, VAR_WINDOW])
+def test_counting_every_window_at_once_agrees_with_a_day_at_a_time(confidence, window):
+    rng = np.random.default_rng(window)
+    # Rounded to 0.1%, so a day's loss often equals the VaR it is tested against:
+    # the case where "strictly more" and "at least" would count differently.
+    returns = _series(np.round(rng.normal(0, 0.01, 600), 3))
+    returns.iloc[[5, 40, 41]] = float("nan")
+
+    counted = breaches(returns, confidence, window=window)
+
+    assert counted == _breaches_a_day_at_a_time(returns, confidence, window)
+    assert counted[0] > 0

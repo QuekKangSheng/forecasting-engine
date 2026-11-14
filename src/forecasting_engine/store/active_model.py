@@ -239,28 +239,35 @@ def _insert_function(conn, record: ActiveModelRecord, function: ActiveFunction) 
         "VALUES (?, ?, ?, ?, ?)",
         [*key, function.origin.value, description.name, description.intercept],
     )
-    conn.executemany(
-        "INSERT INTO active_model_terms (role, set_at, position, term, coefficient) "
-        "VALUES (?, ?, ?, ?, ?)",
-        [
-            (*key, position, term, float(coefficient))
-            for position, (term, coefficient) in enumerate(
-                zip(description.terms, description.coefficients, strict=True)
-            )
-        ],
-    )
+    # A fit can keep no terms at all and be its intercept alone. DuckDB refuses an
+    # empty executemany, so the term and input rows are only written when there are
+    # some; reading back an intercept-only function then finds none, as it should.
+    terms = [
+        (*key, position, term, float(coefficient))
+        for position, (term, coefficient) in enumerate(
+            zip(description.terms, description.coefficients, strict=True)
+        )
+    ]
+    if terms:
+        conn.executemany(
+            "INSERT INTO active_model_terms (role, set_at, position, term, coefficient) "
+            "VALUES (?, ?, ?, ?, ?)",
+            terms,
+        )
     bounds = description.input_bounds or {}
     centre = description.standardisation or {}
-    conn.executemany(
-        "INSERT INTO active_model_inputs "
-        "(role, set_at, signal, transform, clip_low, clip_high, mean, sd) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-            (*key, signal, transform.value, *bounds.get(signal, (None, None)),
-             *centre.get(signal, (None, None)))
-            for signal, transform in function.transforms.items()
-        ],
-    )
+    inputs = [
+        (*key, signal, transform.value, *bounds.get(signal, (None, None)),
+         *centre.get(signal, (None, None)))
+        for signal, transform in function.transforms.items()
+    ]
+    if inputs:
+        conn.executemany(
+            "INSERT INTO active_model_inputs "
+            "(role, set_at, signal, transform, clip_low, clip_high, mean, sd) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            inputs,
+        )
 
 
 def get_active_function(
@@ -368,18 +375,22 @@ def get_active_model(
 
 
 def get_active_model_forecast(
-    role: TargetRole, *, db_path: Path = DEFAULT_DB_PATH
+    role: TargetRole, *, set_at: datetime | None = None, db_path: Path = DEFAULT_DB_PATH
 ) -> pd.Series | None:
     """The currently active model's saved forecast, indexed by date — or ``None``
-    if there is no active model, or it was set before forecasts were captured."""
-    current = get_active_model(role, db_path=db_path)
-    if current is None:
+    if there is no active model, or it was set before forecasts were captured.
+
+    ``set_at`` picks the model set active at that time, as for ``get_active_function``.
+    The log is append-only, so what is stored under a ``set_at`` never changes: a
+    caller holding a record can read its series once and keep it."""
+    set_at = _set_at(role, set_at, db_path)
+    if set_at is None:
         return None
     with connect(db_path, _CREATE_TABLES) as conn:
         rows = conn.execute(
             "SELECT date, predicted FROM active_model_forecasts "
             "WHERE role = ? AND set_at = ? ORDER BY date",
-            [role.value, current.set_at],
+            [role.value, set_at],
         ).fetchall()
     if not rows:
         return None
@@ -388,23 +399,24 @@ def get_active_model_forecast(
 
 
 def get_active_model_signal(
-    role: TargetRole, *, db_path: Path = DEFAULT_DB_PATH
+    role: TargetRole, *, set_at: datetime | None = None, db_path: Path = DEFAULT_DB_PATH
 ) -> pd.Series | None:
     """The currently active model's signal — each saved forecast less its fold's
     training-mean target — indexed by date, or ``None`` if there is no active
-    model or it was set before baselines were captured."""
-    current = get_active_model(role, db_path=db_path)
-    if current is None:
+    model or it was set before baselines were captured. ``set_at`` picks the model
+    set at that time, as for ``get_active_model_forecast``."""
+    set_at = _set_at(role, set_at, db_path)
+    if set_at is None:
         return None
     with connect(db_path, _CREATE_TABLES) as conn:
         rows = conn.execute(
             "SELECT date, predicted - baseline FROM active_model_forecasts "
             "WHERE role = ? AND set_at = ? ORDER BY date",
-            [role.value, current.set_at],
+            [role.value, set_at],
         ).fetchall()
         has_baseline = conn.execute(
             "SELECT count(baseline) FROM active_model_forecasts WHERE role = ? AND set_at = ?",
-            [role.value, current.set_at],
+            [role.value, set_at],
         ).fetchone()[0]
     if not rows or not has_baseline:
         return None
@@ -413,19 +425,20 @@ def get_active_model_signal(
 
 
 def get_active_model_baseline(
-    role: TargetRole, *, db_path: Path = DEFAULT_DB_PATH
+    role: TargetRole, *, set_at: datetime | None = None, db_path: Path = DEFAULT_DB_PATH
 ) -> pd.Series | None:
     """The training-mean target taken off each of the currently active model's saved
     forecasts to give its signal, indexed by date, or ``None`` if there is no active
-    model or it was set before baselines were captured."""
-    current = get_active_model(role, db_path=db_path)
-    if current is None:
+    model or it was set before baselines were captured. ``set_at`` picks the model
+    set at that time, as for ``get_active_model_forecast``."""
+    set_at = _set_at(role, set_at, db_path)
+    if set_at is None:
         return None
     with connect(db_path, _CREATE_TABLES) as conn:
         rows = conn.execute(
             "SELECT date, baseline FROM active_model_forecasts "
             "WHERE role = ? AND set_at = ? AND baseline IS NOT NULL ORDER BY date",
-            [role.value, current.set_at],
+            [role.value, set_at],
         ).fetchall()
     if not rows:
         return None

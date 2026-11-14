@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import functools
 import html
+import re
 import time
 from collections.abc import Mapping
 from datetime import datetime
@@ -21,6 +22,7 @@ import pandas as pd
 import streamlit as st
 
 import bloomberg_extraction_panel
+import charts
 import glossary
 import model_jobs
 import model_runs
@@ -179,18 +181,17 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 #: but the naive baseline is gated on Signal Rank IC and t.
 RESULT_VERSION = 5
 
-st.set_page_config(page_title="Models · Forecasting Engine", page_icon=":material/functions:")
-ui.inject()
-
-st.header("Models")
-st.caption(
-    "Run the ticked model families together for each target through the shared "
-    "walk-forward harness, then compare them side by side.",
-    help=glossary.term("Promotion gate"),
+st.set_page_config(
+    page_title="Models · Forecasting Engine", page_icon=":material/functions:", layout="wide"
+)
+ui.page_header(
+    "Models",
+    "Fit each forecasting model on past data, score it only on the periods it never saw, "
+    "and choose the one the portfolio uses.",
+    kicker="02 / Forecast",
 )
 
-if bloomberg_extraction_panel.offer_last_commit():
-    st.rerun()
+bloomberg_extraction_panel.restore_last_commit()
 merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)
 if merged is None:
     st.info('No data committed yet — click "Use Updated Data" on the Data page first.')
@@ -725,8 +726,26 @@ def _header_html(column: str) -> str:
     )
 
 
+_STANDARD_ERRORS = re.compile(r"^(?P<value>\S+) \((?P<errors>s\.e\. .*)\)$")
+
+
 def _cell_html(cell: Cell) -> str:
-    text = html.escape(cell.text)
+    # A rank IC's two standard errors used to sit in the cell as a long footnote,
+    # "0.1559 (s.e. (h−1 lags) 0.0671; s.e. (test-window lags) 0.0675)". The value
+    # now stands alone with the first error beside it; hovering gives both.
+    match = _STANDARD_ERRORS.match(cell.text)
+    if match:
+        first = re.search(r"\) (\S+?)(;|$)", match["errors"])
+        if first and first.group(1) == "—":  # no error to give for a value not computed
+            first = None
+        errors = html.escape(match["errors"], quote=True)
+        text = html.escape(match["value"]) + (
+            f' <span class="fe-row-meta" title="{errors}">± {html.escape(first.group(1))}</span>'
+            if first
+            else ""
+        )
+    else:
+        text = html.escape(cell.text)
     badge = BADGE_LABELS.get(cell.tone)
     if badge is None:
         return text
@@ -878,16 +897,40 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
         _show_fitted_terms(run.shap, is_shap=True)
 
 
+def _show_polynomial_expander(
+    name: str, run: model_runs.ModelRun, target_name: str, *, expanded: bool
+) -> None:
+    with st.expander(f"{name} · {target_name}", expanded=expanded):
+        if name == RESEARCH:
+            st.caption(
+                "HY OAS, IG OAS, VIX and the 2s10s slope, read as levels and "
+                "fixed by the research. Each fold trains on every date before "
+                f"its test window, not the latest {TRAIN_WINDOW}, as the "
+                "research did. " + RESEARCH_CAPTION
+            )
+        _show_polynomial(run)
+
+
 def _show_fitted_terms(description: ModelDescription, *, is_shap: bool) -> None:
     value_col = "Mean |SHAP value|" if is_shap else "Coefficient"
     heading = "Feature attribution (SHAP)" if is_shap else "Fitted terms"
     st.markdown(ui.eyebrow(heading, glossary.term(heading)), unsafe_allow_html=True)
-    rows = [
-        {"Term": term, value_col: coefficient}
-        for term, coefficient in zip(description.terms, description.coefficients, strict=True)
-    ]
+    # Named as the equation above names them, not by Bloomberg field code, and for
+    # SHAP largest first: the order is the point of an attribution.
+    pairs = list(zip(description.terms, description.coefficients, strict=True))
+    if is_shap:
+        pairs.sort(key=lambda pair: abs(pair[1]), reverse=True)
+    rows = [{"Term": label(term), value_col: coefficient} for term, coefficient in pairs]
     if description.intercept is not None:
         rows.append({"Term": "(intercept)", value_col: description.intercept})
+    if not rows:
+        # A fit that kept no signal has nothing to attribute. Left to itself the
+        # table was drawn anyway: one grey cell reading "empty".
+        st.caption(
+            "Nothing to attribute: the latest fit kept no signal, so every forecast is the "
+            "same constant."
+        )
+        return
     st.dataframe(rows, width="stretch", hide_index=True)
 
 
@@ -938,8 +981,9 @@ def _show_ml(run: model_runs.ModelRun) -> None:
     )
 
 
-def _show_active_status(role: TargetRole, target_name: str) -> None:
-    current = active_model.get_active_model(role)
+def _show_active_status(
+    current: active_model.ActiveModelRecord | None, target_name: str
+) -> None:
     if current is None:
         st.caption(
             f"No active model set yet for {target_name}.", help=glossary.term("Active model")
@@ -1008,13 +1052,13 @@ def _show_active_picker(
     runs: dict[str, model_runs.ModelRun],
     target_name: str,
     settings: Mapping[str, object],
+    current: active_model.ActiveModelRecord | None,
 ) -> None:
     key = role.value
     options = [n for n in ACTIVE_MODEL_CANDIDATES if n in runs]
     if not options:
         st.caption(f"No forecasting model (Polynomial or ML) has run yet for {target_name}.")
         return
-    current = active_model.get_active_model(role)
     default_index = (
         options.index(current.model_name) if current and current.model_name in options else 0
     )
@@ -1029,6 +1073,13 @@ def _show_active_picker(
         key=f"active_select_{key}",
         label_visibility="collapsed",
     )
+    description = runs[selected].description
+    if _active_function(selected, runs[selected]) is not None and description is not None:
+        if not description.terms:
+            st.caption(
+                f"{selected}'s latest fit kept no signals, so it "
+                "forecasts a constant: its intercept. It can still be set active."
+            )
     # A pending confirmation is kept in session state: its buttons are clicked on
     # a later run, when "Set as active" no longer reads as pressed.
     pending_key = f"pending_active_{key}"
@@ -1065,10 +1116,11 @@ def _show_active_picker(
         )
 
 
-def _directional_default(role: TargetRole, options: list[str], runs) -> int:
+def _directional_default(
+    current: active_model.ActiveModelRecord | None, options: list[str], runs
+) -> int:
     """The active model if it ran here, else the first that met its gate, else the
     first forecasting model — the one a portfolio manager would act on."""
-    current = active_model.get_active_model(role)
     if current is not None and current.model_name in options:
         return options.index(current.model_name)
     for i, name in enumerate(options):
@@ -1078,12 +1130,20 @@ def _directional_default(role: TargetRole, options: list[str], runs) -> int:
     return forecasting[0] if forecasting else 0
 
 
+@st.fragment
 def _show_directional(
-    role: TargetRole, runs: dict[str, model_runs.ModelRun], target_name: str
+    role: TargetRole,
+    runs: dict[str, model_runs.ModelRun],
+    target_name: str,
+    current: active_model.ActiveModelRecord | None,
 ) -> None:
     """FYP-162: holding the index only when the forecast says it will rise, against
     holding it throughout, over the run's whole out-of-sample period, or over a
-    window dragged out on the chart."""
+    window chosen on the slider.
+
+    A fragment: choosing another model or moving the window redraws this section
+    alone. Rerunning the whole page for it meant both tabs' tables and charts were
+    rebuilt and sent again for every notch of the slider."""
     options = [
         n
         for n in MODEL_ORDER
@@ -1096,12 +1156,16 @@ def _show_directional(
         ui.eyebrow("Would the forecast's direction have paid?", glossary.term("Directional P&L")),
         unsafe_allow_html=True,
     )
-    name = st.selectbox(
-        "Forecasts from",
-        options,
-        index=_directional_default(role, options, runs),
-        key=f"pnl_model_{key}",
-    )
+    # Runs finish one by one and the naive baseline first. A selectbox keeps the
+    # value it was first given, so without this it stayed on the baseline, whose
+    # long/cash line is buy-and-hold, once the models it should default to arrived.
+    # Re-default whenever the models on offer or the active one change.
+    picker_key = f"pnl_model_{key}"
+    offered = (tuple(options), None if current is None else current.model_name)
+    if st.session_state.get(f"pnl_offered_{key}") != offered:
+        st.session_state[f"pnl_offered_{key}"] = offered
+        st.session_state[picker_key] = options[_directional_default(current, options, runs)]
+    name = st.selectbox("Forecasts from", options, key=picker_key)
     result = runs[name].result
     try:
         whole = directional_pnl(result.forecast, result.realised, horizon=horizon)
@@ -1145,8 +1209,7 @@ def _show_directional(
         f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: {span}, {pnl.calls} "
         f"calls ({steps}). Gross of transaction costs; cash earns nothing. Narrow the "
         "window with the slider: every figure and the chart are recomputed for it, starting "
-        "from zero on its first day. On the chart, scroll to zoom, drag to pan and "
-        "double-click to reset."
+        "from zero on its first day."
     )
     metric_cols = st.columns(4)
     metric_cols[0].metric(
@@ -1167,13 +1230,16 @@ def _show_directional(
     metric_cols[3].metric(
         "Days invested", f"{pnl.share_invested:.0%}", help=glossary.term("Days invested")
     )
-    st.line_chart(
-        {
-            "Long/cash strategy": pnl.strategy_cumulative * 100,
-            "Buy and hold": pnl.buy_and_hold_cumulative * 100,
-        },
-        x_label="Forecast date",
-        y_label="Cumulative return (%)",
+    charts.draw(
+        charts.line_chart(
+            pd.DataFrame(
+                {
+                    "Long/cash strategy": pnl.strategy_cumulative,
+                    "Buy and hold": pnl.buy_and_hold_cumulative,
+                }
+            ),
+            "Cumulative return",
+        )
     )
     if pnl.no_forecast:
         st.caption(
@@ -1216,7 +1282,10 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
             f"the first {TUNING_ROWS} dates, which leaves no room for its own walk-forward "
             "folds."
         )
-    _show_active_status(role, target_name)
+    # Read once for the whole tab. Each part that names the active model used to ask
+    # the database for it again, five times a tab on every rerun.
+    current = active_model.get_active_model(role)
+    _show_active_status(current, target_name)
     if not signal_cols:
         st.info("Need at least one other signal column, alongside the target, to model.")
         return
@@ -1296,27 +1365,30 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     _show_table({name: run.result for name, run in runs.items()})
     if RESEARCH in runs:
         st.caption(f"{RESEARCH}: {RESEARCH_CAPTION}")
-    _show_directional(role, runs, target_name)
-    _show_active_picker(role, runs, target_name, settings)
 
-    _show_screening(runs, target_name)
-    for name in (DERIVED, RESEARCH, USER):
-        if name in runs:
-            with st.expander(f"{name} · {target_name}"):
-                if name == RESEARCH:
-                    st.caption(
-                        "HY OAS, IG OAS, VIX and the 2s10s slope, read as levels and "
-                        "fixed by the research. Each fold trains on every date before "
-                        f"its test window, not the latest {TRAIN_WINDOW}, as the "
-                        "research did. " + RESEARCH_CAPTION
-                    )
-                _show_polynomial(runs[name])
+    # What each model fitted, together and straight under the table that scores it.
+    # The fitted function is the deliverable the sponsor can use directly, so the one
+    # that matters (the active polynomial, else the derived one) is the one open. The
+    # others sit closed beside it rather than further down, past the chart and the
+    # picker, where a reader had to go looking for the rest of the set.
+    polynomials = [name for name in (DERIVED, RESEARCH, USER) if name in runs]
+    featured = (
+        current.model_name
+        if current is not None and current.model_name in polynomials
+        else (polynomials[0] if polynomials else None)
+    )
+    for name in polynomials:
+        _show_polynomial_expander(name, runs[name], target_name, expanded=name == featured)
     if FF5 in runs and role == TargetRole.EQUITY:
         with st.expander(f"Fama-French 5 · {target_name}"):
             _show_famafrench(runs[FF5])
     if ML in runs:
         with st.expander(f"Machine learning · {target_name}"):
             _show_ml(runs[ML])
+    _show_screening(runs, target_name)
+
+    _show_directional(role, runs, target_name, current)
+    _show_active_picker(role, runs, target_name, settings, current)
 
 
 roles = [role for role in TargetRole if role in target_columns]
@@ -1334,5 +1406,6 @@ tabs = st.tabs([f"{ROLE_NAMES[r]} · {label(target_columns[r])}" for r in roles]
 for role, tab in zip(roles, tabs, strict=True):
     with tab:
         _render_tab(role, target_columns[role])
+ui.page_link("portfolio", "Next · 03 Portfolio Optimizer")
 if submitted and not model_jobs.INLINE:
     st.rerun()

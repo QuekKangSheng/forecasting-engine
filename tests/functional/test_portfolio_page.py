@@ -438,9 +438,10 @@ def _line_chart(app: AppTest, value: str):
 
 
 def _line_data(app: AppTest, value: str) -> pd.DataFrame:
-    (dataset,) = _line_chart(app, value).proto.datasets
-    long = convert_arrow_bytes_to_pandas_df(dataset.data.data)
-    return long.pivot(index="date", columns="Series", values=value)
+    """The chart's lines, a column each: it is sent a row per day and unfolded into
+    its lines in the browser. (Beside them it is sent the days a hover can land on.)"""
+    (dataset,) = [d for d in _line_chart(app, value).proto.datasets if d.name == "drawn"]
+    return convert_arrow_bytes_to_pandas_df(dataset.data.data).set_index("date")
 
 
 def test_rolling_volatility_is_charted_for_both_indices_and_the_optimised_portfolio():
@@ -556,11 +557,120 @@ def test_drawdown_is_charted_for_both_indices_and_the_optimised_portfolio():
     assert any("Drawdown" in m.value for m in app.markdown)
 
 
+def test_the_weights_chart_marks_the_limits_and_runs_to_the_last_day():
+    committed = _committed()
+    app = _happy_page()
+
+    (chart,) = [
+        c for c in app.get("vega_lite_chart") if '"interpolate": "step-after"' in c.proto.spec
+    ]
+
+    spec = json.loads(chart.proto.spec)
+    marks = [layer["mark"]["type"] for layer in spec["layer"]]
+    assert marks == ["area", "line", "rule", "point"]
+    assert "the 20% and 80% limits" in _captions(app)
+    rows = next(
+        convert_arrow_bytes_to_pandas_df(d.data.data)
+        for d in chart.proto.datasets
+        if "Weight" in convert_arrow_bytes_to_pandas_df(d.data.data).columns
+    )
+    # The last allocation is drawn held to the last day there is a price for.
+    assert pd.Timestamp(rows["date"].max()).date() == committed["Date"].iloc[-1].date()
+
+
 def test_without_active_models_the_page_explains_what_will_appear():
     app = _page(_committed())
 
     assert any("performance against the equal-weight benchmark" in t for t in _infos(app))
     assert not [m for m in app.markdown if '<table class="fe-table"' in m.value]
+
+
+#: Everything that estimates, solves or backtests an allocation.
+_SOLVERS = (
+    "forecasting_engine.portfolio.optimize.schedule_inputs",
+    "forecasting_engine.portfolio.optimize.breakdowns_from",
+    "forecasting_engine.portfolio.optimize.schedule_breakdowns",
+    "forecasting_engine.portfolio.backtest.run_backtest",
+)
+
+
+def _count_solves(monkeypatch) -> dict[str, int]:
+    """How often each solver is really called from here on, by its short name."""
+    import importlib
+
+    calls: dict[str, int] = {}
+    for path in _SOLVERS:
+        module_name, name = path.rsplit(".", 1)
+        real = getattr(importlib.import_module(module_name), name)
+
+        def counted(*args, _real=real, _name=name, **kwargs):
+            calls[_name] = calls.get(_name, 0) + 1
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(path, counted)
+    return calls
+
+
+def test_a_rerun_that_changes_no_input_solves_nothing_again(monkeypatch):
+    """After or before costs, and the simulation's settings, move no weight. Each used
+    to re-estimate, re-solve and re-backtest the whole allocation, which is what made
+    every click on this page take seconds."""
+    calls = _count_solves(monkeypatch)
+    app = _happy_page()
+    first = dict(calls)
+    assert first == {"schedule_inputs": 1, "breakdowns_from": 2, "run_backtest": 2}
+    before = _outputs(app)
+
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+    basis.set_value("Before costs").run()
+    (method,) = [c for c in app.segmented_control if c.label == "Sampling method"]
+    method.set_value("parametric").run()
+    (basis,) = [c for c in app.segmented_control if c.label == "Returns"]
+    basis.set_value("After costs").run()
+
+    assert not app.exception
+    assert calls == first
+    assert _outputs(app)["weights"] == before["weights"]
+    assert _outputs(app)["comparison"] == before["comparison"]
+
+
+def test_another_risk_level_is_solved_from_the_same_estimates_and_only_once(monkeypatch):
+    calls = _count_solves(monkeypatch)
+    app = _happy_page()
+    level_3 = _outputs(app)
+
+    app.select_slider[0].set_value(1).run()
+    level_1 = _outputs(app)
+
+    # A new level: solved and backtested, with and without forecasts, but the
+    # covariances and trust it is solved from are not estimated again.
+    assert calls == {"schedule_inputs": 1, "breakdowns_from": 4, "run_backtest": 4}
+    assert level_1["comparison"] != level_3["comparison"]
+
+    app.select_slider[0].set_value(3).run()
+
+    # Back to a level already shown: nothing is solved, and it reads as it did.
+    assert calls == {"schedule_inputs": 1, "breakdowns_from": 4, "run_backtest": 4}
+    assert not app.exception
+    assert _outputs(app) == level_3
+
+
+def test_a_newly_set_active_model_is_solved_afresh(monkeypatch):
+    """What is kept is keyed on the models' own forecasts, so another model set active
+    can never be shown the last one's allocation."""
+    committed = _committed()
+    _set_active(EQUITY, forecast=_leaning(committed, +0.05))
+    _set_active(BOND, forecast=_leaning(committed, 0.0))
+    calls = _count_solves(monkeypatch)
+    app = _page(committed)
+    assert calls["schedule_inputs"] == 1
+
+    _set_active(EQUITY, forecast=_leaning(committed, -0.05), name="Machine Learning")
+    app.run()
+
+    assert not app.exception
+    assert calls["schedule_inputs"] == 2
+    assert any("Machine Learning" in m.value for m in app.markdown)
 
 
 def test_the_no_trade_band_is_explained_with_the_share_of_rebalances_it_held():
@@ -570,6 +680,22 @@ def test_the_no_trade_band_is_explained_with_the_share_of_rebalances_it_held():
     captions = _captions(app)
     assert "were held by the no-trade band." in captions
     assert "Held: within the no-trade band." in captions or "no-trade band of ±" in captions
+
+
+def test_the_lowest_risk_level_says_it_has_no_band_rather_than_one_of_zero_width():
+    """Level 5's band is nothing wide. The page used to say the portfolio "traded only
+    to the band's edge" of "a no-trade band of ±0.0%", and that 0 of its rebalances
+    were held by it."""
+    app = _happy_page()
+
+    app.select_slider[0].set_value(5).run()
+
+    assert not app.exception
+    captions = _captions(app)
+    assert "There is no no-trade band at this rebalance" in captions
+    assert "had a no-trade band, so each traded to its target" in captions
+    assert "±0.0%" not in captions and "band's edge" not in captions
+    assert "were held by the no-trade band." not in captions
 
 
 # --- FYP-20 / FYP-52: is the outperformance statistically significant? --------------
@@ -1102,6 +1228,49 @@ def test_an_opened_run_follows_the_before_costs_toggle_with_its_saved_figures():
         assert sharpe in page_table
 
 
+def _row_order(block) -> list[str]:
+    """Under ``block``, top to bottom: each button by its label and each opened run by
+    its heading."""
+    found = []
+    for child in block.children.values():
+        if child.type == "button":
+            found.append(child.label)
+        elif child.type == "subheader":
+            found.append(child.value)
+        if hasattr(child, "children"):
+            found += _row_order(child)
+    return found
+
+
+def test_an_opened_run_sits_under_its_own_row_and_closes_from_there():
+    """An opened run used to be drawn below the whole list and the Compare box, out
+    of sight of the button that opened it, and there was no way to put it away."""
+    app = _happy_page()
+    app.select_slider[0].set_value(1).run()  # a second run, numbered 2, listed first
+    history = _history()
+    assert _row_order(history.tabs[1]) == ["Open", "Open"]
+
+    _open(history, number=2)
+
+    assert _row_order(history.tabs[1]) == ["Close", "Run 2", "Open"]
+
+    (close,) = [b for b in history.tabs[1].button if b.label == "Close"]
+    close.click().run()
+
+    assert not history.exception
+    assert _row_order(history.tabs[1]) == ["Open", "Open"]
+
+
+def test_opening_another_run_closes_the_one_that_was_open():
+    app = _happy_page()
+    app.select_slider[0].set_value(1).run()
+    history = _open(_history(), number=2)
+
+    _open(history, number=1)
+
+    assert _row_order(history.tabs[1]) == ["Open", "Close", "Run 1"]
+
+
 def test_opening_a_run_refits_nothing_and_leaves_the_active_models(monkeypatch):
     committed = _committed()
     _set_active(EQUITY, forecast=_leaning(committed, +0.05))
@@ -1114,8 +1283,8 @@ def test_opening_a_run_refits_nothing_and_leaves_the_active_models(monkeypatch):
     def refused(*_args, **_kwargs):
         raise AssertionError("opening a saved run must not solve or backtest anything")
 
-    monkeypatch.setattr("forecasting_engine.portfolio.optimize.schedule_breakdowns", refused)
-    monkeypatch.setattr("forecasting_engine.portfolio.backtest.run_backtest", refused)
+    for solver in _SOLVERS:
+        monkeypatch.setattr(solver, refused)
     history = _open(_history())
 
     assert any("Polynomial" in c.value for c in history.tabs[1].caption)
@@ -1234,9 +1403,8 @@ def test_generating_the_report_refits_and_resolves_nothing(monkeypatch):
     def refused(*_args, **_kwargs):
         raise AssertionError("a report must be written from the saved run")
 
-    monkeypatch.setattr("forecasting_engine.portfolio.optimize.schedule_breakdowns", refused)
-    monkeypatch.setattr("forecasting_engine.portfolio.backtest.run_backtest", refused)
-    monkeypatch.setattr("forecasting_engine.portfolio.backtest.chain", refused)
+    for solver in (*_SOLVERS, "forecasting_engine.portfolio.backtest.chain"):
+        monkeypatch.setattr(solver, refused)
 
     assert "Spread t-statistics" in _report()
 

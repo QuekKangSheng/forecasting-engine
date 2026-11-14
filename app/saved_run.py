@@ -13,6 +13,7 @@ import streamlit as st
 
 import charts
 import glossary
+import page_cache
 import ui
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.reporting.portfolio_comparison import (
@@ -56,7 +57,7 @@ def report_button(
     """Generated on the click, not on every rerun of the page. ``on_click="ignore"``
     since downloading changes nothing the page shows."""
     if number is None:
-        number = portfolio_runs.get_saved_run(run_key).run_number
+        number = portfolio_runs.run_number(run_key)
     container.download_button(
         label,
         data=partial(report_bytes, run_key, simulation=simulation, latest_saved=latest_saved),
@@ -99,12 +100,13 @@ def _line(paths: pd.DataFrame, value: str, *, window: int | None = None, percent
         return
     st.markdown(ui.eyebrow(value, glossary.term(value)), unsafe_allow_html=True)
     chart_title = None if window is None else f"{value}, {window}-day window"
-    st.altair_chart(
-        charts.line_chart(paths, value, percent=percent, title=chart_title), width="stretch"
-    )
+    charts.draw(charts.line_chart(paths, value, percent=percent, title=chart_title))
 
 
+@st.fragment
 def render(run: portfolio_runs.SavedRun) -> None:
+    """The opened run, as the Portfolio page showed it. A fragment, so switching
+    between after and before costs redraws the run alone, not the list above it."""
     results = run.results
     names = {role: results["names"][role.value] for role in (EQUITY, BOND)}
     backtest = results["backtest"]
@@ -128,13 +130,21 @@ def render(run: portfolio_runs.SavedRun) -> None:
     for line in results["how_set"]:
         st.caption(line)
 
-    paths = portfolio_runs.saved_paths(run.run_key)
+    paths = page_cache.saved_paths(run.run_key)
     st.markdown(ui.eyebrow("Weights per rebalance"), unsafe_allow_html=True)
-    st.altair_chart(
+    # A run saved before its weight limits were kept is drawn without them.
+    limits = results["settings"].get("bounds")
+    charts.draw(
         charts.weights_chart(
-            paths.optimised.weights.rename(columns={role: names[role] for role in (EQUITY, BOND)})
-        ),
-        width="stretch",
+            paths.optimised.weights.rename(columns={role: names[role] for role in (EQUITY, BOND)}),
+            limits=None if limits is None else (limits[0], limits[1]),
+            until=paths.end,
+        )
+    )
+    st.caption(
+        f"The line is {names[EQUITY]}'s weight and the rest is {names[BOND]}; each step is "
+        "a rebalance."
+        + ("" if limits is None else " Dashed lines mark the weight limits.")
     )
 
     basis_label = st.segmented_control(
@@ -205,9 +215,8 @@ def render(run: portfolio_runs.SavedRun) -> None:
         )
 
     windows = results["windows"]
-    st.altair_chart(
-        charts.line_chart(cumulative_paths(paths, basis), "Cumulative return"), width="stretch"
-    )
+    st.markdown(ui.eyebrow("Cumulative return"), unsafe_allow_html=True)
+    charts.draw(charts.line_chart(cumulative_paths(paths, basis), "Cumulative return"))
     _line(
         rolling_volatility_paths(paths, basis, names, window=windows["rolling_volatility"]),
         "Rolling volatility",
