@@ -11,7 +11,7 @@ import pytest
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.backtest import run_backtest
 from forecasting_engine.reporting.model_metrics import ModelRunResult
-from forecasting_engine.store.active_model import set_active_model
+from forecasting_engine.store.active_model import get_active_model, set_active_model
 from forecasting_engine.store.portfolio_runs import (
     PortfolioInputs,
     get_saved_run,
@@ -291,6 +291,35 @@ def test_saved_results_come_back_whole_under_their_run(db):
     run = get_saved_run(INPUTS.run_key, db_path=db)
     assert run.results == RESULTS
     assert (run.run_number, run.name, run.code_version) == (1, None, "abc1234")
+
+
+def test_opening_a_saved_run_does_not_change_the_currently_active_model(db):
+    """FYP-267: reopening an old run must not mutate what's active - a risk manager
+    comparing past runs should never find today's model changed by having looked."""
+    record_portfolio_run(INPUTS, RESULT, SCHEDULE, results=RESULTS, db_path=db)
+    set_active_model(
+        EQUITY,
+        "Polynomial (derived)",
+        ModelRunResult(
+            ic=0.05,
+            oos_rank_ic=0.03,
+            rmse=0.01,
+            crash=CrashDiagnostics(recall=0.5, precision=0.5, f1=0.5, n_true_tail_days=10),
+        ),
+        high_risk=False,
+        horizon=20,
+        train_window=504,
+        test_window=20,
+        dataset_fingerprint="fp-1",
+        db_path=db,
+    )
+    before = get_active_model(EQUITY, db_path=db)
+
+    opened = get_saved_run(INPUTS.run_key, db_path=db)
+
+    assert opened is not None
+    after = get_active_model(EQUITY, db_path=db)
+    assert after == before
 
 
 def test_a_run_recorded_before_results_were_saved_cannot_be_opened_until_shown_again(db):

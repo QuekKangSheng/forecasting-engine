@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from forecasting_engine.ingest.align import FeaturePanel
+from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.validation import metrics
 from forecasting_engine.validation.harness import (
@@ -521,6 +521,35 @@ def test_the_baseline_is_each_dates_fold_training_mean():
     assert list(result.baseline) == pytest.approx([0.01, 0.01, -0.02, -0.02])
     assert list(result.signal) == pytest.approx([0.002, -0.001, 0.004, 0.0])
     assert list(result.forecast - result.baseline) == pytest.approx(list(result.signal))
+
+
+# --- FYP-220: 1/5/10/20-day horizons are built, fit and reported independently --
+
+
+def test_each_horizon_gets_its_own_target_and_is_never_pooled_with_another():
+    # The four horizons must stay four separate results, never pooled.
+    idx = pd.bdate_range("2024-01-01", periods=150)
+    rng = np.random.default_rng(7)
+    prices = pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.01, len(idx))), index=idx)
+    frame = pd.DataFrame({"price": prices.to_numpy(), "signal_a": rng.normal(0, 1, len(idx))}, index=idx)
+    horizons = (1, 5, 10, 20)
+
+    panels = {h: align_and_lag(frame, ["signal_a"], "price", horizon=h) for h in horizons}
+
+    # Each panel has its own target column.
+    assert {h: p.horizon for h, p in panels.items()} == dict(zip(horizons, horizons, strict=True))
+    assert {h: p.targets for h, p in panels.items()} == {
+        h: (f"fwd_return_{h}d",) for h in horizons
+    }
+
+    summaries = {
+        h: summarize(evaluate(_EchoForecaster, panels[h], PurgedWalkForward(60, 10, h)))[0]
+        for h in horizons
+    }
+
+    # Each horizon's realised path must be distinct, not pooled or copied.
+    realised_paths = {h: tuple(s.realised) for h, s in summaries.items()}
+    assert len({realised_paths[h] for h in horizons}) == len(horizons)
 
 
 def test_selection_chooses_by_signal_not_by_level():

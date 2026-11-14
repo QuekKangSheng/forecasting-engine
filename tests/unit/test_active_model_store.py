@@ -1,5 +1,6 @@
 """The DuckDB active-model-per-role log."""
 
+import math
 from dataclasses import replace
 from datetime import datetime
 
@@ -12,6 +13,7 @@ from forecasting_engine.ingest.align import Transform
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult
 from forecasting_engine.reporting.polynomial_function import Origin
+from forecasting_engine.scenario.shock import evaluate as evaluate_function
 from forecasting_engine.store.active_model import (
     ActiveFunction,
     get_active_attribution,
@@ -369,6 +371,28 @@ def test_a_function_set_with_the_model_reads_back_as_it_was_stored(db, function)
     )
 
     assert get_active_function(TargetRole.EQUITY, db_path=db) == function
+
+
+def test_a_model_saved_under_the_old_research_model_name_still_loads_and_evaluates(db):
+    # FYP-222 renamed only the display label; storage never branches on the
+    # name, so the old name must still load and evaluate correctly.
+    set_active_model(
+        TargetRole.EQUITY,
+        "Research model (fixed inputs)",
+        _result(),
+        high_risk=False,
+        function=DERIVED,
+        db_path=db,
+        **SETTINGS,
+    )
+
+    assert get_active_model(TargetRole.EQUITY, db_path=db).model_name == (
+        "Research model (fixed inputs)"
+    )
+    loaded = get_active_function(TargetRole.EQUITY, db_path=db)
+    assert loaded == DERIVED
+    forecast = evaluate_function(loaded, {"VIX": 20.0, "USGG10YR": 0.05})
+    assert math.isfinite(forecast)
 
 
 def test_a_model_set_without_a_function_has_none_even_after_one_that_had(db):

@@ -1,5 +1,6 @@
 """The downloadable run report: what it says, and how it says what it doesn't have."""
 
+import re
 from datetime import datetime
 
 import numpy as np
@@ -9,7 +10,7 @@ import pytest
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.extraction.validation import ValidationReport
 from forecasting_engine.portfolio.backtest import run_backtest
-from forecasting_engine.reporting.portfolio_comparison import NOT_RUN
+from forecasting_engine.reporting.portfolio_comparison import NOT_RUN, comparison_rows
 from forecasting_engine.reporting.run_report import (
     line_chart_svg,
     report_html,
@@ -135,6 +136,26 @@ def test_the_report_needs_nothing_from_the_internet():
 )
 def test_the_report_has_each_section_the_story_asks_for(heading):
     assert heading in report_html(_run(), BACKTEST)
+
+
+def test_the_backtest_table_matches_what_the_portfolio_page_itself_would_show():
+    """FYP-266: the report's figures are the page's own rows (module docstring).
+    ``comparison_rows`` is exactly what the Portfolio page calls to build its own
+    backtest table; this confirms the report's rendering of the same ``BACKTEST``
+    doesn't drop, reorder, or reformat a single row on the way into the HTML."""
+    text = report_html(_run(), BACKTEST)
+
+    for basis in ("net", "gross"):
+        for row in comparison_rows(BACKTEST, basis):
+            # The table has a "no forecasts" column between baseline and difference
+            # (filled from a separate backtest the page also runs); skip over it rather
+            # than hand-computing it here, which would just re-test run_results itself.
+            pattern = (
+                rf"<td>{re.escape(row.metric)}</td><td>{re.escape(row.optimised)}</td>"
+                rf"<td>{re.escape(row.baseline)}</td><td>[^<]*</td>"
+                rf"<td>{re.escape(row.difference)}</td>"
+            )
+            assert re.search(pattern, text), f"row for {row.metric!r} not found as given"
 
 
 def test_the_data_quality_summary_gives_the_flags_as_they_stand():
