@@ -666,3 +666,59 @@ def test_clear_data_is_not_undone_by_reloading_the_last_commit(page):
     assert not app.exception
     assert "Using the data committed" not in texts(app.success)
     assert "Upload target index files" in texts(app.info)
+
+
+# --- reading the uploads once ---------------------------------------------------------
+
+
+def _count_reads(monkeypatch) -> list[str]:
+    """The name of each export as it is parsed, from here on."""
+    from forecasting_engine.extraction import bloomberg_csv
+
+    reads, read = [], bloomberg_csv.read_export
+
+    def counted(filename, data):
+        reads.append(filename)
+        return read(filename, data)
+
+    monkeypatch.setattr(bloomberg_csv, "read_export", counted)
+    return reads
+
+
+def test_a_rerun_with_the_same_files_does_not_read_them_again(page, monkeypatch):
+    """The page reruns for every control on it. It used to parse and merge every
+    uploaded export again each time, which is what made the Data page slow to answer."""
+    reads = _count_reads(monkeypatch)
+    files = [("spx.csv", SPX, "text/csv"), ("vix.csv", VIX, "text/csv")]
+
+    result = upload(page, files)
+    assert reads == ["spx.csv", "vix.csv"]
+    result.run()
+    result.run()
+
+    assert reads == ["spx.csv", "vix.csv"]
+    assert not result.error
+    assert "Merged 2 file(s) into 2 rows, 2 data columns" in texts(result.success)
+
+
+def test_the_same_file_name_with_other_contents_is_read_again(page, monkeypatch):
+    reads = _count_reads(monkeypatch)
+    longer = export("SPX Index", ["1/2/2020,100.0", "1/3/2020,101.0", "1/6/2020,102.0"])
+
+    upload(page, [("spx.csv", SPX, "text/csv")])
+    result = upload(page, [("spx.csv", longer, "text/csv")])
+
+    assert reads == ["spx.csv", "spx.csv"]
+    assert "Merged 1 file(s) into 3 rows, 1 data columns" in texts(result.success)
+
+
+def test_a_file_that_failed_to_read_keeps_saying_so_on_every_rerun(page, monkeypatch):
+    reads = _count_reads(monkeypatch)
+
+    files = [("spx.csv", SPX, "text/csv"), ("notes.csv", b"not an export", "text/csv")]
+    result = upload(page, files)
+    first = texts(result.error)
+    result.run()
+
+    assert first and texts(result.error) == first
+    assert reads == ["spx.csv", "notes.csv"]

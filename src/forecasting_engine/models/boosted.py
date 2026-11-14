@@ -26,7 +26,6 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 import optuna
 import pandas as pd
-import shap
 from lightgbm import LGBMRegressor
 from xgboost import XGBRegressor
 
@@ -244,6 +243,8 @@ class BoostedForecaster:
         """FYP-149: mean |SHAP value| per feature, reusing the terms/coefficients
         contract Polynomial and FF5 already report through."""
         self._require_fit("explain")
+        import shap  # here, not at the top of the module: see ``__getattr__`` below
+
         explainer = shap.TreeExplainer(self._model)
         return self._description(np.abs(explainer.shap_values(self._fit_x)).mean(axis=0))
 
@@ -442,3 +443,17 @@ def _explain_last_fold(
     forecaster = BoostedForecaster(library, params)
     forecaster.fit(replace(panel, signals=signals), fold.train)
     return forecaster.explain()
+
+
+def __getattr__(name: str):
+    """``shap``, imported the first time it is asked for.
+
+    It takes over two seconds to import and is needed only to explain a fitted
+    model, but this module is imported by every page of the app (they share the run
+    results' types), so importing it here was most of the wait before the app's
+    first page appeared."""
+    if name == "shap":
+        import shap
+
+        return shap
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

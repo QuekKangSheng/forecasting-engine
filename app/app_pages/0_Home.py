@@ -15,6 +15,7 @@ import streamlit as st
 import bloomberg_extraction_panel
 import model_runs
 import portfolio_summary
+import tokens
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
@@ -32,11 +33,18 @@ from forecasting_engine.validation.gates import evaluate_candidate
 ROLES: tuple[TargetRole, ...] = (TargetRole.EQUITY, TargetRole.BOND)
 ROLE_NAMES = {TargetRole.EQUITY: "Equity", TargetRole.BOND: "Bond"}
 NAIVE = MODEL_ORDER[0]
+#: What the link under the next step says, by the page it leads to.
+GO_TO = {
+    "data": "Go to Data",
+    "models": "Go to Models",
+    "portfolio": "Go to Portfolio Optimizer",
+}
 
 ui.page_header(
     "Forecasting Engine",
     "Tests whether forecasts of S&P 500 and US bond returns hold up on data they never saw, "
     "and only then uses them to split a portfolio between the two.",
+    kicker="00 / Status",
 )
 
 bloomberg_extraction_panel.restore_last_commit()
@@ -72,27 +80,40 @@ def _stale(fingerprint_then: str | None) -> bool:
     return fingerprint is not None and fingerprint_then != fingerprint
 
 
-def _next_step() -> str | None:
-    """The first thing left to do, in pipeline order, or ``None`` when every step is
-    up to date."""
+def _next_step() -> tuple[str, str] | None:
+    """The first thing left to do, in pipeline order, and the page it is done on (as
+    the entry point names it), or ``None`` when every step is up to date."""
     if merged is None:
-        return "upload Bloomberg exports on the **Data** page and click **Use Updated Data**."
+        return (
+            "upload Bloomberg exports on the **Data** page and click **Use Updated Data**.",
+            "data",
+        )
     missing = [ROLE_NAMES[r].lower() for r in ROLES if r not in targets]
     if missing:
-        return f"assign the {' and '.join(missing)} target on the **Data** page."
+        return f"assign the {' and '.join(missing)} target on the **Data** page.", "data"
     for role in ROLES:
         active = actives[role]
         if active is None:
             if not _runs(role):
-                return f"run the {ROLE_NAMES[role].lower()} models on the **Models** page."
-            return f"set an active {ROLE_NAMES[role].lower()} model on the **Models** page."
+                return (
+                    f"run the {ROLE_NAMES[role].lower()} models on the **Models** page.",
+                    "models",
+                )
+            return (
+                f"set an active {ROLE_NAMES[role].lower()} model on the **Models** page.",
+                "models",
+            )
         if _stale(active.dataset_fingerprint):
             return (
                 f"re-run the {ROLE_NAMES[role].lower()} models on the committed data and set "
-                "one active on the **Models** page."
+                "one active on the **Models** page.",
+                "models",
             )
     if summary is None or _stale(summary.dataset_fingerprint):
-        return "open the **Portfolio Optimizer** to allocate between the active models."
+        return (
+            "open the **Portfolio Optimizer** to allocate between the active models.",
+            "portfolio",
+        )
     return None
 
 
@@ -101,6 +122,7 @@ def _tick(ok: bool) -> str:
 
 
 def _data_card() -> None:
+    st.markdown(ui.kicker_line("01 / Ingest", small=True), unsafe_allow_html=True)
     st.subheader("Data")
     if merged is None:
         not_yet = ui.status_row("Committed", ui.lozenge("Not yet", "neutral"))
@@ -128,6 +150,7 @@ def _data_card() -> None:
     restored = st.session_state.get(bloomberg_extraction_panel.RESTORED_AT_KEY)
     if restored is not None:
         st.caption(f"Loaded from the commit made {restored:%d %b %Y %H:%M}.")
+    ui.page_link("data", "Open Data")
 
 
 def _result_line(name: str, result: ModelRunResult) -> str:
@@ -144,6 +167,7 @@ def _fmt(value: float, decimals: int) -> str:
 
 
 def _models_card() -> None:
+    st.markdown(ui.kicker_line("02 / Forecast", small=True), unsafe_allow_html=True)
     st.subheader("Models")
     if merged is None:
         st.caption("Commit data first.")
@@ -182,9 +206,11 @@ def _models_card() -> None:
                 f"Active model: {display_model_name(active.model_name)}, "
                 "fitted on the committed data."
             )
+    ui.page_link("models", "Open Models")
 
 
 def _portfolio_card() -> None:
+    st.markdown(ui.kicker_line("03 / Allocate", small=True), unsafe_allow_html=True)
     st.subheader("Portfolio Optimizer")
     both = all(actives[role] is not None for role in ROLES)
     st.markdown(ui.status_row("Both active models set", _tick(both)), unsafe_allow_html=True)
@@ -204,6 +230,7 @@ def _portfolio_card() -> None:
         f"Latest weights ({summary.as_of:%d %b %Y}): {summary.equity_weight:.0%} equity, "
         f"{summary.bond_weight:.0%} bond."
     )
+    ui.page_link("portfolio", "Open Portfolio Optimizer")
 
 
 def _headline() -> None:
@@ -214,18 +241,23 @@ def _headline() -> None:
         (
             f"Latest weights, {summary.as_of:%d %b %Y}",
             f"{summary.equity_weight:.0%} / {summary.bond_weight:.0%}",
-            "equity / bond",
+            # The split as a bar, in the colours the two indices have on every chart.
+            ui.split_bar(
+                [
+                    ("Equity", summary.equity_weight, tokens.SERIES_EQUITY),
+                    ("Bond", summary.bond_weight, tokens.SERIES_BOND),
+                ]
+            ),
         ),
     ]
     if summary.risk_level is not None:
         cells.append(("Risk level", f"{summary.risk_level} of 5", ""))
-    behind = summary.net_sharpe < summary.baseline_net_sharpe
+    gap = summary.net_sharpe - summary.baseline_net_sharpe
     cells.append(
         (
             "Sharpe after costs",
             f"{summary.net_sharpe:.2f}",
-            f"{summary.baseline_net_sharpe:.2f} for 50/50"
-            + (" · behind the benchmark" if behind else ""),
+            ui.delta(gap, f"{abs(gap):.2f}") + f" vs {summary.baseline_net_sharpe:.2f} for 50/50",
         )
     )
     if summary.forecast_value_label is not None:
@@ -247,8 +279,12 @@ if step is None:
         icon=":material/check_circle:",
     )
 else:
-    st.info(f"**Next step:** {step}", icon=":material/arrow_forward:")
-data_col, models_col, portfolio_col = st.columns(3)
+    what, where = step
+    st.info(f"**Next step:** {what}", icon=":material/arrow_forward:")
+    ui.page_link(where, GO_TO[where])
+# The three stages in pipeline order, numbered as the sidebar numbers them. Models
+# gets the most room: it lists every model's result for both indices.
+data_col, models_col, portfolio_col = st.columns([5, 7, 5])
 with data_col, st.container(border=True):
     _data_card()
 with models_col, st.container(border=True):

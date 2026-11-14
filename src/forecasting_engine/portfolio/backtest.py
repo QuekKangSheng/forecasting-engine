@@ -223,15 +223,19 @@ def chain(
     held = np.zeros(len(ASSETS))
     gross, net, turnover, costs = [], [], {}, {}
     opening_cost = 0.0
+    # Read as arrays once, not a row at a time: looking a day up in a frame costs far
+    # more than the day's arithmetic, and this loop runs for every day of the backtest.
+    daily_returns = returns[list(ASSETS)].to_numpy(dtype=float)
+    target_on = dict(zip(targets.index, targets.to_numpy(), strict=True))
 
-    for i, (day, row) in enumerate(returns[list(ASSETS)].iterrows()):
+    for i, day in enumerate(returns.index):
         if i > 0:
-            daily = row.to_numpy(dtype=float)
+            daily = daily_returns[i]
             portfolio = float(held @ daily)
             held = held * (1 + daily) / (1 + portfolio)
         cost = 0.0
-        if day in targets.index:
-            target = targets.loc[day].to_numpy()
+        target = target_on.get(day)
+        if target is not None:
             traded = np.abs(target - held)
             turnover[day] = float(traded.sum())
             cost = float(traded @ rates)
