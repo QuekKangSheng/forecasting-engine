@@ -13,8 +13,14 @@ def _weights(names=(EQUITY, BOND)) -> pd.DataFrame:
     return pd.DataFrame({names[0]: [0.2, 0.5, 0.8], names[1]: [0.8, 0.5, 0.2]}, index=dates)
 
 
-def _spec(chart) -> dict:
-    return chart.to_dict()
+def _spec(chart: dict) -> dict:
+    """The chart with its tables as rows, as the browser is given them."""
+    return {
+        **chart,
+        "datasets": {
+            name: table.to_dict("records") for name, table in chart["datasets"].items()
+        },
+    }
 
 
 def _rows(spec: dict, column: str) -> list[dict]:
@@ -159,8 +165,81 @@ def test_a_line_chart_is_sent_a_row_per_day_and_unfolded_into_its_lines():
     assert lines["transform"] == [
         {"fold": ["Optimised", "Equal-weight benchmark"], "as": ["Series", "Cumulative return"]}
     ]
-    (rows,) = spec["datasets"].values()
+    rows = _layer_rows(spec, 0)
     assert len(rows) == len(paths) and set(rows[0]) == {"date", *paths.columns}
+
+
+def test_a_charts_specification_holds_none_of_its_figures():
+    """So it is the same from one rerun to the next and the browser keeps the chart
+    it has drawn, swapping the figures in, rather than building it again."""
+    before = charts.line_chart(_paths(30), "Cumulative return")
+    after = charts.line_chart(_paths(30) * 2, "Cumulative return")
+
+    assert _without_tables(before) == _without_tables(after)
+    assert not before["datasets"]["drawn"].equals(after["datasets"]["drawn"])
+    # And nothing is read from a table the chart doesn't send.
+    named = {layer["data"]["name"] for layer in before["layer"]}
+    assert named == set(before["datasets"])
+
+
+def test_the_weights_charts_specification_holds_none_of_its_figures():
+    before = charts.weights_chart(_weights(), limits=(0.2, 0.8))
+    after = charts.weights_chart(_weights() * 0.5, limits=(0.1, 0.9))
+
+    assert _without_tables(before) == _without_tables(after)
+    assert {layer["data"]["name"] for layer in before["layer"]} == set(before["datasets"])
+
+
+def _without_tables(chart: dict) -> dict:
+    """The specification alone: without the figures, and without the key that is
+    written above the chart and never sent with it."""
+    return {key: value for key, value in chart.items() if key not in ("datasets", "key")}
+
+
+def test_a_charts_key_names_each_line_with_its_latest_figure_and_the_day():
+    paths = _paths(30)
+
+    key = charts.line_chart(paths, "Cumulative return")["key"]
+
+    assert "Optimised" in key and "Equal-weight benchmark" in key
+    assert f"{paths['Optimised'].iloc[-1]:.2%}" in key
+    assert f"{paths.index[-1]:%d %b %Y}" in key
+    assert charts.OPTIMISED in key and charts.BENCHMARK in key
+
+
+def test_a_line_that_ends_early_is_keyed_by_its_own_last_figure():
+    paths = _paths(30)
+    paths.iloc[-5:, 1] = float("nan")
+
+    key = charts.line_chart(paths, "Cumulative return")["key"]
+
+    assert f"{paths['Equal-weight benchmark'].dropna().iloc[-1]:.2%}" in key
+
+
+def test_the_weights_charts_key_gives_the_weights_held_now():
+    key = charts.weights_chart(_weights(), until=pd.Timestamp("2024-04-30"))["key"]
+
+    # The name is escaped for the page: an index's name comes from the uploaded data.
+    assert "S&amp;P 500" in key and "80%" in key and "20%" in key
+    assert "30 Apr 2024" in key
+    assert "(total return)" not in key, "the short name is enough beside a swatch"
+
+
+def test_no_chart_draws_a_legend_of_its_own_under_itself():
+    line = charts.line_chart(_paths(30), "Cumulative return")
+    weights = charts.weights_chart(_weights())
+
+    assert line["layer"][0]["encoding"]["color"]["legend"] is None
+    assert weights["layer"][0]["encoding"]["color"]["legend"] is None
+
+
+def test_the_apps_own_line_is_drawn_heavier_than_the_ones_it_is_read_against():
+    spec = _spec(charts.line_chart(_paths(30), "Cumulative return"))
+
+    width = spec["layer"][0]["encoding"]["strokeWidth"]
+
+    assert width["condition"]["test"] == {"field": "Series", "oneOf": ["Optimised"]}
+    assert width["condition"]["value"] > width["value"]
 
 
 def test_a_hover_marks_the_day_on_every_line_and_shows_each_lines_value():

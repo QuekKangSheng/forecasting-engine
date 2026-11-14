@@ -52,6 +52,7 @@ ui.page_header(
     "Shock one or more signals the active polynomials read, and see how each index's "
     "forecast changes. Nothing is refitted: the active functions are evaluated again on "
     "the shocked inputs.",
+    kicker="04 / Stress",
 )
 
 bloomberg_extraction_panel.restore_last_commit()

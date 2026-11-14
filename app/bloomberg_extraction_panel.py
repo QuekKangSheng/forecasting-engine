@@ -196,6 +196,7 @@ def render() -> None:
     ui.page_header(
         "Data",
         "Upload the Bloomberg exports, check them, and commit them for the other pages to use.",
+        kicker="01 / Ingest",
     )
 
     if st.button(

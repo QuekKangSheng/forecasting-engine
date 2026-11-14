@@ -29,6 +29,7 @@ ui.page_header(
     "Run history",
     "Every model fit and every distinct portfolio result, newest first: when it ran, on "
     "which data, under which settings, and what came out. Nothing here refits a model.",
+    kicker="05 / Audit trail",
 )
 
 OPEN_RUN_KEY = "open_portfolio_run"
@@ -241,10 +242,7 @@ def _model_fits() -> None:
             columns={"predicted": "Forecast", "baseline": "Baseline", "realised": "Realised"}
         )
         ordered = [c for c in ("Realised", "Forecast", "Baseline") if c in shown.columns]
-        st.altair_chart(
-            charts.line_chart(shown[ordered], "Return", title="Return over the horizon"),
-            width="stretch",
-        )
+        charts.draw(charts.line_chart(shown[ordered], "Return", title="Return over the horizon"))
 
 
 def _rename_run(run_key: str, widget: str) -> None:

@@ -188,6 +188,7 @@ ui.page_header(
     "Models",
     "Fit each forecasting model on past data, score it only on the periods it never saw, "
     "and choose the one the portfolio uses.",
+    kicker="02 / Forecast",
 )
 
 bloomberg_extraction_panel.restore_last_commit()
@@ -1229,7 +1230,7 @@ def _show_directional(
     metric_cols[3].metric(
         "Days invested", f"{pnl.share_invested:.0%}", help=glossary.term("Days invested")
     )
-    st.altair_chart(
+    charts.draw(
         charts.line_chart(
             pd.DataFrame(
                 {
@@ -1238,8 +1239,7 @@ def _show_directional(
                 }
             ),
             "Cumulative return",
-        ),
-        width="stretch",
+        )
     )
     if pnl.no_forecast:
         st.caption(
@@ -1406,5 +1406,6 @@ tabs = st.tabs([f"{ROLE_NAMES[r]} · {label(target_columns[r])}" for r in roles]
 for role, tab in zip(roles, tabs, strict=True):
     with tab:
         _render_tab(role, target_columns[role])
+ui.page_link("portfolio", "Next · 03 Portfolio Optimizer")
 if submitted and not model_jobs.INLINE:
     st.rerun()

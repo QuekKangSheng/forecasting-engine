@@ -439,8 +439,8 @@ def _line_chart(app: AppTest, value: str):
 
 def _line_data(app: AppTest, value: str) -> pd.DataFrame:
     """The chart's lines, a column each: it is sent a row per day and unfolded into
-    its lines in the browser."""
-    (dataset,) = _line_chart(app, value).proto.datasets
+    its lines in the browser. (Beside them it is sent the days a hover can land on.)"""
+    (dataset,) = [d for d in _line_chart(app, value).proto.datasets if d.name == "drawn"]
     return convert_arrow_bytes_to_pandas_df(dataset.data.data).set_index("date")
 
 

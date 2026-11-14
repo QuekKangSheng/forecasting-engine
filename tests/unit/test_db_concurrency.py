@@ -1,6 +1,7 @@
 """Several Streamlit sessions are threads of one process, all opening the same DuckDB
 file. Opening it must not make them fail each other."""
 
+import sys
 import threading
 from datetime import datetime
 
@@ -99,6 +100,86 @@ def test_sessions_recording_runs_at_once_each_get_their_own_number(db):
 
 def test_a_database_deleted_while_the_app_runs_has_its_tables_made_again(db):
     list_portfolio_runs(db_path=db)
+    db.unlink()
+
+    assert list_portfolio_runs(db_path=db) == []
+
+
+# --- the app holds the database open between uses ---------------------------------------
+
+
+@pytest.fixture
+def kept_open():
+    """``_db.keep_open()`` for one test, with nothing left held after it."""
+    _db.keep_open()
+    yield
+    _db.release()
+
+
+def _opens(monkeypatch) -> list[str]:
+    """Every time the database file itself is opened from here on."""
+    opened: list[str] = []
+    real = _db.duckdb.connect
+
+    def counting(path, *args, **kwargs):
+        opened.append(str(path))
+        return real(path, *args, **kwargs)
+
+    monkeypatch.setattr(_db.duckdb, "connect", counting)
+    return opened
+
+
+def test_a_script_opens_the_file_around_each_use_and_holds_nothing(db, monkeypatch):
+    opened = _opens(monkeypatch)
+
+    for _ in range(3):
+        list_portfolio_runs(db_path=db)
+
+    assert len(opened) == 3
+    assert _db._held == {}
+
+
+def test_the_app_opens_the_file_once_however_often_it_reads(db, monkeypatch, kept_open):
+    opened = _opens(monkeypatch)
+
+    for _ in range(5):
+        list_portfolio_runs(db_path=db)
+
+    assert len(opened) == 1
+
+
+def test_a_run_recorded_while_the_file_is_held_is_read_back(db, kept_open):
+    record_portfolio_run(_inputs(3), RESULT, SCHEDULE, db_path=db)
+
+    assert [run.inputs["risk_level"] for run in list_portfolio_runs(db_path=db)] == [3]
+
+
+def test_sessions_sharing_the_held_file_do_not_fail_each_other(db, kept_open):
+    list_portfolio_runs(db_path=db)
+    inputs = [_inputs(i) for i in range(SESSIONS)]
+
+    errors = _all_at_once(lambda i: record_portfolio_run(inputs[i], RESULT, SCHEDULE, db_path=db))
+
+    assert errors == []
+    assert _all_at_once(lambda _: list_portfolio_runs(db_path=db)) == []
+    assert sorted(portfolio_runs_table(db_path=db)["run_number"]) == list(range(1, SESSIONS + 1))
+
+
+def test_releasing_writes_everything_back_and_lets_go_of_the_file(db):
+    _db.keep_open()
+    record_portfolio_run(_inputs(2), RESULT, SCHEDULE, db_path=db)
+
+    _db.release()
+
+    assert _db._held == {}
+    # Nothing holds the file now, so it can be opened afresh and has the run in it.
+    with _db.duckdb.connect(str(db), read_only=True) as conn:
+        assert conn.execute("SELECT count(*) FROM portfolio_runs").fetchone() == (1,)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows won't delete a file held open")
+def test_a_held_database_deleted_while_the_app_runs_is_made_again(db, kept_open):
+    record_portfolio_run(_inputs(1), RESULT, SCHEDULE, db_path=db)
     db.unlink()
 
     assert list_portfolio_runs(db_path=db) == []
