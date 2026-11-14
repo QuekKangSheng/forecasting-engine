@@ -27,6 +27,13 @@ class PortfolioSummary:
     """The optimised portfolio's Sharpe ratio after trading costs."""
     baseline_net_sharpe: float
     """The 50/50 benchmark's, over the same days."""
+    risk_level: int | None = None
+    """The risk level the run was solved at."""
+    forecast_value_label: str | None = None
+    """Whether the forecasts added value against the same level with none, after
+    costs, as the Portfolio page states it; ``None`` before the page has said."""
+    forecast_value_tone: str = "neutral"
+    forecast_value_t: str = "—"
     solve_inputs: SolveInputs | None = None
     """What the latest rebalance's target was solved from, so the Scenarios page can
     re-solve it on shocked forecasts (FYP-246). ``None`` where it couldn't be rebuilt."""

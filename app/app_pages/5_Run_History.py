@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import html
 
-import altair as alt
 import pandas as pd
 import streamlit as st
 
+import charts
 import glossary
 import saved_run
 import ui
@@ -25,23 +25,53 @@ from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.reporting.model_metrics import display_model_name
 from forecasting_engine.store import active_model, lineage, portfolio_runs, runs, uploads
 
-ui.inject()
-
-st.title("Run history")
-st.caption(
+ui.page_header(
+    "Run history",
     "Every model fit and every distinct portfolio result, newest first: when it ran, on "
-    "which data, under which settings, and what came out. Nothing here refits a model."
+    "which data, under which settings, and what came out. Nothing here refits a model.",
+    kicker="05 / Audit trail",
 )
 
 OPEN_RUN_KEY = "open_portfolio_run"
+#: A stored metric's key -> the name the Models page's table gives it, in the order
+#: a run is read: the two gate figures first.
+METRIC_NAMES = {
+    "signal_rank_ic": "Signal Rank IC",
+    "signal_t": "t",
+    "oos_rank_ic": "OOS Rank IC",
+    "ic": "IC",
+    "rmse": "RMSE",
+    "rows_scored": "Rows scored",
+    "crash_recall": "Crash recall",
+    "crash_precision": "Crash precision",
+    "crash_f1": "Crash F1",
+    "crash_tail_days": "Crash tail days",
+    "signal_rank_ic_se": "Signal Rank IC s.e. (h−1 lags)",
+    "signal_rank_ic_se_test": "Signal Rank IC s.e. (test-window lags)",
+    "oos_rank_ic_se": "OOS Rank IC s.e. (h−1 lags)",
+    "oos_rank_ic_se_test": "OOS Rank IC s.e. (test-window lags)",
+}
+
+
+def _metric_value(value: float | None) -> str:
+    """A dash for a metric that wasn't computed, rather than the word "None"."""
+    if value is None or value != value:
+        return "—"
+    return f"{value:,.0f}" if float(value).is_integer() and abs(value) >= 1 else f"{value:.4g}"
 RUNS_PER_PAGE = 20
 RUN_NAME_MAX_CHARS = 80
-#: Run, name, first shown, equity model, bond model, risk level. A row's buttons sit on
-#: a line of their own: beside these, the page's width leaves them too narrow to read.
-RUN_COLUMNS = [0.5, 2.4, 1.6, 1.6, 1.6, 0.7]
-RUN_HEADINGS = ["Run", "Name", "First shown", "Equity model", "Bond model", "Risk"]
+#: Run, name, first shown, equity model, bond model, risk level, then the row's buttons.
+#: The buttons had a line of their own while the page was a narrow column; it is the
+#: full width now, and the extra line made the list twice as long, so an opened run
+#: landed a screen or two below the button that opened it.
+RUN_COLUMNS = [0.5, 2.4, 1.5, 1.7, 1.5, 0.6, 2.1]
+RUN_HEADINGS = ["Run", "Name", "First shown", "Equity model", "Bond model", "Risk", ""]
 
 
+# Each tab is a fragment: a control on one redraws that tab alone. Run as one page,
+# opening a portfolio run also read the fits table back, a fit's forecasts and its
+# chart, and choosing a fit redrew every portfolio run row.
+@st.fragment
 def _model_fits() -> None:
     TARGETS = {"All": None, "Equity": TargetRole.EQUITY, "Bond": TargetRole.BOND}
     target = st.segmented_control("Target", list(TARGETS), default="All", required=True)
@@ -75,20 +105,25 @@ def _model_fits() -> None:
             "OOS Rank IC": table["oos_rank_ic"],
             "RMSE": table["rmse"],
             "Data": table["dataset_sha256"].str[:12],
-            "Code": table["code_version"],
+            "Code": table["code_version"].fillna("—"),
         }
     )
+    # Formatted through the frame's own styler so a figure a run doesn't have (the
+    # naive baseline has no gate figures, a failed run has none at all) is a dash. A
+    # number column's format left those cells reading "None".
+    figures = {
+        "Seconds": "{:.1f}",
+        "Signal Rank IC": "{:+.3f}",
+        "t": "{:.2f}",
+        "OOS Rank IC": "{:+.3f}",
+        "RMSE": "{:.4f}",
+    }
     st.dataframe(
-        shown,
+        shown.style.format(figures, na_rep="—"),
         hide_index=True,
         width="stretch",
         column_config={
             "Started": st.column_config.DatetimeColumn(format="D MMM YYYY, HH:mm"),
-            "Seconds": st.column_config.NumberColumn(format="%.1f"),
-            "Signal Rank IC": st.column_config.NumberColumn(format="%+.3f"),
-            "t": st.column_config.NumberColumn(format="%.2f"),
-            "OOS Rank IC": st.column_config.NumberColumn(format="%+.3f"),
-            "RMSE": st.column_config.NumberColumn(format="%.4f"),
             "Data": st.column_config.TextColumn(help=glossary.term("Dataset hash")),
             "Active": st.column_config.TextColumn(
                 help="The target whose active model this run produced, if any."
@@ -115,29 +150,37 @@ def _model_fits() -> None:
     if run.error:
         st.error(run.error, icon=":material/error:")
 
-    # Lineage: the dataset hash leads to the upload that holds those exact bytes.
+    # Lineage: the dataset hash leads to the upload that holds those exact bytes. The
+    # file and date are what a reader wants; the hashes and paths that prove it are
+    # one click away, for an audit, rather than leading the run.
     upload = uploads.find_upload(run.dataset_sha256)
-    source = (
+    summary = (
         f"{html.escape(upload.filename)}, uploaded {upload.uploaded_at:%d %b %Y %H:%M}, "
-        f"{upload.row_count:,} rows, stored as data/uploads/{run.dataset_sha256}.csv"
+        f"{upload.row_count:,} rows"
         if upload is not None
         else "no upload with this hash is in the upload log"
     )
     st.markdown(
         ui.eyebrow("Data", glossary.term("Dataset hash"))
-        + f'<p style="margin:0">SHA-256 <code>{run.dataset_sha256}</code><br>'
-        f'<span style="color: var(--fe-muted)">{source}</span></p>',
+        + f'<p style="margin:0">{summary}</p>',
+        unsafe_allow_html=True,
+    )
+    lineage_box = st.expander("Lineage: hashes and the exports this data came from")
+    lineage_box.markdown(
+        f'<p style="margin:0">SHA-256 <code>{run.dataset_sha256}</code><br>'
+        f'<span style="color: var(--fe-muted)">stored as '
+        f"data/uploads/{run.dataset_sha256}.csv</span></p>",
         unsafe_allow_html=True,
     )
 
     # One step further back: the Bloomberg exports the dataset was merged from.
     sources = lineage.sources_of(run.dataset_sha256)
     if sources:
-        st.markdown(
+        lineage_box.markdown(
             ui.eyebrow(f"Merged from {len(sources)} export(s)", glossary.term("Lineage")),
             unsafe_allow_html=True,
         )
-        st.dataframe(
+        lineage_box.dataframe(
             pd.DataFrame(
                 {
                     "Role": [s.role.title() for s in sources],
@@ -152,7 +195,7 @@ def _model_fits() -> None:
             column_config={"Uploaded": st.column_config.DatetimeColumn(format="D MMM YYYY, HH:mm")},
         )
     else:
-        st.caption(
+        lineage_box.caption(
             "Which exports this dataset was merged from wasn't recorded: it was committed "
             "before exports were logged one by one."
         )
@@ -163,8 +206,20 @@ def _model_fits() -> None:
     metrics = runs.run_metrics(run.run_id)
     if metrics:
         st.markdown(ui.eyebrow("Metrics"), unsafe_allow_html=True)
+        # The gate's two figures first, then the rest, under the names the Models
+        # page's table uses rather than their storage keys.
+        ordered = [k for k in METRIC_NAMES if k in metrics] + [
+            k for k in metrics if k not in METRIC_NAMES
+        ]
         st.dataframe(
-            pd.DataFrame({"Metric": list(metrics), "Value": list(metrics.values())}),
+            pd.DataFrame(
+                {
+                    "Metric": [
+                        METRIC_NAMES.get(k, k.replace("_", " ").capitalize()) for k in ordered
+                    ],
+                    "Value": [_metric_value(metrics[k]) for k in ordered],
+                }
+            ),
             hide_index=True,
             width="stretch",
         )
@@ -179,36 +234,15 @@ def _model_fits() -> None:
             ),
             unsafe_allow_html=True,
         )
-        long = (
-            forecasts.rename(
-                columns={"predicted": "Forecast", "baseline": "Baseline", "realised": "Realised"}
-            )
-            .rename_axis("date")
-            .reset_index()
-            .melt("date", var_name="Series", value_name="Return")
+        # The same chart as every other line chart in the app, in the same colours:
+        # realised muted behind the two lines a model drew. Drawn on a canvas like
+        # them too, since three lines of every test date were thousands of page
+        # elements as SVG.
+        shown = forecasts.rename(
+            columns={"predicted": "Forecast", "baseline": "Baseline", "realised": "Realised"}
         )
-        chart = (
-            alt.Chart(long)
-            .mark_line(strokeWidth=1.2)
-            .encode(
-                # One tick a year, labelled with the year: left to itself the axis labels
-                # yearly ticks with the month alone.
-                x=alt.X("date:T", title="Date", axis=alt.Axis(format="%Y", tickCount="year")),
-                y=alt.Y("Return:Q", title="Return over the horizon", axis=alt.Axis(format="%")),
-                color=alt.Color(
-                    "Series:N",
-                    # Realised muted behind the two lines a model drew.
-                    scale=alt.Scale(
-                        domain=["Realised", "Forecast", "Baseline"],
-                        range=["#9198A1", "#4C8DF6", "#E8912D"],
-                    ),
-                    legend=alt.Legend(title=None, orient="bottom"),
-                ),
-                tooltip=["date:T", "Series:N", alt.Tooltip("Return:Q", format=".2%")],
-            )
-            .properties(height=320)
-        )
-        st.altair_chart(chart, use_container_width=True)
+        ordered = [c for c in ("Realised", "Forecast", "Baseline") if c in shown.columns]
+        charts.draw(charts.line_chart(shown[ordered], "Return", title="Return over the horizon"))
 
 
 def _rename_run(run_key: str, widget: str) -> None:
@@ -219,11 +253,15 @@ def _open_run(run_key: str) -> None:
     st.session_state[OPEN_RUN_KEY] = run_key
 
 
+def _close_run() -> None:
+    st.session_state.pop(OPEN_RUN_KEY, None)
+
+
 def _model_cell(name: object) -> str:
     return display_model_name(name) if pd.notna(name) else "—"
 
 
-def _run_row(row) -> None:
+def _run_row(row, *, is_open: bool) -> None:
     cols = st.columns(RUN_COLUMNS, vertical_alignment="center")
     cols[0].markdown(f"**{row.run_number}**")
     widget = f"run_name_{row.run_key}"
@@ -241,15 +279,19 @@ def _run_row(row) -> None:
     cols[3].text(_model_cell(row.equity_model))
     cols[4].text(_model_cell(row.bond_model))
     cols[5].text(f"{row.risk_level:.0f}" if pd.notna(row.risk_level) else "—")
-    buttons = st.container(horizontal=True, horizontal_alignment="right")
-    buttons.button(
-        "Open",
-        key=f"open_run_{row.run_key}",
-        disabled=not row.has_results,
-        help=None if row.has_results else NOT_SAVED,
-        on_click=_open_run,
-        args=(row.run_key,),
-    )
+    buttons = cols[6].container(horizontal=True, horizontal_alignment="right")
+    if is_open:
+        # The run is shown under this row; the same button puts it away again.
+        buttons.button("Close", key=f"close_run_{row.run_key}", on_click=_close_run)
+    else:
+        buttons.button(
+            "Open",
+            key=f"open_run_{row.run_key}",
+            disabled=not row.has_results,
+            help=None if row.has_results else NOT_SAVED,
+            on_click=_open_run,
+            args=(row.run_key,),
+        )
     if row.has_results:
         saved_run.report_button(buttons, row.run_key, label="Report", number=row.run_number)
     else:
@@ -262,6 +304,7 @@ NOT_SAVED = (
 )
 
 
+@st.fragment
 def _portfolio_runs() -> None:
     table = portfolio_runs.portfolio_runs_table()
     if table.empty:
@@ -284,22 +327,31 @@ def _portfolio_runs() -> None:
         if pages > 1
         else 1
     )
+    # An opened run is shown straight under its own row, where the click was. At the
+    # foot of the list it was out of sight, so "Open" looked as if it had done nothing.
+    open_key = st.session_state.get(OPEN_RUN_KEY)
+    opened = None if open_key is None else portfolio_runs.get_saved_run(open_key)
+    shown_inline = False
     with st.container(border=True):
         header = st.columns(RUN_COLUMNS)
         for col, heading in zip(header, RUN_HEADINGS, strict=True):
             col.caption(heading)
         start = (page - 1) * RUNS_PER_PAGE
         for row in table.iloc[start : start + RUNS_PER_PAGE].itertuples():
-            _run_row(row)
+            is_open = opened is not None and row.run_key == opened.run_key
+            _run_row(row, is_open=is_open)
+            if is_open:
+                shown_inline = True
+                with st.container(border=True):
+                    saved_run.render(opened)
 
     with st.expander("Compare runs"):
         _compare_runs(table)
 
-    run_key = st.session_state.get(OPEN_RUN_KEY)
-    run = None if run_key is None else portfolio_runs.get_saved_run(run_key)
-    if run is not None:
+    # A run opened from another page of the list has no row here to sit under.
+    if opened is not None and not shown_inline:
         st.divider()
-        saved_run.render(run)
+        saved_run.render(opened)
 
 
 def _compare_runs(table: pd.DataFrame) -> None:
@@ -317,7 +369,7 @@ def _compare_runs(table: pd.DataFrame) -> None:
                 + " to "
                 + table["end_date"].astype(str),
                 "Key": table["run_key"].str[:12],
-                "Code": table["code_version"],
+                "Code": table["code_version"].fillna("—"),
             }
         ),
         hide_index=True,

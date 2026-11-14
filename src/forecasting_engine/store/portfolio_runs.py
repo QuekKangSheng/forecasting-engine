@@ -1,7 +1,7 @@
 """Every distinct optimiser-and-backtest result the Portfolio page has shown, once each.
 
-The page recomputes the optimiser and the backtest on every view: a slider moved
-and moved back, a tab switched, a reload. Logging each computation would log the
+The page shows the optimiser's and the backtest's result on every view: a slider
+moved and moved back, a tab switched, a reload. Logging each view would log the
 same result many times over. So a portfolio run is identified by a **deterministic
 key**, the SHA-256 of everything its result depends on (``run_key``), and recorded
 with ``INSERT … ON CONFLICT DO NOTHING``: writing the same key again changes
@@ -297,6 +297,23 @@ def has_results(run_key: str, *, db_path: Path = DEFAULT_DB_PATH) -> bool:
             ).fetchone()
             is not None
         )
+
+
+def run_number(
+    run_key: str, *, with_results: bool = False, db_path: Path = DEFAULT_DB_PATH
+) -> int | None:
+    """The run's number, or ``None`` if it isn't recorded. ``with_results`` also asks
+    that its results are saved, and gives ``None`` if they aren't. One row read, where
+    ``get_saved_run`` reads the run's whole results document."""
+    saved = (
+        "JOIN portfolio_run_results AS r ON r.run_key = l.run_key " if with_results else ""
+    )
+    with connect(db_path, _OPEN_TABLES) as conn:
+        row = conn.execute(
+            f"SELECT l.run_number FROM portfolio_run_labels AS l {saved}WHERE l.run_key = ?",
+            [run_key],
+        ).fetchone()
+    return None if row is None else int(row[0])
 
 
 def rename_portfolio_run(

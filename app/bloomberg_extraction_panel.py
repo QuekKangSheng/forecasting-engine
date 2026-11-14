@@ -15,10 +15,12 @@ construction, whatever it's named.
 
 from __future__ import annotations
 
+import hashlib
 import pickle
 from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -41,6 +43,7 @@ from forecasting_engine.ingest.upload import (
     frame_csv_bytes,
     keep_source,
 )
+from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.store import lineage
 
 #: The two uploaders' own working copies — refreshed on every new upload,
@@ -53,6 +56,9 @@ _TARGET_EXPORTS_KEY = "_target_exports"
 _SIGNAL_EXPORTS_KEY = "_signal_exports"
 _TARGET_DROPPED_KEY = "_target_dropped"
 _SIGNAL_DROPPED_KEY = "_signal_dropped"
+#: Each uploader's files as last read, with what they were read as: see ``_read_once``.
+_TARGET_READ_KEY = "_target_read"
+_SIGNAL_READ_KEY = "_signal_read"
 #: filename -> the Role/Field the user last picked for it, so navigating to
 #: another page and back doesn't lose the choice (a fresh upload resets the
 #: file_uploader widget itself, but this dict is plain session state).
@@ -88,6 +94,12 @@ _COMMITTED_KEYS = (
 #: Relative, like the active-model DuckDB, so it sits under the app's working
 #: directory.
 LAST_COMMIT_PATH = Path("data") / "last_commit.pkl"
+#: Set once a session has looked for the last commit, so it is loaded at most once:
+#: after Clear Data the page stays clear rather than reloading it.
+_RESTORE_CHECKED_KEY = "_last_commit_checked"
+#: When the data now committed was loaded from the last commit rather than uploaded
+#: in this window: the time it was originally committed.
+RESTORED_AT_KEY = "_last_commit_restored_at"
 
 #: What the merged file is called in the upload log and under data/uploads.
 MERGED_NAME = "bloomberg_merged.csv"
@@ -164,9 +176,28 @@ def _parse_and_merge(files) -> _UploadResult:
     return result
 
 
+def _read_once(files, kept_key: str) -> _UploadResult:
+    """``_parse_and_merge(files)``, done once for each set of files rather than on
+    every rerun. The page reruns for every control on it, so picking a role or a
+    field, or opening a tab of the quality report, read and merged every export
+    again: most of a second each time on twenty years of daily data.
+
+    The files are told apart by name and contents, so the same name uploaded again
+    with other data is read again."""
+    identity = tuple((f.name, hashlib.sha256(f.getvalue()).hexdigest()) for f in files)
+    kept = st.session_state.get(kept_key)
+    if kept is None or kept[0] != identity:
+        kept = (identity, _parse_and_merge(files))
+        st.session_state[kept_key] = kept
+    return kept[1]
+
+
 def render() -> None:
-    ui.inject()
-    st.header("Bloomberg data extraction", anchor=False, divider="grey")
+    ui.page_header(
+        "Data",
+        "Upload the Bloomberg exports, check them, and commit them for the other pages to use.",
+        kicker="01 / Ingest",
+    )
 
     if st.button(
         "Clear Data",
@@ -180,6 +211,8 @@ def render() -> None:
             _TARGET_DROPPED_KEY,
             _TARGET_ROLE_CHOICES_KEY,
             _TARGET_FIELD_CHOICES_KEY,
+            _TARGET_READ_KEY,
+            _SIGNAL_READ_KEY,
             SIGNAL_MERGED_KEY,
             SIGNAL_REPORT_KEY,
             _SIGNAL_EXPORTS_KEY,
@@ -190,6 +223,7 @@ def render() -> None:
             COMMITTED_SOURCES_KEY,
             COMMITTED_DROPPED_KEY,
             _LOGGED_KEY,
+            RESTORED_AT_KEY,
         ):
             st.session_state.pop(key, None)
         # Old results are stale once the data they were fit on is cleared.
@@ -199,8 +233,7 @@ def render() -> None:
         )
         st.rerun()
 
-    if offer_last_commit():
-        st.rerun()
+    restore_last_commit()
 
     version = st.session_state.get(_UPLOADER_VERSION_KEY, 0)
 
@@ -234,7 +267,7 @@ def render() -> None:
     )
     if signal_files:
         with st.spinner("Reading and merging the signal files…"):
-            result = _parse_and_merge(signal_files)
+            result = _read_once(signal_files, _SIGNAL_READ_KEY)
         for message in result.errors:
             st.error(message, icon=":material/error:")
         if result.merged is not None:
@@ -304,10 +337,7 @@ def render() -> None:
         # empty page.
         committed = st.session_state.get(COMMITTED_KEY)
         if committed is not None:
-            st.success(
-                "Using the data committed last time. Upload files above to replace it.",
-                icon=":material/history:",
-            )
+            st.success(restored_notice(), icon=":material/history:")
             _render_report(
                 st.session_state.get(COMMITTED_REPORT_KEY) or validation.validate(committed),
                 committed,
@@ -328,24 +358,15 @@ def render() -> None:
     if file_id:
         _keep_and_log(combined, file_id=file_id)
 
-    # Reserved here so the summary stays in its usual position, but filled in
-    # further down — after the "Use Updated Data" button has had a chance to
-    # run in this same script pass. That lets a same-click commit show up
-    # without an st.rerun(), which would tear down and repaint the whole page
-    # (the "flash" a full rerun causes here).
-    summary_slot = st.container()
-
-    _render_gap_review(combined)
-
-    st.divider()
-    st.markdown(ui.eyebrow("Using this data"), unsafe_allow_html=True)
+    # Committing is the one thing every other page waits on, so it comes straight
+    # after the uploads, not under the whole quality report and gap review, where
+    # it used to be the last control on a page about 3,700px long.
+    ui.section("Use this data")
     st.caption(
-        "This dataset must be uploaded here before it can be used anywhere else in "
-        "the application — every other page reads whichever dataset was last "
-        "committed here, and none of them update on every gap-review edit. Make "
-        "your include/clean choices above, then click below to push them through."
+        "Every other page reads whichever dataset was last committed here. Check the "
+        "roles and fields above, then commit."
     )
-    if st.button("Use Updated Data", icon=":material/publish:"):
+    if st.button("Use Updated Data", icon=":material/publish:", type="primary"):
         with st.spinner("Validating the cleaned dataset…"):
             st.session_state[COMMITTED_KEY] = combined
             st.session_state[COMMITTED_REPORT_KEY] = validation.validate(combined)
@@ -358,23 +379,32 @@ def render() -> None:
                 combined.columns,
             )
             st.session_state[COMMITTED_DROPPED_KEY] = _dropped()
+            st.session_state.pop(RESTORED_AT_KEY, None)
             _save_last_commit()
         st.success(
             "This cleaned dataset is now committed and available throughout the application.",
             icon=":material/check_circle:",
         )
+    elif COMMITTED_KEY in st.session_state and st.session_state[COMMITTED_KEY].equals(combined):
+        st.caption("This dataset is the one committed for the other pages.")
     elif COMMITTED_KEY in st.session_state:
-        st.caption("A dataset is committed for Home and Models.")
+        st.caption(
+            "The other pages are using an earlier commit, not these files. Commit to "
+            "switch them to these."
+        )
     else:
         st.caption("Nothing committed yet — Home and Models have no data yet.")
 
-    # Filled in now (not where reserved above) so this reflects a commit made
-    # by the button just above it, in this same run — no rerun needed.
-    with summary_slot:
-        committed_report = st.session_state.get(COMMITTED_REPORT_KEY, validation.validate(combined))
-        committed_merged = st.session_state.get(COMMITTED_KEY, combined)
-        committed_dropped = st.session_state.get(COMMITTED_DROPPED_KEY, _dropped())
-        _render_report(committed_report, committed_merged, committed_dropped)
+    # The report describes the files on screen. Since the last commit loads by itself,
+    # the committed data can be an earlier one than these uploads.
+    ui.section("Data quality report")
+    just_committed = st.session_state.get(COMMITTED_KEY) is combined
+    report = (
+        st.session_state[COMMITTED_REPORT_KEY]
+        if just_committed and COMMITTED_REPORT_KEY in st.session_state
+        else validation.validate(combined)
+    )
+    _render_report(report, combined, _dropped())
 
     st.download_button(
         "Bloomberg merged (.csv)",
@@ -397,7 +427,7 @@ def _render_target_uploader(
     """
     if files:
         with st.spinner("Reading and merging the target files…"):
-            result = _parse_and_merge(files)
+            result = _read_once(files, _TARGET_READ_KEY)
         for message in result.errors:
             st.error(message, icon=":material/error:")
         if result.merged is not None:
@@ -597,18 +627,25 @@ def _keep_and_log(merged: pd.DataFrame, *, file_id: str) -> AcceptedUpload:
     return accepted
 
 
-def _render_gap_review(merged: pd.DataFrame) -> None:
+def _render_gap_review(merged: pd.DataFrame, label=lambda name: name) -> bool:
     """List every row missing a value. Nothing here is filled: each model
     aligns its signals to its own target's calendar on the Models page."""
     remaining = bloomberg_csv.missing_row_report(merged)
     if remaining.empty:
-        return
+        return False
 
     st.markdown(ui.eyebrow("Rows missing a value"), unsafe_allow_html=True)
     st.caption(
         "Nothing is filled here. On the Models page each target keeps only the dates "
         "it has a price, and each signal takes its latest value on or before each of "
         f"those dates, for up to {MAX_STALENESS} rows."
+    )
+    remaining = remaining.assign(
+        **{
+            "Missing columns": remaining["Missing columns"].map(
+                lambda names: ", ".join(label(n.strip()) for n in str(names).split(","))
+            )
+        }
     )
     st.dataframe(
         bloomberg_csv.with_display_dates(remaining),
@@ -620,6 +657,7 @@ def _render_gap_review(merged: pd.DataFrame) -> None:
             "Likely reason": st.column_config.TextColumn(width="medium"),
         },
     )
+    return True
 
 
 def _save_last_commit() -> None:
@@ -630,30 +668,39 @@ def _save_last_commit() -> None:
     tmp.replace(LAST_COMMIT_PATH)
 
 
-def offer_last_commit() -> bool:
-    """Offer the data committed last time, in a window that has none committed.
+def restore_last_commit() -> bool:
+    """Load the data committed last time into a session that has none.
 
-    Returns whether it was restored. Closing the window loses what was committed
-    in it, but not a Run left going in the background (``model_jobs``); this is
-    how its results come back without uploading every file again."""
+    Every page calls this first, so opening the app, or reloading it, picks up where
+    the last window left off instead of asking for every file again; results already
+    run on that data, and a Run left going in the background (``model_jobs``), come
+    back with it. It looks once per session, so Clear Data stays cleared. Returns
+    whether anything was loaded."""
+    if st.session_state.get(_RESTORE_CHECKED_KEY):
+        return False
+    st.session_state[_RESTORE_CHECKED_KEY] = True
     if COMMITTED_KEY in st.session_state or not LAST_COMMIT_PATH.exists():
         return False
     try:
         bundle = pickle.loads(LAST_COMMIT_PATH.read_bytes())
-        frame = bundle[COMMITTED_KEY]
+        bundle[COMMITTED_KEY]
     except Exception:  # an unreadable file is the same as none
         return False
+    st.session_state.update(bundle)
+    st.session_state[RESTORED_AT_KEY] = datetime.fromtimestamp(LAST_COMMIT_PATH.stat().st_mtime)
+    return True
+
+
+def restored_notice() -> str:
+    """One line saying the data in use was loaded from the last commit, and when."""
+    frame = st.session_state[COMMITTED_KEY]
     dates = frame[bloomberg_csv.DATE_COLUMN]
-    st.info(
-        f"Data was committed in an earlier window: {len(frame.columns) - 1} columns, "
-        f"{_fmt(dates.min())} to {_fmt(dates.max())}. Use it again to pick up any results "
-        "already run on it, without uploading the files again.",
-        icon=":material/history:",
+    when = st.session_state.get(RESTORED_AT_KEY)
+    committed = f"committed {when:%d %b %Y %H:%M}" if when is not None else "committed last time"
+    return (
+        f"Using the data {committed}: {len(frame.columns) - 1} columns, "
+        f"{_fmt(dates.min())} to {_fmt(dates.max())}. Upload files above to replace it."
     )
-    if st.button("Use the data committed last time", icon=":material/history:"):
-        st.session_state.update(bundle)
-        return True
-    return False
 
 
 def quality_issue_count(report: ValidationReport) -> int:
@@ -673,12 +720,30 @@ def _dropped() -> list[str]:
 # --- the data quality report ------------------------------------------------
 
 
-def _render_report(report: ValidationReport, merged: pd.DataFrame, dropped: list[str]) -> None:
+def _render_report(
+    report: ValidationReport,
+    merged: pd.DataFrame,
+    dropped: list[str],
+    *,
+    gaps: pd.DataFrame | None = None,
+) -> None:
+    """The verdict and coverage figures in view, the detail in tabs under them: the
+    detail is for checking, and stacked one part after another it used to fill most
+    of the page."""
     _render_verdict(report)
     _render_coverage(report, merged)
-    _render_dropped(dropped)
-    _render_completeness(report)
-    _render_breakdown(report)
+    label = labeller([c for c in merged.columns if c != bloomberg_csv.DATE_COLUMN])
+    completeness, moves, gaps_tab = st.tabs(["Completeness", "Unusual moves", "Missing rows"])
+    with completeness:
+        _render_dropped(dropped)
+        if not _render_completeness(report, label) and not dropped:
+            st.caption("Every column has a value on every date.")
+    with moves:
+        if not _render_breakdown(report, label):
+            st.caption("Nothing flagged.")
+    with gaps_tab:
+        if not _render_gap_review(merged if gaps is None else gaps, label):
+            st.caption("No row is missing a value.")
 
 
 def _render_dropped(dropped: list[str]) -> None:
@@ -723,7 +788,9 @@ def _render_verdict(report: ValidationReport) -> None:
 def _render_coverage(report: ValidationReport, merged: pd.DataFrame) -> None:
     rows, signals, flag_col = st.columns(3)
     rows.metric("Rows", f"{len(merged):,}", icon=":material/table_rows:")
-    signals.metric("Signals", len(merged.columns) - 1, icon=":material/show_chart:")
+    # Every column, targets' fields included: Home counts signals alone, so the two
+    # pages' numbers differ and need different names.
+    signals.metric("Data columns", len(merged.columns) - 1, icon=":material/show_chart:")
     flag_col.metric("Flagged", _flagged_count(report), icon=":material/flag:")
 
     dates = merged["Date"].dropna()
@@ -731,14 +798,14 @@ def _render_coverage(report: ValidationReport, merged: pd.DataFrame) -> None:
         st.caption(f"Covering {_fmt(dates.min())} to {_fmt(dates.max())}")
 
 
-def _render_completeness(report: ValidationReport) -> None:
+def _render_completeness(report: ValidationReport, label) -> bool:
     incomplete = {k: v for k, v in report.missing_pct.items() if v > 0}
     if not incomplete:
-        return
+        return False
     st.markdown(ui.eyebrow("Completeness by column"), unsafe_allow_html=True)
     st.dataframe(
         [
-            {"Column": name, "Missing %": pct}
+            {"Column": label(name), "Missing %": pct}
             for name, pct in sorted(incomplete.items(), key=lambda kv: -kv[1])
         ],
         width="stretch",
@@ -748,16 +815,21 @@ def _render_completeness(report: ValidationReport) -> None:
             "Missing %": st.column_config.NumberColumn("Missing %", format="%.1f%%"),
         },
     )
+    return True
 
 
-def _render_breakdown(report: ValidationReport) -> None:
+def _render_breakdown(report: ValidationReport, label) -> bool:
     has_findings = (
         report.duplicate_date_values or report.weekend_date_values or not report.big_moves.empty
     )
     if not has_findings:
-        return
+        return False
 
     st.markdown(ui.eyebrow("Flagged observations"), unsafe_allow_html=True)
+    st.caption(
+        "For information, worth a look: a statistically unusual move is a day's change "
+        "far larger than that column's typical one. None of these stops a run."
+    )
 
     if report.duplicate_date_values:
         row = _dates_row(report.duplicate_dates, report.duplicate_date_values)
@@ -771,9 +843,10 @@ def _render_breakdown(report: ValidationReport) -> None:
 
     for column, moves in _by_column(report.big_moves):
         with st.expander(
-            f"{column} — {len(moves)} statistically unusual "
+            f"{label(column)} — {len(moves)} statistically unusual "
             f"move{'s' if len(moves) != 1 else ''}"
         ):
+            st.caption(f"Column {column}")
             rows_html = "".join(
                 ui.finding_row(
                     ui.lozenge("Info", "info"),
@@ -784,6 +857,7 @@ def _render_breakdown(report: ValidationReport) -> None:
                 for move in moves
             )
             st.markdown(rows_html, unsafe_allow_html=True)
+    return True
 
 
 def _dates_row(count: int, values: tuple[str, ...]) -> str:

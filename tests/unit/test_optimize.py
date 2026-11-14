@@ -14,6 +14,7 @@ from forecasting_engine.portfolio.optimize import (
     MIN_TRUST_HISTORY,
     RISK_LEVELS,
     OptimizeDataError,
+    breakdowns_from,
     common_rebalance_dates,
     covariance_at_rebalance,
     expected_returns,
@@ -23,6 +24,7 @@ from forecasting_engine.portfolio.optimize import (
     long_run_premium,
     pairs_known_by,
     schedule_breakdowns,
+    schedule_inputs,
     schedule_weights,
     solve_inputs_at,
     solve_weights,
@@ -1099,3 +1101,91 @@ def test_solve_inputs_refuse_a_date_with_no_signal():
             train_window=15,
             embargo=2,
         )
+
+
+# --- one estimate behind every risk level ----------------------------------------------
+
+
+def test_a_schedule_solved_from_kept_inputs_is_the_schedule_solved_on_its_own():
+    """The Portfolio page estimates each rebalance's covariance and trust once and
+    solves every level from them. That must be the same schedule, to the last digit,
+    as estimating afresh for that level alone."""
+    _dates, prices, signals, kwargs = _skilful_inputs()
+    inputs = schedule_inputs(signals, prices, **kwargs)
+
+    for level in RISK_LEVELS:
+        for bounds in (DEFAULT_WEIGHT_BOUNDS, (0.0, 1.0)):
+            for trust in (None, 0.0):
+                settings = {"risk_level": level, "bounds": bounds, "trust": trust}
+                alone = schedule_breakdowns(signals, prices, **kwargs, **settings)
+
+                assert breakdowns_from(inputs, **settings) == alone
+
+
+def test_the_kept_inputs_follow_the_costs_given_when_a_level_is_solved():
+    _dates, prices, signals, kwargs = _skilful_inputs()
+    inputs = schedule_inputs(signals, prices, **kwargs)
+    free = {EQUITY: 0.0, BOND: 0.0}
+
+    unbanded = breakdowns_from(inputs, costs_bps=free)
+
+    assert unbanded == schedule_breakdowns(signals, prices, costs_bps=free, **kwargs)
+    assert not any(b.held for b in unbanded.values())
+
+
+def test_inputs_built_without_a_trust_estimate_need_a_trust_given():
+    _dates, prices, signals, kwargs = _skilful_inputs()
+    inputs = schedule_inputs(signals, prices, estimate_trust=False, **kwargs)
+
+    with pytest.raises(ValueError, match="a trust must be given"):
+        breakdowns_from(inputs)
+    untrusted = schedule_breakdowns(signals, prices, trust=0.0, **kwargs)
+    assert breakdowns_from(inputs, trust=0.0) == untrusted
+
+
+def test_the_kept_inputs_hold_what_each_rebalance_would_be_solved_from():
+    _dates, prices, signals, kwargs = _skilful_inputs()
+    inputs = schedule_inputs(signals, prices, **kwargs)
+    pairs = trust_pairs(signals, kwargs["baselines"], prices, horizon=3)
+    rebalances = list(inputs.rebalances)
+
+    for date in (rebalances[0], rebalances[len(rebalances) // 2], rebalances[-1]):
+        kept = inputs.solve_inputs(date, risk_level=2, bounds=(0.1, 0.9))
+        fresh = solve_inputs_at(
+            date,
+            signals,
+            prices,
+            baselines=kwargs["baselines"],
+            horizon=3,
+            train_window=15,
+            embargo=2,
+            risk_level=2,
+            bounds=(0.1, 0.9),
+        )
+
+        pd.testing.assert_series_equal(kept.signal, fresh.signal)
+        pd.testing.assert_frame_equal(kept.covariance, fresh.covariance)
+        assert (kept.date, kept.premium, kept.trust) == (date, fresh.premium, fresh.trust)
+        assert (kept.risk_level, kept.bounds) == (2, (0.1, 0.9))
+        assert inputs.rebalances[date].gate_shut == forecast_gate_shut(date, pairs, horizon=3)
+
+
+def test_no_rebalance_to_solve_gives_no_schedule():
+    dates = pd.bdate_range("2024-01-02", periods=10)  # shorter than one training window
+    prices = _prices(dates, seed=0)
+    signals = _forecasts(_forecast(dates), _forecast(dates))
+
+    inputs = schedule_inputs(signals, prices, **_SCHEDULE_KWARGS)
+
+    assert not inputs.rebalances and inputs.daily_returns.empty
+    assert breakdowns_from(inputs) == {}
+
+
+def test_a_covariance_is_read_by_label_whichever_way_round_it_is():
+    _dates, prices, signals, kwargs = _skilful_inputs()
+    date = list(schedule_inputs(signals, prices, estimate_trust=False, **kwargs).rebalances)[-1]
+    covariance = covariance_at_rebalance(date, prices, horizon=3, train_window=15, embargo=2)
+    flipped = covariance.loc[[BOND, EQUITY], [BOND, EQUITY]]
+
+    for level in RISK_LEVELS:
+        assert level_weight(level, flipped) == level_weight(level, covariance)

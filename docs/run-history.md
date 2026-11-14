@@ -54,9 +54,12 @@ active_models (…, run_id)                                            ← store
 
 ## Portfolio runs
 
-The Portfolio page recomputes the optimiser and the backtest on every view, so a
-"run" there isn't a click: logging each computation would log the same result many
-times. `store/portfolio_runs.py` records each **distinct** result once.
+The Portfolio page shows a result on every view, and the same one many times over: a
+slider moved and moved back, a reload, another window. So a "run" there isn't a
+click, and logging each view would log the same result many times.
+`store/portfolio_runs.py` records each **distinct** result once. (The page no longer
+solves it afresh for each of those views either: `app/page_cache.py` keeps a solved
+allocation, keyed on the contents of everything it was solved from.)
 
 - **A deterministic key.** `run_key` is the SHA-256 of everything the result depends
   on, as canonical JSON (sorted keys, no spaces, datetimes as ISO text): the data's

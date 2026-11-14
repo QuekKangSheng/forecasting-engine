@@ -20,7 +20,16 @@ Then run the dashboard:
 uv run streamlit run app/Home.py
 ```
 
-It opens at <http://localhost:8501>. A Run spreads independent work over up to
+It opens at <http://localhost:8501>. Two things about how it runs, both there to keep
+pages quick to open and to respond:
+
+- It does not watch the source files for edits. While developing, start it with
+  `uv run streamlit run app/Home.py --server.fileWatcherType auto` and it reruns
+  whenever a file is saved.
+- It holds `data/forecasting.duckdb` open for as long as it runs, so no other program
+  can open that file until the app is stopped.
+
+A Run spreads independent work over up to
 4 processes; on a machine with more cores, set `FORECASTING_WORKERS` (for
 example `FORECASTING_WORKERS=8`) before starting it. The results are the same
 either way. The pages follow the order a portfolio

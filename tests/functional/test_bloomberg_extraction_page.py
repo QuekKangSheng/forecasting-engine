@@ -162,7 +162,7 @@ def test_the_coverage_metrics_are_shown_for_a_clean_file(page):
 
     labels = {m.label: m.value for m in result.metric}
     assert labels["Rows"] == "2"
-    assert labels["Signals"] == "1"
+    assert labels["Data columns"] == "1"
     assert labels["Flagged"] == "0"
     assert "Nothing flagged" in texts(result.success)
     assert "02/01/2020 to 03/01/2020" in texts(result.caption)
@@ -194,7 +194,7 @@ def test_a_statistically_unusual_move_is_flagged_as_info_and_never_blocks_the_co
     assert "none of them stop a run" in texts(result.success)
 
     expander = next(e for e in result.expander if "statistically unusual move" in e.label)
-    assert expander.label == "A_Index_PX_LAST — 1 statistically unusual move"
+    assert expander.label == "A Index (last price) — 1 statistically unusual move"
     assert dates[30].strftime("%d/%m/%Y") in texts(result.markdown)
     assert "day-over-day change" in texts(result.markdown)
     assert "x the typical move" in texts(result.markdown)
@@ -251,15 +251,14 @@ def test_a_dropped_column_is_listed_in_the_committed_data_quality_report(page):
     assert dropped["Column"].tolist() == ["JPMVXYGL_Index_PX_BID"]
 
 
-def test_the_data_committed_last_time_is_shown_on_the_data_page_once_used_again(page):
+def test_a_new_window_loads_the_data_committed_last_time_by_itself(page):
     result = upload(page, [("spx.csv", SPX, "text/csv"), ("vix.csv", VIX, "text/csv")])
     next(b for b in result.button if b.label == "Use Updated Data").click().run()
 
     app = AppTest.from_file(str(PAGE), default_timeout=30).run()  # a new window
-    next(b for b in app.button if b.label == "Use the data committed last time").click().run()
 
     assert not app.exception
-    assert "Using the data committed last time" in texts(app.success)
+    assert "Using the data committed" in texts(app.success)
     assert "Upload target index files" not in texts(app.info)
     assert {m.label for m in app.metric} >= {"Flagged"}
 
@@ -305,7 +304,7 @@ def test_the_full_report_renders_once_committed_and_home_points_to_it(page):
     assert "1 observation flagged below for information" in texts(result.success)
     assert "none of them stop a run" in texts(result.success)
     expander = next(e for e in result.expander if "statistically unusual move" in e.label)
-    assert expander.label == "A_Index_PX_LAST — 1 statistically unusual move"
+    assert expander.label == "A Index (last price) — 1 statistically unusual move"
     assert dates[30].strftime("%d/%m/%Y") in texts(result.markdown)
 
     home = _home(result)
@@ -325,7 +324,8 @@ def test_completeness_by_column_renders_once_committed_for_a_partially_filled_si
     (completeness,) = [
         d.value for d in result.dataframe if list(d.value.columns) == ["Column", "Missing %"]
     ]
-    row = completeness.loc[completeness["Column"] == "LF98TRUU_Index_PX_LAST"].iloc[0]
+    # Named as every other page names it, not by Bloomberg field code.
+    row = completeness.loc[completeness["Column"] == "US high yield bond"].iloc[0]
     assert row["Missing %"] == pytest.approx(100 / 3)
 
 
@@ -377,7 +377,7 @@ def test_a_gap_on_a_known_market_holiday_is_classified_not_left_unexplained(page
     ]
     row = gaps.loc[gaps["Date"] == "05/09/2016"].iloc[0]
     assert row["Likely reason"] == "Likely NYSE market holiday"
-    assert "LF98TRUU_Index_PX_LAST" in row["Missing columns"]
+    assert "US high yield bond" in row["Missing columns"]
 
 
 def test_committing_records_each_columns_security_and_field(page):
@@ -654,3 +654,71 @@ def test_uploads_stay_visible_after_leaving_the_page_and_coming_back(page):
     assert "In use from your last upload: **spx.csv**" in shown
     assert "In use from your last upload: **vix.csv**" in shown
     assert "Merged 1 file(s) into 2 rows, 1 data columns" in texts(back.success)
+
+
+def test_clear_data_is_not_undone_by_reloading_the_last_commit(page):
+    result = upload(page, [("spx.csv", SPX, "text/csv"), ("vix.csv", VIX, "text/csv")])
+    next(b for b in result.button if b.label == "Use Updated Data").click().run()
+
+    app = AppTest.from_file(str(PAGE), default_timeout=30).run()  # a new window
+    next(b for b in app.button if b.label == "Clear Data").click().run()
+
+    assert not app.exception
+    assert "Using the data committed" not in texts(app.success)
+    assert "Upload target index files" in texts(app.info)
+
+
+# --- reading the uploads once ---------------------------------------------------------
+
+
+def _count_reads(monkeypatch) -> list[str]:
+    """The name of each export as it is parsed, from here on."""
+    from forecasting_engine.extraction import bloomberg_csv
+
+    reads, read = [], bloomberg_csv.read_export
+
+    def counted(filename, data):
+        reads.append(filename)
+        return read(filename, data)
+
+    monkeypatch.setattr(bloomberg_csv, "read_export", counted)
+    return reads
+
+
+def test_a_rerun_with_the_same_files_does_not_read_them_again(page, monkeypatch):
+    """The page reruns for every control on it. It used to parse and merge every
+    uploaded export again each time, which is what made the Data page slow to answer."""
+    reads = _count_reads(monkeypatch)
+    files = [("spx.csv", SPX, "text/csv"), ("vix.csv", VIX, "text/csv")]
+
+    result = upload(page, files)
+    assert reads == ["spx.csv", "vix.csv"]
+    result.run()
+    result.run()
+
+    assert reads == ["spx.csv", "vix.csv"]
+    assert not result.error
+    assert "Merged 2 file(s) into 2 rows, 2 data columns" in texts(result.success)
+
+
+def test_the_same_file_name_with_other_contents_is_read_again(page, monkeypatch):
+    reads = _count_reads(monkeypatch)
+    longer = export("SPX Index", ["1/2/2020,100.0", "1/3/2020,101.0", "1/6/2020,102.0"])
+
+    upload(page, [("spx.csv", SPX, "text/csv")])
+    result = upload(page, [("spx.csv", longer, "text/csv")])
+
+    assert reads == ["spx.csv", "spx.csv"]
+    assert "Merged 1 file(s) into 3 rows, 1 data columns" in texts(result.success)
+
+
+def test_a_file_that_failed_to_read_keeps_saying_so_on_every_rerun(page, monkeypatch):
+    reads = _count_reads(monkeypatch)
+
+    files = [("spx.csv", SPX, "text/csv"), ("notes.csv", b"not an export", "text/csv")]
+    result = upload(page, files)
+    first = texts(result.error)
+    result.run()
+
+    assert first and texts(result.error) == first
+    assert reads == ["spx.csv", "notes.csv"]
