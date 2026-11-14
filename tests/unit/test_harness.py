@@ -531,7 +531,8 @@ def test_each_horizon_gets_its_own_target_and_is_never_pooled_with_another():
     idx = pd.bdate_range("2024-01-01", periods=150)
     rng = np.random.default_rng(7)
     prices = pd.Series(100 * np.cumprod(1 + rng.normal(0, 0.01, len(idx))), index=idx)
-    frame = pd.DataFrame({"price": prices.to_numpy(), "signal_a": rng.normal(0, 1, len(idx))}, index=idx)
+    signal = rng.normal(0, 1, len(idx))
+    frame = pd.DataFrame({"price": prices.to_numpy(), "signal_a": signal}, index=idx)
     horizons = (1, 5, 10, 20)
 
     panels = {h: align_and_lag(frame, ["signal_a"], "price", horizon=h) for h in horizons}
