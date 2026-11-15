@@ -376,6 +376,26 @@ def test_every_fold_trains_on_every_earlier_row():
     assert result.forecast.notna().any()
 
 
+def test_its_result_carries_a_pre_2016_holdout_when_the_data_reaches_back_that_far():
+    # Starting well before the research's own Aug 2016 cutoff, with a short enough
+    # train/tuning period that the first test window opens before it too.
+    rng = np.random.default_rng(13)
+    n = 500
+    idx = pd.bdate_range("2015-01-02", periods=n)
+    rate = 2.5 + np.cumsum(rng.normal(scale=0.05, size=n))
+    daily = np.r_[0.0, 0.002 * (rate[:-1] - 2.5) + rng.normal(scale=0.001, size=n - 1)]
+    price = 100 * np.exp(np.cumsum(daily))
+    frame = pd.DataFrame({"rate": rate, "price": price}, index=idx)
+    splitter = PurgedWalkForward(train=60, test=10, embargo=H)
+
+    result, _, _ = run_carry_research_polynomial(frame, ["rate"], "price", H, splitter)
+
+    assert result.holdout is not None
+    assert result.holdout.before == pd.Timestamp("2016-08-01")
+    assert result.holdout.last_label_end < result.holdout.before
+    assert result.holdout.windows > 0
+
+
 # --- a fold that keeps nothing -------------------------------------------------------------
 
 
