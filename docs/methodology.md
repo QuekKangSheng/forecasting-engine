@@ -141,8 +141,8 @@ date of the price each label reaches, which the splitter uses to purge.
 - **Windows.** Test windows of `DEFAULT_TEST_WINDOW` rows roll forward by that
   many rows. Each training window is the `TRAIN_WINDOW` rows ending `embargo` rows
   before its test window, and may reach back into the tuning period. Both windows
-  are the same for every model on both targets (the research model, §9.1, alone
-  trains on every earlier row, on the same test windows), and fixed rather than settings:
+  are the same for every model on both targets (the research models, §9.1 and
+  §9.2, alone train on every earlier row, on the same test windows), and fixed rather than settings:
   trying windows until one scores well is overfitting that no single run can see.
   Every row of the results table is therefore scored on the same dates, and both
   targets forecast the same rebalance days.
@@ -153,7 +153,7 @@ date of the price each label reaches, which the splitter uses to purge.
   than a standard error; on bond both scored below it. Folds of the expanding
   window trained on under five years scored +0.225, those on five years or more
   +0.075, so a longer history did not help. `splitters.expanding` remains only
-  for the research model (§9.1).
+  for the research models (§9.1, §9.2).
 - **Embargo.** `EMBARGO_DAYS`, the longest horizon (20 days), whichever horizon is
   chosen.
 - **Purge.** A training row is dropped if its label's price (`label_end`) is dated
@@ -184,9 +184,9 @@ for) clears only that model's row. Every
 family is optional; Run is disabled until one besides the naive baseline is
 ticked, and the naive baseline runs with every Run. The polynomial runs one
 source at a time, derived or the user's own function, each under its own row
-name, and switching source clears nothing. The Equity tab also offers the
-research model (§9.1) under its own checkbox and row, beside whichever polynomial
-runs. Each family chooses only among its own
+name, and switching source clears nothing. Each tab also offers its research
+model (equity §9.1, bond §9.2) under its own checkbox and row, beside whichever
+polynomial runs. Each family chooses only among its own
 configurations, so which families run together never changes any family's
 result.
 
@@ -373,10 +373,10 @@ out of sample for it, t about 2.2 on about 24 independent 20-day periods),
 against +0.12 for the screened shrinkage candidate; its research notes say over
 half of that came from one quarter (the spring 2025 spread spike and rebound) and
 that the 1990–2016 history points the other way. Its fixed inputs also ignore any
-other signal in the data. The page therefore captions its row: "Inputs and signs
-chosen in the Oct 2026 model research on data overlapping this test period; treat
-its score as optimistic." The derived polynomial makes every such choice inside
-each fold instead.
+other signal in the data. The page therefore captions its row, as it does the
+bond research model's (§9.2): "Scores are optimistic: inputs chosen by looking at
+results over Aug 2016 – Sep 2024." The derived polynomial makes every such choice
+inside each fold instead.
 
 It is gated like every other model (§12) and can be set active for equity like
 any model, so the optimiser can use either it or the derived polynomial. The
@@ -387,7 +387,94 @@ first training labels, not its fold's training mean, so measured against that
 mean the gap between the two was scored as part of its signal: on the Sep 2026
 data its Signal Rank IC read 0.259 that way and is 0.237 against its own level.
 
-### 9.2 Feature attribution (SHAP) for polynomial models
+### 9.2 Polynomial – fixed carry inputs (research)
+
+`models/carry_research.run_carry_research_polynomial`, the row "Polynomial – fixed
+carry inputs (research)", Bond tab only, with its own checkbox. It is the bond
+counterpart of §9.1: a degree-1 lasso fit (`CarryResearchPolynomial`) on fixed
+inputs, run on an expanding window as the research ran it, gated like every other
+model and settable as the bond target's active model with no train window. It does
+not enter the derived polynomial's grid (§9), which is unchanged.
+
+**Why.** The October 2026 research found no bond input set that beat chance among
+the page's own signals (§9.1 is equity-only). A bond index's `h`-day return is, to
+first order, what it earns if nothing moves (its yield, its spread and the roll down
+the curve) less its duration times the same-window move in yields and spreads; over
+Aug 2016 – Sep 2024 the same-window changes of the rates and gauges explained about
+97% of the 20-day bond return. §4 reads a rate as its 1-row difference, so the carry
+is not in the derived polynomial's panel, and in about half the bond folds its lasso
+kept no term. The November 2026 research (`bond/nochange_levels`) fitted the levels
+instead, controlling for each level's move over the label window. A regression on
+the levels alone does not recover the carry: a persistent level whose moves drive
+the return seems, in one sample, to predict its own later change (Stambaugh bias),
+and the plain slope credits that to the level.
+
+**Inputs.** `CARRY_INPUTS`: the 10-year yield, the 10-year breakeven, the 2s10s
+slope, HY OAS, IG OAS, VIX and FX implied volatility, each read as its level
+whatever §4 says and lagged one row like every signal. The research took every
+signal §4 reads as a level or a difference, never a price; on the Sep 2026 upload
+those were these seven. They are fixed by ticker so another upload cannot change
+them; if the committed data lacks one, or holds two columns for one, the tab says
+so and the row does not run.
+
+**Fit,** per fold, on the training rows only:
+1. each input `x` is clipped to its training mean ± `CLIP_SD` standard deviations
+   and standardised, `z = (x − mean) / sd`;
+2. each input's **innovation** over the row's label window is formed (Amihud &
+   Hurvich 2004). A daily AR(1), `x_s = θ + ρ·x_{s−1} + e`, is fitted to the input's
+   training levels; `ρ̂` is bias-corrected with their small-sample correction,
+   `ρᶜ = ρ̂ + (1 + 3ρ̂)/n + 3(1 + 3ρ̂)/n²`, `n` the number of daily pairs, and
+   capped at `RHO_CAP` so a near-unit-root level is never corrected into an
+   explosive one; and compounded to the window, `κᶜ = ρᶜ^lag·(ρᶜ^h − 1)`. The
+   innovation is `û = Δx − (a + κᶜ·x)`, where `Δx = x(t+h) − x(t)` is the input's
+   change over the row's label window and `a` makes `û` average zero over the
+   training rows;
+3. `return(t, t+h) = α + Σ c_j·z_j(t) + Σ b_k·û_k(t) + e` is fitted. `α` and the
+   `b` are unpenalised; the `c` carry a lasso penalty chosen as the derived
+   polynomial's lasso candidates choose theirs (up to `INNER_CV_SPLITS`
+   time-ordered splits with a gap of `h`, `_N_ALPHAS` penalties spanning a factor
+   of `_ALPHA_EPS`), by the validation error of the whole equation. By
+   Frisch-Waugh the lasso is fitted to the target and the `z` once `α` and the
+   `û` are regressed out of both;
+4. the forecast is `α + Σ c_j·z_j(t)`. Each `û` has mean zero given the level, so
+   this is the return to expect, which the optimiser needs (§17), not the return if
+   nothing moves.
+
+The equation is `α + Σ c·z` in the standardised levels, one term per input the
+penalty kept. A fold needs at least `_MIN_TRAINING_ROWS` (`models/carry_research`)
+complete rows. Its level is its own (§10): a fold that keeps no term forecasts `α`
+everywhere and adds exactly zero to the Signal Rank IC.
+
+**Why the correction uses `κᶜ` and not plain OLS.** With `κ` from a plain
+regression of `Δx` on `x`, `û` is uncorrelated with `x` in the training rows, so
+controlling for it leaves `c` exactly at the plain regression's slope, Stambaugh
+bias included (`tests/unit/test_carry_research.py` checks this). The correction
+works only through the bias-corrected `ρᶜ`. With `κ = 0` the fit is the research's
+raw-move version: the same slopes, and an intercept that is the return with no move
+rather than with an average one. On simulated data where the yield is a random walk
+that earns its own level (the research's carry world), the corrected slope is
+1.0–1.1 times the true carry on four seeds of five and 3.4 on the fifth, against 4
+to 8 times for the plain regression.
+
+**What differs from the research's version, on design grounds.** The research
+controlled for each input's raw move over the label window, which makes its
+forecast the return if nothing moves. Controlling for the innovation instead makes
+it an expected return. Two details follow from that and were fixed before any
+scoring. The innovation's `x` is the level the forecast reads, which is `lag` rows
+older than the label window's start, so `κᶜ` carries a factor `ρᶜ^lag` (with
+`lag = 1`, `ρᶜ` itself); this keeps `E[û | z] = 0` exact and makes the plain-OLS
+property above exact. And `ρᶜ` is capped at `RHO_CAP`, as Amihud, Hurvich & Wang
+(2009) cap theirs.
+
+**Known limits.** Correcting each input's `κ` on its own is an approximation of
+the multi-predictor method (Amihud, Hurvich & Wang 2009), which corrects the
+inputs' autoregression jointly; the seven inputs here are correlated. A daily
+AR(1) compounded to `h` days assumes the level's persistence is the same at every
+lag. And its inputs were chosen by looking at results over Aug 2016 – Sep 2024,
+which overlaps the scored period, so the page captions its row "Scores are
+optimistic: inputs chosen by looking at results over Aug 2016 – Sep 2024."
+
+### 9.3 Feature attribution (SHAP) for polynomial models
 
 `reporting.shap_attribution.polynomial_shap`. Every polynomial-shaped row
 (derived, fixed-economic-inputs, user-supplied, and Fama-French) gets a mean
@@ -807,8 +894,8 @@ stored function is evaluated again on shocked inputs.
    polynomial active (§11) also stores its most recent fold's fit
    (`store/active_model.ActiveFunction`): its terms, coefficients and intercept,
    and per input it reads the transform it was fitted on and its clipping bounds
-   and standardisation. The research model's inputs are stored as levels, as it
-   reads them. It is written in the same DuckDB transaction as the active-model
+   and standardisation. The research models' inputs are stored as levels, as they
+   read them. It is written in the same DuckDB transaction as the active-model
    row and its forecasts, so neither is ever visible without the other. Machine
    learning and FF5 store none, so they can't be shocked.
 2. **Shocks.** A shock replaces a signal's last observed value, on or before the
@@ -1014,6 +1101,9 @@ Values are Python literals as the code holds them.
 | `ECONOMIC_INPUTS` | `forecasting_engine.models.sign_ruled` | `{"equity": {"LF98OAS": 1, "LUACOAS": 1, "VIX": 1, "USYC2Y10": 1}}` |
 | `LEVEL_ROWS` | `forecasting_engine.models.sign_ruled` | `252` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.sign_ruled` | `30` |
+| `CARRY_INPUTS` | `forecasting_engine.models.carry_research` | `{"bond": ("USGG10YR", "USGGBE10", "USYC2Y10", "LF98OAS", "LUACOAS", "VIX", "JPMVXYGL")}` |
+| `RHO_CAP` | `forecasting_engine.models.carry_research` | `0.9999` |
+| `_MIN_TRAINING_ROWS` | `forecasting_engine.models.carry_research` | `30` |
 | `CANDIDATE_REGULARIZERS` | `forecasting_engine.models.polynomial` | `("lasso",)` |
 | `CLIP_SD` | `forecasting_engine.models.polynomial` | `4.0` |
 | `INNER_CV_SPLITS` | `forecasting_engine.models.polynomial` | `5` |
@@ -1070,7 +1160,7 @@ them is [docs/evidence/2026-10-12-verify.py](evidence/2026-10-12-verify.py).
 
 | Decision | Ticket | Evidence |
 |---|---|---|
-| A rolling 504-day train window for every model on both targets but the research model, and a fixed 20-day test window (§7, §9.1) | FYP-217, FYP-161 | 1A, 1D, 1E |
+| A rolling 504-day train window for every model on both targets but the research models, and a fixed 20-day test window (§7, §9.1) | FYP-217, FYP-161 | 1A, 1D, 1E |
 | Machine learning tunes on 252-row mini folds inside its 504-row tuning period (§9) | FYP-217 | 1E |
 | Derived grid: Lasso at degrees 1–3 plus shrinkage; no elastic net, no degrees 4–5 (§9) | FYP-161 | 2B, run times |
 | No PBO; Rank IC within folds and Beyond 2 s.e. dropped from the table (§10, §11) | FYP-216 | 2A, 2C |

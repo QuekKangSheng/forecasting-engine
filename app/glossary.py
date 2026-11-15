@@ -47,6 +47,17 @@ TERMS: Mapping[str, str] = {
         "period, so treat its score as optimistic. The derived polynomial makes "
         "every such choice inside each fold instead."
     ),
+    "Polynomial – fixed carry inputs (research)": (
+        "The bond model from the November 2026 model research: a degree-1 "
+        "polynomial in the levels of the 10-year yield, the 10-year breakeven, the "
+        "2s10s slope, HY and IG OAS, VIX and FX implied volatility, which is where a "
+        "bond's carry shows. Each input's unexpected move over the horizon is taken "
+        "out before its level is fitted, so a level is credited with what it earns, "
+        "not with how it happened to move in that sample, and the forecast is an "
+        "expected return. It trains on every earlier date, as the research did, and "
+        "is gated like every other model. Its inputs were chosen by looking at "
+        "results over Aug 2016 – Sep 2024, so treat its score as optimistic."
+    ),
     "Max terms": (
         "The most terms the derived equation may keep. The cap works through the "
         "regularization itself: only penalty strengths whose fit keeps this many "

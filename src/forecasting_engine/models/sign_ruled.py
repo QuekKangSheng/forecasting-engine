@@ -173,25 +173,37 @@ def economic_signs(
             "the sign-ruled polynomial is for the equity target only: no bond input set "
             "beat chance in testing."
         )
+    found = input_columns(
+        columns, sources, tuple(wanted), "the sign-ruled polynomial", SignRuledInputsError
+    )
+    return dict(zip(found, wanted.values(), strict=True))
+
+
+def input_columns(
+    columns: Sequence[str],
+    sources: Mapping[str, ColumnSource],
+    tickers: Sequence[str],
+    model: str,
+    error: type[PolynomialConfigError],
+) -> list[str]:
+    """The signal column of each of ``tickers``, in their order, found by each column's
+    ticker. ``model`` names the model in ``error``'s message when one is missing."""
     by_ticker: dict[str, list[str]] = {}
     for c in columns:
         if c in sources:
             by_ticker.setdefault(sources[c].ticker, []).append(c)
-    missing = [t for t in wanted if t not in by_ticker]
+    missing = [t for t in tickers if t not in by_ticker]
     if missing:
-        raise SignRuledInputsError(
-            f"the sign-ruled polynomial needs {', '.join(missing)} in the committed data."
-        )
+        raise error(f"{model} needs {', '.join(missing)} in the committed data.")
     # Two securities can share a ticker (VIX Index, VIX Curncy): refuse rather than
     # guess which one is the gauge.
-    ambiguous = {t: by_ticker[t] for t in wanted if len(by_ticker[t]) > 1}
+    ambiguous = {t: by_ticker[t] for t in tickers if len(by_ticker[t]) > 1}
     if ambiguous:
         listed = "; ".join(f"{t}: {', '.join(cols)}" for t, cols in ambiguous.items())
-        raise SignRuledInputsError(
-            f"the sign-ruled polynomial found more than one column for an input ({listed}). "
-            "Keep one per input."
+        raise error(
+            f"{model} found more than one column for an input ({listed}). Keep one per input."
         )
-    return {by_ticker[t][0]: sign for t, sign in wanted.items()}
+    return [by_ticker[t][0] for t in tickers]
 
 
 def run_sign_ruled_polynomial(

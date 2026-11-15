@@ -63,6 +63,7 @@ DEFAULT_MODEL_SETTINGS = {
     POLY: 10,
     USER_POLY: ("", ()),
     "Polynomial – fixed economic inputs": "sign-ruled v1",
+    "Polynomial – fixed carry inputs (research)": "carry v1",
 }
 NAIVE = "Naive (training mean)"
 
@@ -1600,8 +1601,7 @@ def test_a_run_without_saved_forecasts_shows_no_directional_check():
 
 RESEARCH = "Polynomial – fixed economic inputs"
 RESEARCH_CAPTION = (
-    "Inputs and signs chosen in the Oct 2026 model research on data overlapping this "
-    "test period; treat its score as optimistic."
+    "Scores are optimistic: inputs chosen by looking at results over Aug 2016 – Sep 2024."
 )
 #: The research model's four inputs, by the ticker it finds each one by.
 RESEARCH_INPUTS = {
@@ -1701,4 +1701,100 @@ def test_the_research_model_can_be_set_active_with_its_signal_and_no_train_windo
     assert record.model_name == RESEARCH
     assert record.train_window is None
     signal = active_model.get_active_model_signal(EQUITY)
+    pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)
+
+
+# --- the bond research model (fixed carry inputs) --------------------------------------
+
+BOND_RESEARCH = "Polynomial – fixed carry inputs (research)"
+#: The bond research model's seven inputs, by the ticker it finds each one by.
+CARRY_INPUTS = {
+    f"{ticker}_Index_PX_LAST": f"{ticker} Index"
+    for ticker in ("USGG10YR", "USGGBE10", "USYC2Y10", "LF98OAS", "LUACOAS", "VIX", "JPMVXYGL")
+}
+
+
+def _with_carry_inputs() -> tuple[pd.DataFrame, dict[str, ColumnSource]]:
+    committed = _committed(bond=True)
+    rng = np.random.default_rng(2)
+    for column in CARRY_INPUTS:
+        if column not in committed:
+            committed[column] = 2 + np.cumsum(rng.normal(scale=0.05, size=len(committed)))
+    sources = {
+        SPX: ColumnSource("SPX Index", "PX_LAST"),
+        AGG: ColumnSource("LBUSTRUU Index", "TOT_RETURN_INDEX_GROSS_DVDS"),
+    }
+    sources |= {col: ColumnSource(security, "PX_LAST") for col, security in CARRY_INPUTS.items()}
+    return committed, sources
+
+
+def _press_bond_run(app: AppTest) -> AppTest:
+    [b for b in app.button if b.label == "Run"][1].click().run()
+    return app
+
+
+def test_only_the_bond_tab_offers_the_bond_research_model():
+    app = _page(bond=True)
+
+    labels = [c.label for c in app.checkbox]
+    assert labels.count(BOND_RESEARCH) == 1
+    assert labels.count(RESEARCH) == 1
+    assert labels.index(RESEARCH) < labels.index(BOND_RESEARCH)  # the equity tab comes first
+
+
+def test_without_its_inputs_the_bond_research_model_says_so_and_runs_nothing(stub_ml):
+    app = _press_bond_run(_page(bond=True))
+
+    assert not app.exception
+    assert (
+        "No research model for this target: the bond research model needs USGG10YR, "
+        "USGGBE10, USYC2Y10, LF98OAS, LUACOAS, VIX, JPMVXYGL in the committed data."
+    ) in _captions(app)
+    assert BOND_RESEARCH not in _stored_runs(app, BOND)
+
+
+def test_the_bond_research_model_runs_beside_the_derived_polynomial_on_the_same_dates(stub_ml):
+    committed, sources = _with_carry_inputs()
+    app = _page(bond=True, committed=committed, sources=sources)
+    app = _press_bond_run(_untick(app, "Fama-French 5"))
+
+    assert not app.exception
+    runs = _stored_runs(app, BOND)
+    assert {NAIVE, POLY, BOND_RESEARCH} <= set(runs)
+    assert runs[BOND_RESEARCH].result.forecast.index[0] == runs[POLY].result.forecast.index[0]
+    assert runs[BOND_RESEARCH].result.forecast.index[-1] == runs[POLY].result.forecast.index[-1]
+    assert f"**{BOND_RESEARCH}**: gate" in _markdown(app)
+    assert f"{BOND_RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+    assert any(label.startswith(f"{BOND_RESEARCH} · ") for label in _expander_labels(app))
+    assert set(runs[BOND_RESEARCH].shap.terms) <= set(CARRY_INPUTS)
+
+
+def test_the_bond_research_model_is_gated_and_captioned_under_its_row():
+    app = _page(
+        {BOND: {POLY: _polynomial_run(), BOND_RESEARCH: _polynomial_run(_result())}}, bond=True
+    )
+
+    assert f"**{BOND_RESEARCH}**: gate met — Signal Rank IC above 0.02 and t above 2." in (
+        _markdown(app)
+    )
+    assert "Gate met" in _table(app).split(BOND_RESEARCH, 1)[1].split("</tr>", 1)[0]
+    assert f"{BOND_RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+
+
+def test_the_bond_research_model_can_be_set_active_with_its_signal_and_no_train_window():
+    forecast = _oos([0.01, -0.01, 0.02, 0.0] * 10)
+    baseline = _oos([0.004] * 20 + [0.006] * 20)
+    result = replace(_result(), forecast=forecast, realised=_oos([0.0] * 40), baseline=baseline)
+    tabs = {BOND: {POLY: _polynomial_run(), BOND_RESEARCH: _polynomial_run(result)}}
+    app = _page(tabs, bond=True)
+    (select,) = [s for s in app.selectbox if s.label == "Model to set active"]
+    assert list(select.options) == [POLY, BOND_RESEARCH]
+    select.select(BOND_RESEARCH).run()
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert not app.exception
+    record = active_model.get_active_model(BOND)
+    assert record.model_name == BOND_RESEARCH
+    assert record.train_window is None
+    signal = active_model.get_active_model_signal(BOND)
     pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)
