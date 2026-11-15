@@ -1,5 +1,6 @@
-"""The Bloomberg history from 31 Aug 2006: coverage, where each part starts, both research
-models' pre-2016 hold-out, and runtime against the Sep 2026 upload.
+"""The Bloomberg history from 31 Aug 2006: coverage, where each part starts, how the files
+compare with the Sep 2026 upload, both research models by period (every window, the
+pre-2016 hold-out, the windows from Aug 2016), and runtime against the Sep 2026 upload.
 
 Reads the 11 Bloomberg exports through the same functions the Data page calls
 (``bloomberg_xlsx.read_export``, the per-file schema check, ``bloomberg_csv.merge``,
@@ -28,11 +29,17 @@ import pandas as pd
 from forecasting_engine.extraction import bloomberg_csv, bloomberg_xlsx, validation
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest import fama_french
-from forecasting_engine.ingest.align import align_and_lag, select_signals, transform_for
+from forecasting_engine.ingest.align import (
+    Transform,
+    align_and_lag,
+    select_signals,
+    transform_for,
+)
 from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models.boosted import run_boosted
 from forecasting_engine.models.carry_research import (
     CARRY_INPUTS,
+    CarryResearchPolynomial,
     carry_inputs,
     run_carry_research_polynomial,
 )
@@ -47,10 +54,12 @@ from forecasting_engine.models.sign_ruled import (
     ECONOMIC_INPUTS,
     HOLDOUT_BEFORE,
     LEVEL_ROWS,
+    SignRuledPolynomial,
     economic_signs,
     run_sign_ruled_polynomial,
 )
 from forecasting_engine.portfolio.optimize import MIN_TRUST_HISTORY, common_rebalance_dates
+from forecasting_engine.validation.harness import evaluate, holdout, summarize
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward, expanding
 
 EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
@@ -383,6 +392,114 @@ def run_models(bundles: dict[str, dict], models: list[str]) -> None:
     )
 
 
+def compare_uploads(before: dict, after: dict) -> None:
+    """Per column, over the dates both uploads hold: how often the two differ, by how
+    much at most, and by how much their daily changes differ at most."""
+    old = before["extraction_committed"].set_index(DATE)
+    new = after["extraction_committed"].set_index(DATE)
+    shared = old.index.intersection(new.index)
+    rows = []
+    for column in old.columns:
+        if column not in new.columns:
+            rows.append([column, "not in the 2006 files", "", "", "", "", ""])
+            continue
+        x, y = new.loc[shared, column], old.loc[shared, column]
+        both = x.notna() & y.notna()
+        gap = (x - y)[both].abs()
+        differ = gap > 0
+        ratio = (x / y)[both & differ]
+        change = (x.pct_change(fill_method=None) - y.pct_change(fill_method=None)).abs()
+        rows.append(
+            [
+                column,
+                f"{int(both.sum()):,}",
+                f"{int((x.notna() != y.notna()).sum()):,}",
+                f"{differ.mean():.1%}",
+                f"{gap.max():.6g}",
+                "—" if ratio.empty else f"{ratio.min():.6f} – {ratio.max():.6f}",
+                f"{change.max():.2g}",
+            ]
+        )
+    print("## The 2006 files against the Sep 2026 upload\n")
+    print(
+        f"Over the {len(shared):,} dates both hold, {day(shared[0])} to {day(shared[-1])}. "
+        f"The Sep 2026 upload has {len(old.index.difference(new.index)):,} dates the 2006 "
+        "files do not. A difference is any at all; the last column is the largest gap "
+        "between the two series' daily percentage changes, which is what a log-return "
+        "transform reads.\n"
+    )
+    table(
+        [
+            "column",
+            "dates with a value in both",
+            "dates with a value in only one",
+            "share differing",
+            "largest difference",
+            "2006 ÷ Sep 2026 where they differ",
+            "largest gap in daily change",
+        ],
+        rows,
+    )
+
+
+def research_folds(bundle: dict, role: TargetRole):
+    """A research model's panel and folds, fitted exactly as its run function fits
+    them, so a score can be taken over any subset of its test windows."""
+    _, indexed, targets, sources, signals, _ = page_inputs(bundle)
+    price = targets[role]
+    if role == EQUITY:
+        signs = economic_signs(signals, sources, role)
+        inputs, factory = list(signs), lambda: SignRuledPolynomial(dict(signs))
+    else:
+        inputs, factory = list(carry_inputs(signals, sources, role)), CarryResearchPolynomial
+    panel = align_and_lag(
+        indexed,
+        inputs,
+        price,
+        horizon=HORIZON,
+        transforms=dict.fromkeys(inputs, Transform.LEVEL),
+    )
+    return panel, evaluate(factory, panel, expanding(splitter()))
+
+
+def research_by_period(bundle: dict) -> None:
+    """Each research model on the data from 31 Aug 2006 over every test window, over
+    its pre-2016 hold-out, and over the windows starting on or after the cutoff."""
+    rows = []
+    for role in (EQUITY, BOND):
+        panel, folds = research_folds(bundle, role)
+        later = tuple(f for f in folds if f.test[0] >= HOLDOUT_BEFORE)
+        held = holdout(panel, folds, HOLDOUT_BEFORE)
+        for name, result, windows, span in (
+            ("every test window", summarize(folds)[0], len(folds), (folds[0], folds[-1])),
+            ("pre-2016 hold-out", held, held.windows, None),
+            (
+                f"windows starting on or after {day(HOLDOUT_BEFORE)}",
+                summarize(later)[0],
+                len(later),
+                (later[0], later[-1]),
+            ),
+        ):
+            if span is None:
+                ic, t, rows_scored = result.signal_rank_ic, result.t, result.rows_scored
+                dates = f"{day(result.first)} – labels to {day(result.last_label_end)}"
+            else:
+                ic, t, rows_scored = result.gated_rank_ic, result.signal_t, result.rows_scored
+                dates = f"{day(span[0].test[0])} – {day(span[1].test[-1])}"
+            rows.append(
+                [role.value, name, f"{ic:+.4f}", f"{t:.2f}", windows, f"{rows_scored:,}", dates]
+            )
+    print("## Research models on the data from 31 Aug 2006, by period\n")
+    print(
+        "Each model's folds are fitted once, as its run fits them, and scored over each "
+        "set of test windows. The hold-out keeps a window only if its every label ends "
+        f"before {day(HOLDOUT_BEFORE)}; the later set keeps every window whose first test "
+        "date is on or after it. A window whose test dates start before the cutoff but "
+        "whose labels end after it is in neither.\n"
+    )
+    table(["target", "test windows", "Signal Rank IC", "t", "windows", "rows", "span"], rows)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("folder", type=Path)
@@ -397,6 +514,8 @@ def main() -> None:
         f"Sep 2026 upload (`data/last_commit.pkl`): content hash "
         f"`{frame_sha256(before['extraction_committed'])}`.\n"
     )
+    compare_uploads(before, after)
+    research_by_period(after)
     run_models({"Sep 2026 upload": before, "from 31 Aug 2006": after}, args.models.split(","))
 
 
