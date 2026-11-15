@@ -70,12 +70,13 @@ from forecasting_engine.models.polynomial import (
     run_user_polynomial,
 )
 from forecasting_engine.models.shrinkage import ShrinkageDataError
-from forecasting_engine.models.sign_ruled import VERSION as SIGN_RULED_VERSION
 from forecasting_engine.models.sign_ruled import (
+    HOLDOUT_BEFORE,
     SignRuledInputsError,
     economic_signs,
     run_sign_ruled_polynomial,
 )
+from forecasting_engine.models.sign_ruled import VERSION as SIGN_RULED_VERSION
 from forecasting_engine.portfolio.directional import (
     DirectionalDataError,
     directional_pnl,
@@ -85,6 +86,7 @@ from forecasting_engine.reporting.model_metrics import (
     MODEL_ORDER,
     Cell,
     FoldTerms,
+    Holdout,
     ModelRunResult,
     ScreeningSummary,
     build_metrics_rows,
@@ -195,8 +197,9 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 #: learning tunes on 252-row folds inside its tuning period. 5: every model
 #: but the naive baseline is gated on Signal Rank IC and t. 6: every model's Signal
 #: Rank IC and baseline are measured against its own level, and the standard error
-#: for overlapping labels counts every lag in full.
-RESULT_VERSION = 6
+#: for overlapping labels counts every lag in full. 7: the research models' results
+#: carry their pre-2016 hold-out.
+RESULT_VERSION = 7
 
 st.set_page_config(
     page_title="Models · Forecasting Engine", page_icon=":material/functions:", layout="wide"
@@ -964,6 +967,20 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
         _show_fitted_terms(run.shap, is_shap=True)
 
 
+def _holdout_text(name: str, holdout: Holdout | None) -> str:
+    """A research model's pre-2016 hold-out: its score on only the test windows its
+    research never looked at."""
+    before = f"{HOLDOUT_BEFORE.day} {HOLDOUT_BEFORE:%b %Y}"
+    if holdout is None:
+        return f"{name}, pre-2016 hold-out: no test window in this data ends before {before}."
+    return (
+        f"{name}, pre-2016 hold-out: Signal Rank IC {holdout.signal_rank_ic:+.3f}, "
+        f"t {holdout.t:.2f}, over the {holdout.windows} test windows from "
+        f"{holdout.first:%b %Y} whose every label ends before {before}: out of sample "
+        "for its research's choices."
+    )
+
+
 def _show_polynomial_expander(
     name: str, run: model_runs.ModelRun, target_name: str, *, expanded: bool
 ) -> None:
@@ -1444,6 +1461,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     for name in RESEARCH_MODELS:
         if name in runs:
             st.caption(f"{name}: {RESEARCH_CAPTIONS[name]}")
+            st.caption(_holdout_text(name, runs[name].result.holdout))
 
     # What each model fitted, together and straight under the table that scores it.
     # The fitted function is the deliverable the sponsor can use directly, so the one
