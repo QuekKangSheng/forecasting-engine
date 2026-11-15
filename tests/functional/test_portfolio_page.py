@@ -423,9 +423,9 @@ def test_the_caption_explains_that_not_run_is_not_zero_risk():
 def test_the_cumulative_return_chart_is_drawn_beside_the_weights_chart():
     app = _happy_page()
 
-    # The weights bar chart, the cumulative-return, rolling volatility, drawdown and
-    # rolling Sharpe line charts.
-    assert len(app.get("vega_lite_chart")) == 5
+    # The weights stacked over rolling volatility as one chart, then the
+    # cumulative-return, drawdown and rolling Sharpe line charts.
+    assert len(app.get("vega_lite_chart")) == 4
 
 
 # --- FYP-255 / FYP-256: the rolling volatility chart ---------------------------------
@@ -590,8 +590,15 @@ def test_the_weights_chart_marks_the_limits_and_runs_to_the_last_day():
     ]
 
     spec = json.loads(chart.proto.spec)
-    marks = [layer["mark"]["type"] for layer in spec["layer"]]
+    weights_panel, volatility_panel, *_ = spec["layer"]
+    marks = [layer["mark"]["type"] for layer in weights_panel["layer"]]
+    # The bands, the weight line and the dashed limits, then the hovered day's dot.
     assert marks == ["area", "line", "rule", "point"]
+    # One time axis; each panel its own vertical scale, in its own band of the plot.
+    assert spec["resolve"]["scale"]["y"] == "independent"
+    top = weights_panel["layer"][1]["encoding"]["y"]["scale"]["range"]
+    bottom = volatility_panel["layer"][0]["encoding"]["y"]["scale"]["range"]
+    assert max(top) < min(bottom)
     assert "the 20% and 80% limits" in _captions(app)
     rows = next(
         convert_arrow_bytes_to_pandas_df(d.data.data)
@@ -600,6 +607,32 @@ def test_the_weights_chart_marks_the_limits_and_runs_to_the_last_day():
     )
     # The last allocation is drawn held to the last day there is a price for.
     assert pd.Timestamp(rows["date"].max()).date() == committed["Date"].iloc[-1].date()
+
+
+def test_one_hover_marks_the_same_day_in_the_weights_and_the_volatility():
+    app = _happy_page()
+
+    (chart,) = [c for c in app.get("vega_lite_chart") if '"Weight: ' in c.proto.spec]
+    spec = json.loads(chart.proto.spec)
+    (hover,) = spec["params"]
+    assert hover["views"] == ["days"]
+    # The hovered day's line is a layer of the whole chart, not of either panel, so
+    # it runs from the top of the weights to the foot of the volatility.
+    (crosshair,) = [
+        layer for layer in spec["layer"] if layer.get("mark", {}).get("type") == "rule"
+    ]
+    assert crosshair["transform"] == [{"filter": {"param": "nearest", "empty": False}}]
+    assert set(crosshair["encoding"]) == {"x"}
+    days = next(
+        convert_arrow_bytes_to_pandas_df(d.data.data)
+        for d in chart.proto.datasets
+        if d.name.startswith("hover-")
+    )
+    # Each hover day carries the weights held that day, the last rebalance's.
+    weights = [c for c in days.columns if c.startswith("Weight: ")]
+    assert len(weights) == 2
+    assert days[weights].notna().all().all()
+    assert days[weights].sum(axis=1).round(9).eq(1).all()
 
 
 def test_without_active_models_the_page_explains_what_will_appear():
