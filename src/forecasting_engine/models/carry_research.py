@@ -4,8 +4,8 @@ so that its forecast is an expected return.
 
 Run on the Models page's Bond tab as its own row, "Polynomial – fixed carry inputs
 (research)". Its inputs were chosen in the November 2026 model research
-(``bond/nochange_levels``) by looking at results over Aug 2016 - Sep 2024, which overlaps
-the scored period, so its scores there overstate it. See docs/methodology.md.
+(``bond/nochange_levels``) by looking at results on the Sep 2026 upload (Aug 2016 - Sep
+2026), which overlaps the scored period, so its scores there overstate it. See docs/methodology.md.
 
 Why. A bond index's h-day return is, to first order, what it earns if nothing moves (its
 yield, its spread and the roll down the curve) less its duration times the same-window
@@ -54,7 +54,7 @@ earlier rows (an expanding window), as the research ran it.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -71,9 +71,9 @@ from forecasting_engine.models.polynomial import (
     PolynomialConfigError,
     _time_series_cv,
 )
-from forecasting_engine.models.sign_ruled import input_columns
+from forecasting_engine.models.sign_ruled import HOLDOUT_BEFORE, input_columns
 from forecasting_engine.reporting.model_metrics import ModelRunResult
-from forecasting_engine.validation.harness import evaluate, summarize
+from forecasting_engine.validation.harness import evaluate, holdout, summarize
 from forecasting_engine.validation.splitters import PurgedWalkForward, expanding
 
 CARRY_INPUTS: Mapping[TargetRole, tuple[str, ...]] = {
@@ -300,7 +300,8 @@ def run_carry_research_polynomial(
 
     Its inputs are read as levels whatever the page's transform map says (rates are
     otherwise differenced), and every fold trains on all earlier rows. One
-    configuration. Returns the panel too, for the equation's columns."""
+    configuration. Its result carries its pre-2016 hold-out. Returns the panel too, for
+    the equation's columns."""
     panel = align_and_lag(
         frame,
         list(inputs),
@@ -312,4 +313,4 @@ def run_carry_research_polynomial(
     if not folds:
         raise PolynomialConfigError(expanding(splitter).too_short(panel))
     result, description = summarize(folds)
-    return result, description, panel
+    return replace(result, holdout=holdout(panel, folds, HOLDOUT_BEFORE)), description, panel

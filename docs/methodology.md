@@ -160,6 +160,33 @@ date of the price each label reaches, which the splitter uses to purge.
   on or after the test window opens, or if it lies within `h` rows of it.
   `window_before` applies the same purge to tuning windows.
 
+### 7.1 Where each part starts on the data from 31 Aug 2006
+
+Every window rule counts rows, not dates, and nothing in `src/` sets a start date,
+so the Bloomberg history from 31 Aug 2006 (to 11–12 Nov 2026; the full history
+available) moves every start earlier with no rule changed. Confirmed from the code
+and that data at the page's defaults (`h` = 20, 504-row train window, 20-row test
+window, 20-row embargo) by `docs/evidence/2026-11-15-history-2006.py`
+([evidence](evidence/2026-11-15-history-2006.md)):
+
+| Part | Rule (unchanged) | Starts on the data from 31 Aug 2006 |
+|---|---|---|
+| Tuning period | First `TUNING_ROWS` (504) rows of each target's calendar, never scored | 31 Aug 2006 – 2 Sep 2008 (equity), – 4 Sep 2008 (bond) |
+| First test window | After the tuning rows and the embargo | 1 Oct 2008 (equity), 3 Oct 2008 (bond): the weeks after the Lehman collapse, kept as a stress test |
+| Model training (rolling models) | 504 rows before each test window, purged | From 31 Aug 2006: the first window is 31 Aug 2006 – 2 Sep 2008 |
+| Research models (§9.1, §9.2) | Expanding, every earlier row | From 31 Aug 2006 |
+| Equity research model's level | Mean of the first `LEVEL_ROWS` (252) training labels | Labels from 31 Aug 2006, the last ending 1 Oct 2007: the pre-crash rally. It moves only the raw forecast (Monte Carlo, long/cash), not the signal (§10) |
+| Machine-learning retuning | Every `RETUNE_EVERY` (252) rows, on a 252-row window | Unchanged |
+| Covariance | 504 rows before each rebalance | Unchanged |
+| Forecast trust `β̂` | Expanding over out-of-sample pairs; zero until `MIN_TRUST_HISTORY` (252) pairs and t > 2 | Pairs from 3 Oct 2008; the 252nd pair's outcome is known on 4 Nov 2009, the earliest it can open |
+| Long-run premium `π̄` | Expanding mean of daily equity-minus-bond returns since the data starts (§17) | From 31 Aug 2006 |
+| VaR backtest | `VAR_WINDOW` (252) rows | Unchanged |
+| Portfolio backtest | From the first rebalance, every 20th out-of-sample date both targets share | 226 rebalances, 6 Oct 2008 to 9 Oct 2026 |
+
+Every target and research-model input starts on 31 Aug 2006 and no calendar year
+misses more than 0.4% of the days both targets are priced, so no signal is missing
+from any fold.
+
 ## 8. Per-fold screening
 
 For the derived polynomial and machine learning, each fold screens every
@@ -374,8 +401,8 @@ against +0.12 for the screened shrinkage candidate; its research notes say over
 half of that came from one quarter (the spring 2025 spread spike and rebound) and
 that the 1990–2016 history points the other way. Its fixed inputs also ignore any
 other signal in the data. The page therefore captions its row, as it does the
-bond research model's (§9.2): "Scores are optimistic: inputs chosen by looking at
-results over Aug 2016 – Sep 2024." The derived polynomial makes every such choice
+bond research model's (§9.2), each with its own period: "Scores are optimistic:
+inputs chosen by looking at results over Aug 2016 – Sep 2024." The derived polynomial makes every such choice
 inside each fold instead.
 
 It is gated like every other model (§12) and can be set active for equity like
@@ -470,9 +497,32 @@ property above exact. And `ρᶜ` is capped at `RHO_CAP`, as Amihud, Hurvich & W
 the multi-predictor method (Amihud, Hurvich & Wang 2009), which corrects the
 inputs' autoregression jointly; the seven inputs here are correlated. A daily
 AR(1) compounded to `h` days assumes the level's persistence is the same at every
-lag. And its inputs were chosen by looking at results over Aug 2016 – Sep 2024,
-which overlaps the scored period, so the page captions its row "Scores are
-optimistic: inputs chosen by looking at results over Aug 2016 – Sep 2024."
+lag. And its inputs were chosen by looking at results on the Sep 2026 upload
+(Aug 2016 – Sep 2026), which overlaps the scored period, so the page captions its
+row "Scores are optimistic: inputs chosen by looking at results on the Sep 2026
+upload (Aug 2016 – Sep 2026)."
+
+**Pre-2016 hold-out (both research models).** Both research models' inputs were
+chosen by looking at results from Aug 2016 on, so test windows that end before
+`HOLDOUT_BEFORE` (1 Aug 2016, `models/sign_ruled`) are out of sample for those
+choices. Each research run also reports its Signal Rank IC and t over those
+windows alone (`harness.holdout`, carried as `ModelRunResult.holdout`), and the
+page shows it under the row as the "pre-2016 hold-out". A window counts only if
+its every label ends before that date, not just its last test date, so no price
+from the period the research looked at enters a hold-out score; each such fold
+trains only on rows before its own test window. The Sep 2026 upload starts on
+31 Aug 2016 and has no such window. On the data from 31 Aug 2006 (§7.1) each model
+has 96 or 97, from Oct 2008 to Jul 2016
+([evidence](evidence/2026-11-15-history-2006.md)):
+
+| Research model | Signal Rank IC, t: whole period | Pre-2016 hold-out | Windows |
+|---|---|---|---|
+| Equity (§9.1) | +0.071, t 1.10 | −0.032, t −0.30 | 97 |
+| Bond (§9.2) | +0.066, t 0.99 | −0.004, t −0.05 | 96 |
+
+Neither passes the gate on the longer history, and neither scores above zero on
+the windows its research never saw. These are reported as they came out; neither
+model was changed because of them.
 
 ### 9.3 Feature attribution (SHAP) for polynomial models
 

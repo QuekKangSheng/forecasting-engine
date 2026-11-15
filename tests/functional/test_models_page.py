@@ -34,6 +34,7 @@ from forecasting_engine.models.boosted import Tune, TuningLog
 from forecasting_engine.models.famafrench import FACTOR_COLUMNS, FactorCoverage
 from forecasting_engine.reporting.model_metrics import (
     FoldTerms,
+    Holdout,
     ModelRunResult,
     ScreeningSummary,
 )
@@ -1603,6 +1604,10 @@ RESEARCH = "Polynomial – fixed economic inputs"
 RESEARCH_CAPTION = (
     "Scores are optimistic: inputs chosen by looking at results over Aug 2016 – Sep 2024."
 )
+BOND_RESEARCH_CAPTION = (
+    "Scores are optimistic: inputs chosen by looking at results on the Sep 2026 upload "
+    "(Aug 2016 – Sep 2026)."
+)
 #: The research model's four inputs, by the ticker it finds each one by.
 RESEARCH_INPUTS = {
     "LF98OAS_Index_PX_LAST": "LF98OAS Index",
@@ -1764,7 +1769,7 @@ def test_the_bond_research_model_runs_beside_the_derived_polynomial_on_the_same_
     assert runs[BOND_RESEARCH].result.forecast.index[0] == runs[POLY].result.forecast.index[0]
     assert runs[BOND_RESEARCH].result.forecast.index[-1] == runs[POLY].result.forecast.index[-1]
     assert f"**{BOND_RESEARCH}**: gate" in _markdown(app)
-    assert f"{BOND_RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+    assert f"{BOND_RESEARCH}: {BOND_RESEARCH_CAPTION}" in _captions(app)
     assert any(label.startswith(f"{BOND_RESEARCH} · ") for label in _expander_labels(app))
     assert set(runs[BOND_RESEARCH].shap.terms) <= set(CARRY_INPUTS)
 
@@ -1778,7 +1783,7 @@ def test_the_bond_research_model_is_gated_and_captioned_under_its_row():
         _markdown(app)
     )
     assert "Gate met" in _table(app).split(BOND_RESEARCH, 1)[1].split("</tr>", 1)[0]
-    assert f"{BOND_RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+    assert f"{BOND_RESEARCH}: {BOND_RESEARCH_CAPTION}" in _captions(app)
 
 
 def test_the_bond_research_model_can_be_set_active_with_its_signal_and_no_train_window():
@@ -1798,3 +1803,36 @@ def test_the_bond_research_model_can_be_set_active_with_its_signal_and_no_train_
     assert record.train_window is None
     signal = active_model.get_active_model_signal(BOND)
     pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)
+
+
+# --- the research models' pre-2016 hold-out ---------------------------------------------
+
+
+def test_a_research_row_without_a_holdout_window_says_so():
+    app = _page({EQUITY: {POLY: _polynomial_run(), RESEARCH: _polynomial_run(_result())}})
+
+    assert (
+        f"{RESEARCH}, pre-2016 hold-out: no test window in this data ends before 1 Aug 2016."
+    ) in _captions(app)
+
+
+def test_a_research_row_shows_its_pre_2016_holdout_score():
+    held = Holdout(
+        before=pd.Timestamp("2016-08-01"),
+        windows=96,
+        first=pd.Timestamp("2008-09-02"),
+        last_label_end=pd.Timestamp("2016-07-29"),
+        signal_rank_ic=0.0412,
+        t=1.37,
+        rows_scored=1920,
+    )
+    result = replace(_result(), holdout=held)
+    app = _page(
+        {BOND: {POLY: _polynomial_run(), BOND_RESEARCH: _polynomial_run(result)}}, bond=True
+    )
+
+    assert (
+        f"{BOND_RESEARCH}, pre-2016 hold-out: Signal Rank IC +0.041, t 1.37, over the 96 "
+        "test windows from Sep 2008 whose every label ends before 1 Aug 2016: out of sample "
+        "for its research's choices."
+    ) in _captions(app)

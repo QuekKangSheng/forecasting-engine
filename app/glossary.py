@@ -56,7 +56,8 @@ TERMS: Mapping[str, str] = {
         "not with how it happened to move in that sample, and the forecast is an "
         "expected return. It trains on every earlier date, as the research did, and "
         "is gated like every other model. Its inputs were chosen by looking at "
-        "results over Aug 2016 – Sep 2024, so treat its score as optimistic."
+        "results on the Sep 2026 upload (Aug 2016 – Sep 2026), so treat its score "
+        "as optimistic."
     ),
     "Max terms": (
         "The most terms the derived equation may keep. The cap works through the "
