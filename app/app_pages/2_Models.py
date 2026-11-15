@@ -45,6 +45,12 @@ from forecasting_engine.ingest.fama_french import FactorFetchError
 from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import BoostedConfigError, fits_tuning_period, run_boosted
+from forecasting_engine.models.carry_research import VERSION as CARRY_RESEARCH_VERSION
+from forecasting_engine.models.carry_research import (
+    CarryResearchInputsError,
+    carry_inputs,
+    run_carry_research_polynomial,
+)
 from forecasting_engine.models.famafrench import (
     FACTOR_COLUMNS,
     FamaFrenchDataError,
@@ -118,21 +124,26 @@ from model_settings import (
 )
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
-NAIVE, FF5, DERIVED, RESEARCH, USER, ML = MODEL_ORDER
+NAIVE, FF5, DERIVED, RESEARCH, BOND_RESEARCH, USER, ML = MODEL_ORDER
 
-ACTIVE_MODEL_CANDIDATES = (DERIVED, RESEARCH, USER, ML)
+#: The two research models: equity's and bond's, each on its own tab.
+RESEARCH_MODELS = (RESEARCH, BOND_RESEARCH)
+
+ACTIVE_MODEL_CANDIDATES = (DERIVED, RESEARCH, BOND_RESEARCH, USER, ML)
 
 #: Every model but the naive baseline, which is the bar the others are read against.
-GATED = (FF5, DERIVED, RESEARCH, USER, ML)
+GATED = (FF5, DERIVED, RESEARCH, BOND_RESEARCH, USER, ML)
 
-#: The research model's own setting: the version of its fit, so a saved result
+#: Each research model's own setting: the version of its fit, so a saved result
 #: from an older fit is refitted rather than shown.
-RESEARCH_SETTING = f"sign-ruled v{SIGN_RULED_VERSION}"
+RESEARCH_SETTINGS = {
+    RESEARCH: f"sign-ruled v{SIGN_RULED_VERSION}",
+    BOND_RESEARCH: f"carry v{CARRY_RESEARCH_VERSION}",
+}
 
-#: Shown under the research model's row wherever its score is.
+#: Shown under a research model's row wherever its score is.
 RESEARCH_CAPTION = (
-    "Inputs and signs chosen in the Oct 2026 model research on data overlapping this "
-    "test period; treat its score as optimistic."
+    "Scores are optimistic: inputs chosen by looking at results over Aug 2016 – Sep 2024."
 )
 
 #: The polynomial's two sources; exactly one runs.
@@ -244,8 +255,8 @@ with st.expander("Settings"):
     test = DEFAULT_TEST_WINDOW
     st.caption(
         f"The train window is fixed: every model on both targets trains on the latest "
-        f"{TRAIN_WINDOW} dates. The research model alone trains on every earlier date, "
-        "as its research did.",
+        f"{TRAIN_WINDOW} dates. The research models alone train on every earlier date, "
+        "as their research did.",
         help=glossary.term("Walk-forward train window (days)"),
     )
     st.caption(
@@ -505,11 +516,38 @@ def _run_research(
     return model_runs.ModelRun(result, description, function=fn, shap=shap)
 
 
-def _research_signs(role: TargetRole) -> tuple[dict[str, int] | None, str | None]:
-    """The research model's inputs for ``role``, or why it can't run here."""
+def _run_carry_research(
+    inputs: tuple[str, ...],
+    frame: pd.DataFrame,
+    price_col: str,
+    horizon: int,
+    splitter: PurgedWalkForward,
+) -> model_runs.ModelRun:
+    """The bond research model: its fixed inputs read as levels, on an expanding window
+    over ``splitter``'s test dates."""
+    result, description, panel = run_carry_research_polynomial(
+        frame, inputs, price_col, horizon, splitter
+    )
+    fn = from_description(
+        description,
+        origin=Origin.DERIVED,
+        target=price_col,
+        horizon=horizon,
+        columns=panel.signals,
+    )
+    training = panel.frame.loc[last_fold_train_window(panel, expanding(splitter))]
+    shap = polynomial_shap(fn, training, description.input_bounds)
+    return model_runs.ModelRun(result, description, function=fn, shap=shap)
+
+
+def _research_inputs(role: TargetRole) -> tuple[object | None, str | None]:
+    """The research model's inputs for ``role`` (equity's with their signs, bond's as a
+    tuple), or why it can't run here."""
     try:
-        return economic_signs(signal_cols, sources, role), None
-    except SignRuledInputsError as exc:
+        if role == TargetRole.EQUITY:
+            return economic_signs(signal_cols, sources, role), None
+        return carry_inputs(signal_cols, sources, role), None
+    except (SignRuledInputsError, CarryResearchInputsError) as exc:
         return None, str(exc)
 
 
@@ -517,14 +555,19 @@ def _active_function(name: str, run: model_runs.ModelRun) -> active_model.Active
     """The fitted function a scenario evaluates again (FYP-32), for the polynomial
     models only: their latest fold's fit, with each input's transform. The research
     model reads its inputs as levels whatever the transform map says."""
-    origin = {DERIVED: Origin.DERIVED, RESEARCH: Origin.DERIVED, USER: Origin.USER_SUPPLIED}
+    origin = {
+        DERIVED: Origin.DERIVED,
+        RESEARCH: Origin.DERIVED,
+        BOND_RESEARCH: Origin.DERIVED,
+        USER: Origin.USER_SUPPLIED,
+    }
     if name not in origin:
         return None
     inputs = function_inputs(run.description, origin[name], numeric_cols)
     return active_model.ActiveFunction(
         origin[name],
         run.description,
-        {s: Transform.LEVEL if name == RESEARCH else transforms[s] for s in inputs},
+        {s: Transform.LEVEL if name in RESEARCH_MODELS else transforms[s] for s in inputs},
     )
 
 
@@ -568,9 +611,9 @@ def _recorder(
 
 
 def _active_settings(name: str) -> dict[str, int | str | None]:
-    """What a model set active was run under. The research model trains on every
-    earlier date, so it has no train window."""
-    if name == RESEARCH:
+    """What a model set active was run under. The research models train on every
+    earlier date, so they have no train window."""
+    if name in RESEARCH_MODELS:
         return {**ACTIVE_SETTINGS, "train_window": None}
     return ACTIVE_SETTINGS
 
@@ -928,6 +971,14 @@ def _show_polynomial_expander(
                 f"its test window, not the latest {TRAIN_WINDOW}, as the "
                 "research did. " + RESEARCH_CAPTION
             )
+        elif name == BOND_RESEARCH:
+            st.caption(
+                "The levels of the 10-year yield, the 10-year breakeven, the 2s10s slope, "
+                "HY and IG OAS, VIX and FX implied volatility, fixed by the research, with "
+                "each one's unexpected move over the horizon taken out. Each fold trains "
+                f"on every date before its test window, not the latest {TRAIN_WINDOW}, as "
+                "the research did. " + RESEARCH_CAPTION
+            )
         _show_polynomial(run)
 
 
@@ -1279,17 +1330,18 @@ def _show_directional(
 def _render_tab(role: TargetRole, price_col: str) -> None:
     target_name = label(price_col)
     key = role.value
-    # FF5 is an equity-factor benchmark and the research model's inputs are equity
-    # gauges, so only the Equity tab offers them.
+    # FF5 is an equity-factor benchmark, so only the Equity tab offers it. Each tab has
+    # its own research model.
     equity = role == TargetRole.EQUITY
-    check_cols = st.columns([4, 4, 9, 5, 1] if equity else [3, 4, 11])
+    research = RESEARCH if equity else BOND_RESEARCH
+    check_cols = st.columns([4, 4, 9, 5, 1] if equity else [4, 9, 5, 1])
     run_poly = check_cols[0].checkbox("Polynomial", value=True, key=f"run_poly_{key}")
     run_ff5 = equity and check_cols[1].checkbox("Fama-French 5", value=True, key=f"run_ff5_{key}")
-    research_ticked = equity and check_cols[2].checkbox(
-        RESEARCH,
+    research_ticked = check_cols[2 if equity else 1].checkbox(
+        research,
         value=True,
         key=f"run_research_{key}",
-        help=glossary.term(RESEARCH),
+        help=glossary.term(research),
     )
     ml_fits = fits_tuning_period(int(train), int(test), EMBARGO_DAYS, TUNING_ROWS)
     ml_ticked = check_cols[-2].checkbox(
@@ -1314,19 +1366,18 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     _show_alignment(panel, target_name)
 
     polynomial, settings = _polynomial_settings(key, panel, run_poly)
-    signs, unavailable = _research_signs(role) if equity else (None, None)
-    if research_ticked and not signs:
+    research_inputs, unavailable = _research_inputs(role)
+    if research_ticked and not research_inputs:
         st.caption(f"No research model for this target: {unavailable}")
-    run_research = research_ticked and bool(signs)
-    if equity:
-        settings[RESEARCH] = RESEARCH_SETTING
+    run_research = research_ticked and bool(research_inputs)
+    settings[research] = RESEARCH_SETTINGS[research]
     tab_runs = model_runs.tab(stored, role, settings, inputs=_tab_inputs(role))
     models = [NAIVE]
     user_formula, user_bindings = settings[USER]
     if polynomial == DERIVED or (polynomial == USER and user_formula and user_bindings is not None):
         models.append(polynomial)
     if run_research:
-        models.append(RESEARCH)
+        models.append(research)
     if run_ff5:
         models.append(FF5)
     if run_ml:
@@ -1343,7 +1394,10 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
             NAIVE: functools.partial(_run_naive, panel, splitter),
             DERIVED: functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter),
             RESEARCH: functools.partial(
-                _run_research, signs, indexed, price_col, horizon, splitter
+                _run_research, research_inputs, indexed, price_col, horizon, splitter
+            ),
+            BOND_RESEARCH: functools.partial(
+                _run_carry_research, research_inputs, indexed, price_col, horizon, splitter
             ),
             USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
@@ -1383,15 +1437,16 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         if name in runs:
             st.markdown(_gate_line(name, runs[name].result))
     _show_table({name: run.result for name, run in runs.items()})
-    if RESEARCH in runs:
-        st.caption(f"{RESEARCH}: {RESEARCH_CAPTION}")
+    for name in RESEARCH_MODELS:
+        if name in runs:
+            st.caption(f"{name}: {RESEARCH_CAPTION}")
 
     # What each model fitted, together and straight under the table that scores it.
     # The fitted function is the deliverable the sponsor can use directly, so the one
     # that matters (the active polynomial, else the derived one) is the one open. The
     # others sit closed beside it rather than further down, past the chart and the
     # picker, where a reader had to go looking for the rest of the set.
-    polynomials = [name for name in (DERIVED, RESEARCH, USER) if name in runs]
+    polynomials = [name for name in (DERIVED, *RESEARCH_MODELS, USER) if name in runs]
     featured = (
         current.model_name
         if current is not None and current.model_name in polynomials
