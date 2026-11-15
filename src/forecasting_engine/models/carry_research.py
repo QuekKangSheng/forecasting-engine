@@ -4,8 +4,8 @@ so that its forecast is an expected return.
 
 Run on the Models page's Bond tab as its own row, "Polynomial – fixed carry inputs
 (research)". Its inputs were chosen in the November 2026 model research
-(``bond/nochange_levels``) by looking at results over Aug 2016 - Sep 2024, which overlaps
-the scored period, so its scores there overstate it. See docs/methodology.md.
+(``bond/nochange_levels``) by looking at results on the Sep 2026 upload (Aug 2016 - Sep
+2026), which overlaps the scored period, so its scores there overstate it. See docs/methodology.md.
 
 Why. A bond index's h-day return is, to first order, what it earns if nothing moves (its
 yield, its spread and the roll down the curve) less its duration times the same-window

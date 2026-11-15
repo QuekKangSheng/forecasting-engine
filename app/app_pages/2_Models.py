@@ -141,10 +141,14 @@ RESEARCH_SETTINGS = {
     BOND_RESEARCH: f"carry v{CARRY_RESEARCH_VERSION}",
 }
 
-#: Shown under a research model's row wherever its score is.
-RESEARCH_CAPTION = (
-    "Scores are optimistic: inputs chosen by looking at results over Aug 2016 – Sep 2024."
-)
+#: Shown under each research model's row wherever its score is: the period whose
+#: results its inputs were chosen by looking at.
+RESEARCH_CAPTIONS = {
+    RESEARCH: "Scores are optimistic: inputs chosen by looking at results over "
+    "Aug 2016 – Sep 2024.",
+    BOND_RESEARCH: "Scores are optimistic: inputs chosen by looking at results on the "
+    "Sep 2026 upload (Aug 2016 – Sep 2026).",
+}
 
 #: The polynomial's two sources; exactly one runs.
 DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
@@ -969,7 +973,7 @@ def _show_polynomial_expander(
                 "HY OAS, IG OAS, VIX and the 2s10s slope, read as levels and "
                 "fixed by the research. Each fold trains on every date before "
                 f"its test window, not the latest {TRAIN_WINDOW}, as the "
-                "research did. " + RESEARCH_CAPTION
+                "research did. " + RESEARCH_CAPTIONS[RESEARCH]
             )
         elif name == BOND_RESEARCH:
             st.caption(
@@ -977,7 +981,7 @@ def _show_polynomial_expander(
                 "HY and IG OAS, VIX and FX implied volatility, fixed by the research, with "
                 "each one's unexpected move over the horizon taken out. Each fold trains "
                 f"on every date before its test window, not the latest {TRAIN_WINDOW}, as "
-                "the research did. " + RESEARCH_CAPTION
+                "the research did. " + RESEARCH_CAPTIONS[BOND_RESEARCH]
             )
         _show_polynomial(run)
 
@@ -1439,7 +1443,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     _show_table({name: run.result for name, run in runs.items()})
     for name in RESEARCH_MODELS:
         if name in runs:
-            st.caption(f"{name}: {RESEARCH_CAPTION}")
+            st.caption(f"{name}: {RESEARCH_CAPTIONS[name]}")
 
     # What each model fitted, together and straight under the table that scores it.
     # The fitted function is the deliverable the sponsor can use directly, so the one

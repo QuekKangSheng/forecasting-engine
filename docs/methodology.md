@@ -374,8 +374,8 @@ against +0.12 for the screened shrinkage candidate; its research notes say over
 half of that came from one quarter (the spring 2025 spread spike and rebound) and
 that the 1990–2016 history points the other way. Its fixed inputs also ignore any
 other signal in the data. The page therefore captions its row, as it does the
-bond research model's (§9.2): "Scores are optimistic: inputs chosen by looking at
-results over Aug 2016 – Sep 2024." The derived polynomial makes every such choice
+bond research model's (§9.2), each with its own period: "Scores are optimistic:
+inputs chosen by looking at results over Aug 2016 – Sep 2024." The derived polynomial makes every such choice
 inside each fold instead.
 
 It is gated like every other model (§12) and can be set active for equity like
@@ -470,9 +470,10 @@ property above exact. And `ρᶜ` is capped at `RHO_CAP`, as Amihud, Hurvich & W
 the multi-predictor method (Amihud, Hurvich & Wang 2009), which corrects the
 inputs' autoregression jointly; the seven inputs here are correlated. A daily
 AR(1) compounded to `h` days assumes the level's persistence is the same at every
-lag. And its inputs were chosen by looking at results over Aug 2016 – Sep 2024,
-which overlaps the scored period, so the page captions its row "Scores are
-optimistic: inputs chosen by looking at results over Aug 2016 – Sep 2024."
+lag. And its inputs were chosen by looking at results on the Sep 2026 upload
+(Aug 2016 – Sep 2026), which overlaps the scored period, so the page captions its
+row "Scores are optimistic: inputs chosen by looking at results on the Sep 2026
+upload (Aug 2016 – Sep 2026)."
 
 ### 9.3 Feature attribution (SHAP) for polynomial models
 

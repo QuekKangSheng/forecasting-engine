@@ -1603,6 +1603,10 @@ RESEARCH = "Polynomial – fixed economic inputs"
 RESEARCH_CAPTION = (
     "Scores are optimistic: inputs chosen by looking at results over Aug 2016 – Sep 2024."
 )
+BOND_RESEARCH_CAPTION = (
+    "Scores are optimistic: inputs chosen by looking at results on the Sep 2026 upload "
+    "(Aug 2016 – Sep 2026)."
+)
 #: The research model's four inputs, by the ticker it finds each one by.
 RESEARCH_INPUTS = {
     "LF98OAS_Index_PX_LAST": "LF98OAS Index",
@@ -1764,7 +1768,7 @@ def test_the_bond_research_model_runs_beside_the_derived_polynomial_on_the_same_
     assert runs[BOND_RESEARCH].result.forecast.index[0] == runs[POLY].result.forecast.index[0]
     assert runs[BOND_RESEARCH].result.forecast.index[-1] == runs[POLY].result.forecast.index[-1]
     assert f"**{BOND_RESEARCH}**: gate" in _markdown(app)
-    assert f"{BOND_RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+    assert f"{BOND_RESEARCH}: {BOND_RESEARCH_CAPTION}" in _captions(app)
     assert any(label.startswith(f"{BOND_RESEARCH} · ") for label in _expander_labels(app))
     assert set(runs[BOND_RESEARCH].shap.terms) <= set(CARRY_INPUTS)
 
@@ -1778,7 +1782,7 @@ def test_the_bond_research_model_is_gated_and_captioned_under_its_row():
         _markdown(app)
     )
     assert "Gate met" in _table(app).split(BOND_RESEARCH, 1)[1].split("</tr>", 1)[0]
-    assert f"{BOND_RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+    assert f"{BOND_RESEARCH}: {BOND_RESEARCH_CAPTION}" in _captions(app)
 
 
 def test_the_bond_research_model_can_be_set_active_with_its_signal_and_no_train_window():
