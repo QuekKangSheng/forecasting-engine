@@ -277,8 +277,8 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   4. the posterior is drawn by Gibbs sampling, `CHAINS` chains of `BURN_IN`
      discarded and `KEPT_SWEEPS` kept sweeps from `SEED`, so a fit is
      reproducible;
-  5. the level is the training mean, so what it adds to the naive forecast is
-     its slopes alone.
+  5. the level is the training mean, which is also its own average in-sample
+     forecast, so its signal is its slopes alone.
 
   The equation is `mean + Σ β·z`, one term per signal, written in each signal's
   own direction. A fold needs at least `_MIN_TRAINING_ROWS` complete rows. The
@@ -429,7 +429,8 @@ values end to end, then computes once:
 - **IC**: the Pearson correlation of prediction and outcome. It mixes the scales
   of different folds' fits, so it is not gated.
 - **Signal Rank IC** (`validation/harness.signal_forecasts`), the gated figure:
-  the Rank IC of each fold's predictions less that fold's level, pooled. A fold's
+  the forecast less the model's own average in-sample forecast, ranked against
+  realised returns. Each fold's predictions less that fold's level, pooled. A fold's
   level is the model's own: its mean in-sample forecast over the fold's training
   rows (`FoldResult.own_level`). For a least-squares fit with an intercept that is
   the fold's training-mean target, which is what the naive baseline forecasts. A
@@ -452,6 +453,7 @@ values end to end, then computes once:
   included, computed as the Pearson correlation of ranks. Shown, not gated.
 - **RMSE.**
 - **Two standard errors of each of those Rank ICs** (`validation/metrics.rank_ic_se`).
+  The gate's is Hansen-Hodrick over h−1 lags, never below Newey-West.
   Each regresses the standardised ranks of the outcome on those of the prediction
   with a HAC covariance.
   - "s.e. (h−1 lags)" allows for overlapping h-day labels. Labels a day apart

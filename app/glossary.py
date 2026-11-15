@@ -102,16 +102,15 @@ TERMS: Mapping[str, str] = {
         "than a cause for celebration."
     ),
     "Signal Rank IC": (
-        "What the signals add, scored: each forecast less the model's own level, "
-        "the average forecast it made over its training block, compared in order "
-        "with what actually happened, on data the model never trained on. The "
-        "headline number, and the one the promotion gate is set on. The level is "
-        "left out because it is not skill: it moves from one training block to the "
-        "next whatever the signals say, so it can drown a real signal or pass a "
-        "model that has none. For most models the level is the training block's "
-        "average return. The two s.e.s beside it "
-        "are standard errors, one allowing for overlapping labels, one for errors "
-        "shared within a test window; t divides the score by the larger."
+        "What the signals add, scored: the forecast less the model's own average "
+        "in-sample forecast, ranked against realised returns, on data the model "
+        "never trained on. The headline number, and the one the promotion gate is "
+        "set on. The average is left out because it is not skill: it moves from one "
+        "training block to the next whatever the signals say, so it can drown a "
+        "real signal or pass a model that has none. The two s.e.s beside it are "
+        "standard errors, one allowing for overlapping labels (Hansen-Hodrick over "
+        "h−1 lags, never below Newey-West), one for errors shared within a test "
+        "window; t divides the score by the larger."
     ),
     "OOS Rank IC": (
         "Out-of-sample Rank IC of the whole forecast, its level included: the "

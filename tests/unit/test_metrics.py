@@ -211,3 +211,13 @@ def test_with_no_lags_the_overlap_standard_error_is_the_plain_one():
     assert rank_ic_se(predicted, realised, lags=0, overlap=True) == pytest.approx(
         rank_ic_se(predicted, realised, lags=0)
     )
+
+
+@pytest.mark.parametrize("h", [5, 20])
+def test_the_overlap_rank_ic_se_is_never_below_newey_west(h):
+    for seed in range(30):
+        predicted, realised = _overlapping(300, h, seed)
+
+        assert rank_ic_se(predicted, realised, lags=h - 1, overlap=True) >= rank_ic_se(
+            predicted, realised, lags=h - 1
+        )

@@ -7,6 +7,7 @@ import pytest
 from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.validation import metrics
+from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.harness import (
     FoldResult,
     evaluate,
@@ -712,3 +713,41 @@ def test_a_screened_out_fold_records_its_training_mean_as_its_level():
     for fold in folds:
         assert fold.own_level == float(fold.realised_train.mean())
         assert (signal_forecasts((fold,)) == 0.0).all()
+
+
+def test_a_constant_forecast_cannot_pass_the_gate():
+    folds = evaluate(_Constant, _reverting_panel(), PurgedWalkForward(train=10, test=5, embargo=2))
+    result, _ = summarize(folds)
+
+    assert not evaluate_candidate(result.gated_rank_ic, result.signal_t).promoted
+
+
+class _OlsWithIntercept:
+    """A least-squares fit of the target on the signal, with an intercept."""
+
+    name = "OLS"
+
+    def fit(self, panel: FeaturePanel, train: pd.DatetimeIndex) -> None:
+        x = panel.frame.loc[train, "signal_a"].to_numpy()
+        y = panel.frame.loc[train, panel.targets[0]].to_numpy()
+        self._coef = np.linalg.lstsq(np.column_stack([np.ones_like(x), x]), y, rcond=None)[0]
+
+    def predict(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> pd.Series:
+        return self._coef[0] + self._coef[1] * panel.frame.loc[idx, "signal_a"].astype(float)
+
+    def describe(self) -> ModelDescription:
+        return ModelDescription(
+            name=self.name,
+            terms=("signal_a",),
+            coefficients=(float(self._coef[1]),),
+            intercept=float(self._coef[0]),
+        )
+
+
+def test_an_ols_fit_with_an_intercept_has_the_training_mean_as_its_own_level():
+    splitter = PurgedWalkForward(train=10, test=5, embargo=2)
+    folds = evaluate(_OlsWithIntercept, _rising_panel(), splitter)
+
+    assert folds
+    for fold in folds:
+        assert fold.own_level == pytest.approx(fold.realised_train.mean(), abs=1e-12)
