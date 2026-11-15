@@ -12,8 +12,9 @@ volatility between the lowest-risk mix the bounds allow (level 5) and the highes
 (level 1), and ``w*_L`` is the weight on the efficient side that has that volatility.
 Each level's ``λ_L`` is whatever makes ``w*_L`` optimal with no forecast information,
 ``μ = π̄``, so ``λ_L = π̄ / (D·(w*_L − w_mv))``: reverse optimisation (Sharpe 1974;
-Black & Litterman 1992). ``π̄`` is the long-run equity-minus-bond premium, the mean
-over every day to date.
+Black & Litterman 1992). ``π̄`` is the long-run equity-minus-bond premium: a
+published long-run premium, worth ``PREMIUM_PRIOR_YEARS`` years of data, averaged
+with every day's premium to date (``long_run_premium``).
 
 The expected return used is ``μ = π̄ + β̂·Δs``: the premium plus the part of the
 signal difference the models have earned trust for (Grinold 1994; Black & Litterman
@@ -41,13 +42,9 @@ A rebalance happens once every ``horizon`` trading days over the out-of-sample
 period, so each allocation is held for exactly as long as the forecast it was
 set from looks ahead.
 
-Between rebalances the portfolio drifts with the two indices' returns, and a
-rebalance trades only when the new target is worth its cost: within a no-trade band
-of ``c / (λ_L·D) = c·(w*_L − w_mv)/π̄`` around the drifted weight, where ``c`` is the
-cost of moving the equity weight by 1 (equity's plus bond's cost), the portfolio
-holds; outside it, it trades only as far as the band's near edge. A portfolio that
-has drifted outside the weight bounds is traded back to the nearest bound, whatever
-the band. The first rebalance buys the target from cash.
+Between rebalances the portfolio drifts with the two indices' returns, and every
+rebalance trades straight back to its target, paying the trading costs on what it
+trades (``backtest.run_backtest``). The first rebalance buys the target from cash.
 """
 
 from __future__ import annotations
@@ -61,11 +58,7 @@ import pandas as pd
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
-from forecasting_engine.portfolio.backtest import (
-    ASSETS,
-    DEFAULT_COSTS_BPS,
-    asset_returns,
-)
+from forecasting_engine.portfolio.backtest import ASSETS
 from forecasting_engine.validation import metrics
 from forecasting_engine.validation.gates import SIGNIFICANCE_T_GATE
 from forecasting_engine.validation.splitters import TUNING_ROWS, PurgedWalkForward
@@ -91,6 +84,26 @@ MIN_TRUST_HISTORY: int = 252
 """A convention, not a derived value: about a year of daily forecast-and-outcome pairs
 before the forecasts move any weight. With a 20-day horizon those pairs overlap, so
 they hold about 13 independent observations and the first estimates are noisy."""
+
+PREMIUM_PRIOR_ANNUAL: float = 0.066
+"""The published long-run equity premium ``π̄`` starts from, a year: US large-company
+stocks over long-term government bonds, arithmetic mean, 1926–2004 (Goetzmann &
+Ibbotson, "History and the Equity Risk Premium", Yale ICF working paper, April 2005).
+
+Its bond leg is long-term government bonds, not our bond index, so it probably
+understates our premium by about 0.4 points a year. That is stated, not adjusted."""
+
+PREMIUM_PRIOR_YEARS: int = 30
+"""How many years of daily data the prior counts as. A premium's mean is known to
+about ``σ/√n`` from ``n`` years; for that to be ``s`` = 3 points a year with ``σ`` ≈
+17–18%, ``n = (σ/s)²`` is 32–36 years. Rounded down to 30, below the source's 79
+years, so the data counts for a little more. The prior still carries about 60% of
+the weight by 2026 on data from 2006."""
+
+PREMIUM_PRIOR_PUBLISHED: pd.Timestamp = pd.Timestamp("2005-05-01")
+"""The month after the prior's source was published. A rebalance before it reads a
+figure nobody had yet, so the Data page warns of an upload whose first rebalance
+would fall before it."""
 
 _PRICE = "price"
 
@@ -122,7 +135,24 @@ def common_rebalance_dates(
     their *own* calendar, so splitting one shared calendar keeps both targets'
     out-of-sample period, and so the rebalance dates, in step.
     """
-    calendar = _common_price_calendar(prices)
+    return rebalance_dates_on(
+        _common_price_calendar(prices),
+        horizon=horizon,
+        train_window=train_window,
+        test_window=test_window,
+        embargo=embargo,
+    )
+
+
+def rebalance_dates_on(
+    calendar: pd.DatetimeIndex,
+    *,
+    horizon: int,
+    train_window: int,
+    test_window: int,
+    embargo: int,
+) -> pd.DatetimeIndex:
+    """``common_rebalance_dates`` on a calendar given directly."""
     panel = FeaturePanel(
         frame=pd.DataFrame(index=calendar), signals=(), targets=(), horizon=horizon
     )
@@ -209,16 +239,24 @@ def covariance_at_rebalance(
 
 
 def long_run_premium(prices: Mapping[TargetRole, pd.Series], *, horizon: int) -> pd.Series:
-    """``π̄``: the mean daily equity-minus-bond return over every day to date,
-    scaled to ``horizon``-day terms, one value per day of the shared calendar.
+    """``π̄``, one value per day of the shared calendar, in ``horizon``-day terms:
+
+        ``π̄_t = (N0·p + Σ_{s≤t} (r_eq,s − r_bond,s)) / (N0 + t) × horizon``
+
+    with ``p`` the prior's daily premium (``PREMIUM_PRIOR_ANNUAL / 252``), ``N0`` its
+    weight in days (``PREMIUM_PRIOR_YEARS × 252``) and ``t`` the trading days since the
+    calendar starts. The first day, with no return yet, is the prior alone.
 
     A rebalance trades at its day's close, so that day's own return is already known."""
     calendar = _common_price_calendar(prices)
     returns = pd.DataFrame(
         {role: prices[role].reindex(calendar).pct_change() for role in ASSETS}
-    ).dropna()
+    ).fillna(0.0)
     equity, bond = ASSETS
-    return (returns[equity] - returns[bond]).expanding().mean() * horizon
+    prior_days = PREMIUM_PRIOR_YEARS * 252
+    days = np.arange(len(calendar), dtype=float)
+    total = prior_days * PREMIUM_PRIOR_ANNUAL / 252 + (returns[equity] - returns[bond]).cumsum()
+    return total / (prior_days + days) * horizon
 
 
 def trust_pairs(
@@ -313,29 +351,15 @@ class WeightBreakdown:
     forecast_tilt: float
     """What the forecasts add to equity, before any bound."""
     equity: float
-    """Equity's final weight, after the bounds and any no-trade band."""
-    target: float | None = None
-    """Equity's weight after the bounds, before any no-trade band. ``None`` where
-    no band applied, so it is ``equity``."""
-    band: float = 0.0
-    """The no-trade band's half-width around ``drifted``: 0 where none applied."""
-    drifted: float | None = None
-    """Equity's weight as the last allocation drifted to by this rebalance, or
-    ``None`` at the first, which buys from cash."""
-    held: bool = False
-    """Whether this rebalance traded nothing: the target was within the band."""
+    """Equity's final weight, after the bounds: what the rebalance trades to."""
 
     @property
     def unconstrained(self) -> float:
         return self.level_weight + self.forecast_tilt
 
     @property
-    def bounded(self) -> float:
-        return self.equity if self.target is None else self.target
-
-    @property
     def capped(self) -> bool:
-        return self.bounded != self.unconstrained
+        return self.equity != self.unconstrained
 
 
 def level_weight(
@@ -432,7 +456,7 @@ class SolveInputs:
 
     def solve(self, signal: pd.Series | None = None) -> WeightBreakdown:
         """``weight_breakdown`` from these inputs, on ``signal`` if given, else on the
-        rebalance's own. No no-trade band: this is the target, ``WeightBreakdown.bounded``."""
+        rebalance's own."""
         return weight_breakdown(
             self.signal if signal is None else signal,
             self.covariance,
@@ -489,7 +513,6 @@ def weight_schedule(
     embargo: int,
     risk_level: int = DEFAULT_RISK_LEVEL,
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
-    costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
     trust: float | None = None,
 ) -> pd.DataFrame:
     """The full weight schedule ``portfolio.backtest.run_backtest`` chains
@@ -506,15 +529,13 @@ def weight_schedule(
             embargo=embargo,
             risk_level=risk_level,
             bounds=bounds,
-            costs_bps=costs_bps,
             trust=trust,
         )
     )
 
 
 def schedule_weights(breakdowns: Mapping[pd.Timestamp, WeightBreakdown]) -> pd.DataFrame:
-    """One row of equity/bond weights per rebalance in ``breakdowns``. A held
-    rebalance's row is the drifted weights, so the backtest trades nothing there."""
+    """One row of equity/bond weights per rebalance in ``breakdowns``."""
     equity, bond = ASSETS
     weights = np.array([b.equity for b in breakdowns.values()], dtype=float)
     return pd.DataFrame(
@@ -538,10 +559,9 @@ class RebalanceInputs:
 
 @dataclass(frozen=True)
 class ScheduleInputs:
-    """Everything a weight schedule is solved from that the risk level, the weight
-    bounds and the trading costs leave alone: each rebalance's signals, covariance,
-    long-run premium and forecast trust, and the daily returns the portfolio drifts on
-    between rebalances.
+    """Everything a weight schedule is solved from that the risk level and the weight
+    bounds leave alone: each rebalance's signals, covariance, long-run premium and
+    forecast trust.
 
     Estimating these is nearly all of a schedule's work, a covariance and a trust
     regression per rebalance, and none of it depends on the level. A caller showing
@@ -552,8 +572,6 @@ class ScheduleInputs:
     rebalances: Mapping[pd.Timestamp, RebalanceInputs]
     """In date order. A rebalance with a signal missing, or too little history for a
     covariance, is not in it."""
-    daily_returns: pd.DataFrame
-    """``backtest.asset_returns`` from the first rebalance on. Empty with no rebalance."""
 
     def solve_inputs(
         self, date: pd.Timestamp, *, risk_level: int, bounds: tuple[float, float]
@@ -628,10 +646,7 @@ def schedule_inputs(
             trust=trust,
             gate_shut=gate_shut,
         )
-    if not rebalances:
-        return ScheduleInputs(rebalances={}, daily_returns=pd.DataFrame(columns=list(ASSETS)))
-    daily_returns = asset_returns(prices, pd.DataFrame(index=pd.DatetimeIndex(list(rebalances))))
-    return ScheduleInputs(rebalances=rebalances, daily_returns=daily_returns)
+    return ScheduleInputs(rebalances=rebalances)
 
 
 def breakdowns_from(
@@ -639,18 +654,14 @@ def breakdowns_from(
     *,
     risk_level: int = DEFAULT_RISK_LEVEL,
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
-    costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
     trust: float | None = None,
 ) -> dict[pd.Timestamp, WeightBreakdown]:
     """How each rebalance's equity weight was reached at ``risk_level``, in date order:
-    the target solved from that rebalance's inputs, then the no-trade band against the
-    weight the last allocation drifted to. Zero costs leave no band, so every
-    rebalance moves to its target. A ``trust`` given is used at every rebalance in
-    place of the estimate; ``trust=0.0`` is the level with no forecasts, under the
-    same band."""
-    targets: dict[pd.Timestamp, tuple[WeightBreakdown, float]] = {}
-    for date, rebalance in inputs.rebalances.items():
-        breakdown = weight_breakdown(
+    the target solved from that rebalance's inputs, which the rebalance trades to. A
+    ``trust`` given is used at every rebalance in place of the estimate; ``trust=0.0``
+    is the level with no forecasts."""
+    return {
+        date: weight_breakdown(
             rebalance.signal,
             rebalance.covariance,
             premium=rebalance.premium,
@@ -658,31 +669,8 @@ def breakdowns_from(
             risk_level=risk_level,
             bounds=bounds,
         )
-        scale = _tilt_scale(
-            risk_level, breakdown.level_weight, rebalance.covariance, rebalance.premium
-        )
-        targets[date] = (breakdown, scale)
-    if not targets:
-        return {}
-
-    cost = sum(costs_bps[role] for role in ASSETS) / 1e4
-    # As arrays, like backtest.chain: this runs for every day of the schedule.
-    daily_returns = inputs.daily_returns[list(ASSETS)].to_numpy(dtype=float)
-    held: np.ndarray | None = None
-    breakdowns: dict[pd.Timestamp, WeightBreakdown] = {}
-    for i, day in enumerate(inputs.daily_returns.index):
-        if i > 0 and held is not None:
-            # Drifted as backtest.chain drifts it, so a held rebalance trades nothing.
-            daily = daily_returns[i]
-            held = held * (1 + daily) / (1 + float(held @ daily))
-        if day not in targets:
-            continue
-        breakdown, scale = targets[day]
-        if held is not None and cost > 0:
-            breakdown = _banded(breakdown, float(held[0]), cost * scale, bounds)
-        breakdowns[day] = breakdown
-        held = np.array([breakdown.equity, 1 - breakdown.equity])
-    return breakdowns
+        for date, rebalance in inputs.rebalances.items()
+    }
 
 
 def _estimated(rebalance: RebalanceInputs) -> float:
@@ -704,18 +692,15 @@ def schedule_breakdowns(
     embargo: int,
     risk_level: int = DEFAULT_RISK_LEVEL,
     bounds: tuple[float, float] = DEFAULT_WEIGHT_BOUNDS,
-    costs_bps: Mapping[TargetRole, float] = DEFAULT_COSTS_BPS,
     trust: float | None = None,
     trust_gate: float = SIGNIFICANCE_T_GATE,
 ) -> dict[pd.Timestamp, WeightBreakdown]:
     """How each rebalance's equity weight was reached, in date order: the target
     solved from that date's signals, ``forecast_trust`` and the covariance over its
-    own training window, then the no-trade band against the weight the last
-    allocation drifted to. Zero costs leave no band, so every rebalance moves to its
-    target. ``baselines`` are each forecast's fold levels. A ``trust`` given
-    is used at every rebalance in place of the estimate; ``trust=0.0`` is the level
-    with no forecasts, under the same band. ``trust_gate`` is the t-statistic the
-    estimate must clear.
+    own training window, which the rebalance trades to. ``baselines`` are each
+    forecast's fold levels. A ``trust`` given is used at every rebalance in place of
+    the estimate; ``trust=0.0`` is the level with no forecasts. ``trust_gate`` is the
+    t-statistic the estimate must clear.
 
     A rebalance whose signal is missing (a model had no prediction that day) or
     whose training window can't support a covariance estimate is left out rather
@@ -737,7 +722,6 @@ def schedule_breakdowns(
         ),
         risk_level=risk_level,
         bounds=bounds,
-        costs_bps=costs_bps,
         trust=trust,
     )
 
@@ -793,7 +777,7 @@ def _lowest_risk_weight(minimum: float | None, bounds: tuple[float, float]) -> f
 
 def _tilt_scale(level: int, weight: float, covariance: pd.DataFrame, premium: float) -> float:
     """``(w*_L − w_mv)/π̄``, which is ``1/(λ_L·D)``: the weight a unit of trusted
-    signal moves, and the no-trade band per unit of cost. Zero at level 5 (infinite
+    signal moves. Zero at level 5 (infinite
     risk aversion), where the premium gives no reason to hold equity, and where
     ``w*_L`` is not above a minimum-variance weight."""
     minimum = _min_variance_weight(covariance)
@@ -801,27 +785,3 @@ def _tilt_scale(level: int, weight: float, covariance: pd.DataFrame, premium: fl
         return 0.0
     return max(weight - minimum, 0.0) / premium
 
-
-def _banded(
-    target: WeightBreakdown, drifted: float, band: float, bounds: tuple[float, float]
-) -> WeightBreakdown:
-    """Trade to the nearest bound if the portfolio has drifted outside ``bounds``.
-    Otherwise hold at ``drifted`` if the target is within ``band`` of it, or move to
-    the band's near edge."""
-    lower, upper = bounds
-    if not lower <= drifted <= upper:
-        held, equity = False, min(max(drifted, lower), upper)
-    else:
-        gap = target.equity - drifted
-        held = abs(gap) <= band
-        edge = target.equity - math.copysign(band, gap)
-        equity = drifted if held else min(max(edge, lower), upper)
-    return WeightBreakdown(
-        level_weight=target.level_weight,
-        forecast_tilt=target.forecast_tilt,
-        equity=equity,
-        target=target.equity,
-        band=band,
-        drifted=drifted,
-        held=held,
-    )

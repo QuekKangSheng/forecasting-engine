@@ -226,9 +226,8 @@ def weights_explanation(settings: Mapping[str, object], names: Mapping[str, str]
         f"two indices moved over {settings['train_window']} trading days ending "
         f"{settings['embargo']} days before the rebalance. {forecasts} Trading costs "
         f"{costs[TargetRole.EQUITY.value]:g} bp on "
-        f"{equity} and {costs[TargetRole.BOND.value]:g} bp on {bond}, so the portfolio trades "
-        "only when it has drifted outside a no-trade band those costs set, and only as far as "
-        "the band's edge."
+        f"{equity} and {costs[TargetRole.BOND.value]:g} bp on {bond}, charged on what each "
+        "rebalance trades to return to its target."
     )
 
 

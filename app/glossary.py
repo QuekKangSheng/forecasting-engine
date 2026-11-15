@@ -227,14 +227,6 @@ TERMS: Mapping[str, str] = {
         "noisy difference between the two signals swinging the portfolio to "
         "one extreme, and it sets the range of mixes the risk levels are spaced across."
     ),
-    "No-trade band": (
-        "Between rebalances the portfolio drifts with the markets. At each "
-        "rebalance it trades only if the new target is far enough from where it "
-        "drifted to to be worth the trading cost: within the band it holds, and "
-        "outside it, it trades only as far as the band's edge. The band grows with "
-        "the cost of moving the equity weight and with the risk level's appetite for "
-        "risk, so it is widest at level 1. Level 5 has none."
-    ),
     "Directional P&L": (
         "What you would have earned by holding this index only when the model "
         "forecast a rise, and sitting in cash otherwise, compared with simply "
@@ -326,7 +318,7 @@ TERMS: Mapping[str, str] = {
     ),
     "Forecast value t-statistic": (
         "The same test, against the same risk level with no forecasts rather than "
-        "against the benchmark. The risk level's equity weight and the no-trade band are "
+        "against the benchmark. The risk level's equity weight is "
         "on both sides, so the forecasts are the only difference. Beyond ±2, what the "
         "forecasts changed is unlikely to be luck."
     ),

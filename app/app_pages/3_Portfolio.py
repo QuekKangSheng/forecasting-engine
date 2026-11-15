@@ -298,7 +298,7 @@ latest_signal = optimize.expected_returns(pd.DatetimeIndex([latest_date]), signa
 breakdown = breakdowns[latest_date]
 direction = "adds" if breakdown.forecast_tilt >= 0 else "takes"
 cap = (
-    f", which the {lower:.0%}–{upper:.0%} limits cap at {breakdown.bounded:.0%}"
+    f", which the {lower:.0%}–{upper:.0%} limits cap at {breakdown.equity:.0%}"
     if breakdown.capped
     else ""
 )
@@ -317,61 +317,6 @@ how_set = [
 ]
 st.caption(how_set[0])
 
-
-def _band(width: float) -> str:
-    """A band's half-width, with a second decimal where one would round it to nothing."""
-    return f"±{width:.1%}" if width >= 0.0005 else f"±{width:.2%}"
-
-
-no_trade_lines = []
-if breakdown.held:
-    no_trade_lines.append(
-        f"Held: within the no-trade band. Since the last rebalance the portfolio had "
-        f"drifted to {breakdown.drifted:.1%} {equity_name}, within the {_band(breakdown.band)} "
-        f"band around it, so it was left as it was rather than pay to trade."
-    )
-elif breakdown.drifted is not None and not lower <= breakdown.drifted <= upper:
-    # Outside the limits the band doesn't apply: it goes back to the nearest limit.
-    no_trade_lines.append(
-        f"Since the last rebalance the portfolio had drifted to {breakdown.drifted:.1%} "
-        f"{equity_name}, outside the {lower:.0%}–{upper:.0%} limits, so it was traded back "
-        f"to the nearest limit, {breakdown.equity:.1%}."
-    )
-elif breakdown.drifted is not None and breakdown.band > 0:
-    no_trade_lines.append(
-        f"Since the last rebalance the portfolio had drifted to {breakdown.drifted:.1%} "
-        f"{equity_name}. Trading costs set a no-trade band of {_band(breakdown.band)} around "
-        f"it, so it traded only to the band's edge, {breakdown.equity:.1%}."
-    )
-elif breakdown.drifted is not None:
-    # No band to stop at: "a band of ±0.0%" and "the band's edge" described nothing.
-    no_trade_lines.append(
-        f"Since the last rebalance the portfolio had drifted to {breakdown.drifted:.1%} "
-        f"{equity_name}. There is no no-trade band at this rebalance, so it traded all the "
-        f"way back to its target, {breakdown.equity:.1%}."
-    )
-after_first = list(breakdowns.values())[1:]
-if after_first and not any(b.band > 0 for b in after_first):
-    # Saying "0 of 98 were held by the no-trade band" would suggest there was one.
-    why = (
-        f"level {risk_level} goes back to its lowest-risk mix whatever that costs"
-        if risk_level == optimize.RISK_LEVELS[-1]
-        else "the band is as wide as the weight a forecast can move per unit of trading "
-        "cost, and here that is nothing"
-    )
-    no_trade_lines.append(
-        f"None of the {len(after_first)} rebalances after the first had a no-trade band, so "
-        f"each traded to its target: {why}."
-    )
-elif after_first:
-    held = sum(b.held for b in after_first)
-    no_trade_lines.append(
-        f"{held} of {len(after_first)} rebalances after the first ({held / len(after_first):.0%}) "
-        "were held by the no-trade band."
-    )
-for line in no_trade_lines:
-    st.caption(line, help=glossary.term("No-trade band"))
-how_set += no_trade_lines
 
 # The weights beside how volatile each index has been, so a move towards bonds can
 # be read against the volatility that prompted it. Filled once the backtest is run.
@@ -415,8 +360,8 @@ except BacktestDataError as exc:
     st.warning(f"The allocation could not be backtested: {exc}", icon=":material/warning:")
     st.stop()
 
-# The same level and no-trade band with no forecasts, so what the forecasts added
-# can be read separately.
+# The same level with no forecasts, so what the forecasts added can be read
+# separately.
 no_forecast_backtest = page_cache.backtest(
     prices, optimize.schedule_weights(no_forecast_breakdowns)
 )
@@ -614,10 +559,9 @@ st.markdown(
     unsafe_allow_html=True,
 )
 st.caption(
-    f"{NO_FORECAST_COL} holds level {risk_level}'s target weight with no forecast, under the "
-    "same no-trade band, so the forecasts are the only difference between it and the "
-    "optimised portfolio. Difference is optimised minus benchmark: positive "
-    "favours the optimised portfolio "
+    f"{NO_FORECAST_COL} holds level {risk_level}'s target weight with no forecast, so the "
+    "forecasts are the only difference between it and the optimised portfolio. "
+    "Difference is optimised minus benchmark: positive favours the optimised portfolio "
     "on every row, drawdown included."
 )
 
@@ -701,8 +645,8 @@ st.markdown(
 )
 st.caption(
     f"{forecast_value.detail} {basis_label}. The test above, against the benchmark, also "
-    f"reflects level {risk_level}'s equity weight. This one has that weight and the no-trade "
-    "band on both sides, so the forecasts are the only difference.",
+    f"reflects level {risk_level}'s equity weight. This one has that weight on both "
+    "sides, so the forecasts are the only difference.",
     help=glossary.term("Forecast value t-statistic"),
 )
 

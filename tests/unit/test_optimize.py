@@ -13,6 +13,8 @@ from forecasting_engine.portfolio.optimize import (
     DEFAULT_RISK_LEVEL,
     DEFAULT_WEIGHT_BOUNDS,
     MIN_TRUST_HISTORY,
+    PREMIUM_PRIOR_ANNUAL,
+    PREMIUM_PRIOR_YEARS,
     RISK_LEVELS,
     OptimizeDataError,
     breakdowns_from,
@@ -440,15 +442,52 @@ def test_a_minimum_variance_weight_at_or_above_the_upper_bound_holds_that_bound(
 # --- the long-run premium -------------------------------------------------------------
 
 
-def test_the_premium_is_the_horizon_scaled_mean_of_every_day_to_date():
+PRIOR_DAYS = PREMIUM_PRIOR_YEARS * 252
+PRIOR_DAILY = PREMIUM_PRIOR_ANNUAL / 252
+
+
+def test_the_premium_is_the_prior_and_every_day_to_date_weighed_together():
     dates = pd.bdate_range("2024-01-02", periods=30)
     prices = _prices(dates, seed=5)
     daily = prices[EQUITY].pct_change() - prices[BOND].pct_change()
 
     premium = long_run_premium(prices, horizon=20)
 
-    assert premium[dates[15]] == pytest.approx(20 * daily.iloc[1:16].mean())
-    assert premium[dates[29]] == pytest.approx(20 * daily.iloc[1:].mean())
+    expected = (PRIOR_DAYS * PRIOR_DAILY + daily.iloc[1:16].sum()) / (PRIOR_DAYS + 15)
+    assert premium[dates[15]] == pytest.approx(20 * expected)
+
+
+def test_with_no_day_of_data_the_premium_is_the_prior():
+    dates = pd.bdate_range("2024-01-02", periods=5)
+
+    premium = long_run_premium(_prices(dates, seed=1), horizon=20)
+
+    assert premium[dates[0]] == pytest.approx(20 * PREMIUM_PRIOR_ANNUAL / 252)
+
+
+def test_after_as_many_days_as_the_prior_counts_for_the_two_weigh_equally():
+    dates = pd.bdate_range("1990-01-02", periods=PRIOR_DAYS + 1)
+    prices = _prices(dates, seed=2)
+    daily = (prices[EQUITY].pct_change() - prices[BOND].pct_change()).iloc[1:]
+
+    premium = long_run_premium(prices, horizon=5)
+
+    assert premium.iloc[-1] == pytest.approx(5 * (PRIOR_DAILY + daily.mean()) / 2)
+
+
+def test_a_crash_in_the_first_two_years_leaves_the_premium_positive():
+    """Equity loses 55% over two years while bond is flat: worse than 2007-09."""
+    dates = pd.bdate_range("2007-01-02", periods=505)
+    daily = 0.45 ** (1 / 504) - 1
+    prices = {
+        EQUITY: pd.Series(100 * (1 + daily) ** np.arange(505), index=dates),
+        BOND: pd.Series(100.0, index=dates),
+    }
+
+    premium = long_run_premium(prices, horizon=20)
+
+    assert (premium > 0).all()
+    assert premium.iloc[-1] < premium.iloc[0]
 
 
 def test_the_premium_never_reads_a_later_day():
@@ -517,27 +556,26 @@ def test_weight_schedule_skips_a_rebalance_with_a_missing_forecast():
 
 def test_with_no_trust_yet_the_schedule_holds_each_levels_no_forecast_weight():
     _dates, prices, forecasts = _schedule_inputs()
-    free = {EQUITY: 0.0, BOND: 0.0}
 
-    breakdowns = schedule_breakdowns(forecasts, prices, costs_bps=free, **_SCHEDULE_KWARGS)
+    breakdowns = schedule_breakdowns(forecasts, prices, **_SCHEDULE_KWARGS)
 
     assert all(b.forecast_tilt == 0.0 for b in breakdowns.values())
     assert all(b.equity == b.level_weight for b in breakdowns.values())
 
 
-# --- FYP-49: the no-trade band ---------------------------------------------------------
+# --- every rebalance trades to its target ---------------------------------------------
 
 
 def _rising_prices(dates, seed) -> dict:
-    """A clearly positive equity premium, so the band and the tilt are both live."""
+    """A clearly positive equity premium, so the tilt is live."""
     rng = np.random.default_rng(seed)
     equity = pd.Series(100 * np.cumprod(1 + rng.normal(0.003, 0.01, len(dates))), index=dates)
     bond = pd.Series(100 * np.cumprod(1 + rng.normal(0.0, 0.003, len(dates))), index=dates)
     return {EQUITY: equity, BOND: bond}
 
 
-def _unbanded(forecasts, prices) -> pd.Series:
-    """Each rebalance's bounded target on its own, as the optimiser set it before the band."""
+def _targets(forecasts, prices) -> pd.Series:
+    """Each rebalance's bounded target, solved on its own."""
     dates = common_rebalance_dates(prices, horizon=3, train_window=15, test_window=10, embargo=2)
     expected = expected_returns(dates, forecasts)
     premiums = long_run_premium(prices, horizon=3)
@@ -554,110 +592,38 @@ def _unbanded(forecasts, prices) -> pd.Series:
     )
 
 
-def _expected_band(date, prices, level: int) -> float:
-    """``c·(w*_L − w_mv)/π̄``, worked out from the covariance and the premium."""
-    cov = covariance_at_rebalance(date, prices, horizon=3, train_window=15, embargo=2)
-    d = cov.loc[EQUITY, EQUITY] - 2 * cov.loc[EQUITY, BOND] + cov.loc[BOND, BOND]
-    w_mv = (cov.loc[BOND, BOND] - cov.loc[EQUITY, BOND]) / d
-    premium = long_run_premium(prices, horizon=3)[date]
-    return (3.0 + 5.0) / 1e4 * (level_weight(level, cov) - w_mv) / premium
-
-
-def test_zero_costs_reproduce_the_unbanded_schedule_exactly():
+def test_every_rebalance_trades_straight_to_its_own_target():
     dates = pd.bdate_range("2024-01-02", periods=60)
     prices = _rising_prices(dates, seed=0)
     _, _, forecasts = _schedule_inputs()
-    free = {EQUITY: 0.0, BOND: 0.0}
 
-    schedule = weight_schedule(forecasts, prices, costs_bps=free, **_FULLY_TRUSTED)
+    schedule = weight_schedule(forecasts, prices, **_FULLY_TRUSTED)
 
     pd.testing.assert_series_equal(
-        schedule[EQUITY], _unbanded(forecasts, prices), check_names=False, check_freq=False
+        schedule[EQUITY], _targets(forecasts, prices), check_names=False, check_freq=False
     )
-    breakdowns = schedule_breakdowns(forecasts, prices, costs_bps=free, **_FULLY_TRUSTED)
-    assert not any(b.held for b in breakdowns.values())
 
 
-@pytest.mark.parametrize("level", [1, 2, 3, 4])
-def test_the_band_is_the_cost_times_the_distance_from_min_variance_over_the_premium(level):
-    dates = pd.bdate_range("2024-01-02", periods=60)
-    prices = _rising_prices(dates, seed=0)
-    forecasts = {EQUITY: pd.Series(0.0, index=dates), BOND: pd.Series(0.0, index=dates)}
-
-    breakdowns = schedule_breakdowns(forecasts, prices, risk_level=level, **_SCHEDULE_KWARGS)
-
-    for date, breakdown in list(breakdowns.items())[1:]:
-        assert breakdown.band == pytest.approx(_expected_band(date, prices, level))
-        assert breakdown.band > 0
-
-
-def test_the_band_is_zero_at_level_5():
-    dates = pd.bdate_range("2024-01-02", periods=60)
-    prices = _rising_prices(dates, seed=0)
-    forecasts = {EQUITY: pd.Series(0.0, index=dates), BOND: pd.Series(0.0, index=dates)}
-
-    breakdowns = schedule_breakdowns(forecasts, prices, risk_level=5, **_SCHEDULE_KWARGS)
-
-    assert all(b.band == 0.0 for b in breakdowns.values())
-
-
-def test_a_premium_at_or_below_zero_gives_no_band():
-    dates = pd.bdate_range("2024-01-02", periods=60)
-    rng = np.random.default_rng(0)
-    prices = {
-        EQUITY: pd.Series(100 * np.cumprod(1 + rng.normal(-0.005, 0.01, 60)), index=dates),
-        BOND: pd.Series(100 * np.cumprod(1 + rng.normal(0.0, 0.003, 60)), index=dates),
-    }
-    forecasts = {EQUITY: pd.Series(0.05, index=dates), BOND: pd.Series(0.0, index=dates)}
-
-    breakdowns = schedule_breakdowns(forecasts, prices, **_FULLY_TRUSTED)
-
-    premiums = long_run_premium(prices, horizon=3)
-    assert (premiums[list(breakdowns)] <= 0).all()
-    assert all(b.band == 0.0 and b.forecast_tilt == 0.0 for b in breakdowns.values())
-
-
-def _band_inputs():
-    """No signal at the first rebalance, a tiny one at the second, a large one at the
-    third: the level's weight, then a change too small to pay for, then one that is."""
+def test_a_small_signal_change_is_traded_and_charged_for():
+    """A change in target too small to be worth its cost is still traded: there is no
+    band to hold it, and the backtest charges the cost on what is traded."""
     dates = pd.bdate_range("2024-01-02", periods=60)
     prices = _rising_prices(dates, seed=0)
     equity = pd.Series(0.0, index=dates)
     equity.loc[dates[20] :] = 1e-6
-    equity.loc[dates[23] :] = 0.05
-    return dates, prices, {EQUITY: equity, BOND: pd.Series(0.0, index=dates)}
-
-
-def test_a_small_signal_change_is_held_and_a_large_one_moves_to_the_band_edge():
-    dates, prices, forecasts = _band_inputs()
+    forecasts = {EQUITY: equity, BOND: pd.Series(0.0, index=dates)}
 
     breakdowns = schedule_breakdowns(forecasts, prices, **_FULLY_TRUSTED)
-    first, small, large = (breakdowns[dates[i]] for i in (17, 20, 23))
-
-    assert (first.equity, first.drifted, first.held) == (first.level_weight, None, False)
-
-    assert small.band == pytest.approx(_expected_band(dates[20], prices, 3))
-    assert abs(small.bounded - small.drifted) <= small.band
-    assert small.held and small.equity == small.drifted
-
-    assert large.bounded == DEFAULT_WEIGHT_BOUNDS[1]
-    assert large.bounded - large.drifted > large.band
-    assert not large.held
-    assert large.equity == pytest.approx(large.bounded - large.band)
-
-
-def test_a_held_rebalance_trades_nothing_in_the_backtest():
-    dates, prices, forecasts = _band_inputs()
-
     backtest = run_backtest(prices, weight_schedule(forecasts, prices, **_FULLY_TRUSTED))
 
-    assert backtest.optimised.turnover[dates[20]] == pytest.approx(0.0, abs=1e-12)
-    assert backtest.optimised.turnover[dates[23]] > 0
+    assert breakdowns[dates[20]].forecast_tilt > 0
+    assert backtest.optimised.turnover[dates[20]] > 0
+    assert backtest.optimised.costs[dates[20]] > 0
 
 
 def test_drift_past_a_bound_is_traded_back_to_exactly_that_bound():
     # Equity rises while bond is flat, so 80/20 drifts to about 82% equity. The
-    # signals still ask for 80%, within the band, but the bound wins.
+    # signals still ask for 80%, and the rebalance trades back to it.
     dates = pd.bdate_range("2024-01-02", periods=60)
     rng = np.random.default_rng(3)
     equity = 100 * np.cumprod(1 + rng.normal(0.003, 0.01, 60))
@@ -669,14 +635,9 @@ def test_drift_past_a_bound_is_traded_back_to_exactly_that_bound():
     forecasts = {EQUITY: pd.Series(0.05, index=dates), BOND: pd.Series(0.0, index=dates)}
 
     breakdowns = schedule_breakdowns(forecasts, prices, **_FULLY_TRUSTED)
-    first, second = breakdowns[dates[17]], breakdowns[dates[20]]
-
-    assert first.equity == DEFAULT_WEIGHT_BOUNDS[1]
-    assert second.drifted > DEFAULT_WEIGHT_BOUNDS[1]
-    assert abs(second.bounded - second.drifted) <= second.band  # the band alone would hold
-    assert not second.held
-    assert second.equity == DEFAULT_WEIGHT_BOUNDS[1]
     backtest = run_backtest(prices, weight_schedule(forecasts, prices, **_FULLY_TRUSTED))
+
+    assert breakdowns[dates[17]].equity == breakdowns[dates[20]].equity == DEFAULT_WEIGHT_BOUNDS[1]
     assert backtest.optimised.turnover[dates[20]] > 0
     assert backtest.optimised.costs[dates[20]] > 0
 
@@ -964,13 +925,12 @@ def test_a_schedule_with_a_rejected_slope_is_the_no_forecast_level():
     assert any(b.forecast_tilt != 0 for b in ungated.values())
 
 
-def test_the_no_forecast_level_keeps_the_no_trade_band():
+def test_the_no_forecast_level_holds_the_levels_own_weight():
     prices, signals, kwargs = _weak_schedule_inputs()
 
     breakdowns = list(schedule_breakdowns(signals, prices, trust=0.0, **kwargs).values())
 
-    assert all(b.forecast_tilt == 0 for b in breakdowns)
-    assert any(b.held for b in breakdowns)
+    assert all(b.forecast_tilt == 0 and b.equity == b.level_weight for b in breakdowns)
 
 
 @pytest.mark.parametrize("bounds", [(0.2, 0.8), (0.1, 0.9)])
@@ -1041,7 +1001,6 @@ def test_a_trust_passed_in_replaces_the_estimate_at_every_rebalance():
 
 def test_switching_an_equity_model_moves_the_weights_when_the_trust_is_given():
     _dates, prices, signals, kwargs = _skilful_inputs()
-    kwargs = {**kwargs, "costs_bps": {EQUITY: 0.0, BOND: 0.0}}
     up = {EQUITY: signals[EQUITY] * 0 + 0.005, BOND: signals[BOND]}
     down = {EQUITY: signals[EQUITY] * 0 - 0.005, BOND: signals[BOND]}
 
@@ -1055,7 +1014,7 @@ def test_switching_an_equity_model_moves_the_weights_when_the_trust_is_given():
 # --- FYP-246: solving one rebalance again on a different signal ----------------------
 
 
-def test_solve_inputs_reproduce_each_rebalance_target_before_the_no_trade_band():
+def test_solve_inputs_reproduce_each_rebalance_target():
     dates, prices, signals, kwargs = _skilful_inputs()
 
     breakdowns = schedule_breakdowns(signals, prices, **kwargs)
@@ -1070,7 +1029,7 @@ def test_solve_inputs_reproduce_each_rebalance_target_before_the_no_trade_band()
             train_window=kwargs["train_window"],
             embargo=kwargs["embargo"],
         )
-        assert inputs.solve().equity == pytest.approx(breakdowns[date].bounded)
+        assert inputs.solve().equity == pytest.approx(breakdowns[date].equity)
 
 
 def test_a_higher_equity_signal_re_solves_to_more_equity_once_trusted():
@@ -1128,17 +1087,6 @@ def test_a_schedule_solved_from_kept_inputs_is_the_schedule_solved_on_its_own():
                 assert breakdowns_from(inputs, **settings) == alone
 
 
-def test_the_kept_inputs_follow_the_costs_given_when_a_level_is_solved():
-    _dates, prices, signals, kwargs = _skilful_inputs()
-    inputs = schedule_inputs(signals, prices, **kwargs)
-    free = {EQUITY: 0.0, BOND: 0.0}
-
-    unbanded = breakdowns_from(inputs, costs_bps=free)
-
-    assert unbanded == schedule_breakdowns(signals, prices, costs_bps=free, **kwargs)
-    assert not any(b.held for b in unbanded.values())
-
-
 def test_inputs_built_without_a_trust_estimate_need_a_trust_given():
     _dates, prices, signals, kwargs = _skilful_inputs()
     inputs = schedule_inputs(signals, prices, estimate_trust=False, **kwargs)
@@ -1183,7 +1131,7 @@ def test_no_rebalance_to_solve_gives_no_schedule():
 
     inputs = schedule_inputs(signals, prices, **_SCHEDULE_KWARGS)
 
-    assert not inputs.rebalances and inputs.daily_returns.empty
+    assert not inputs.rebalances
     assert breakdowns_from(inputs) == {}
 
 
