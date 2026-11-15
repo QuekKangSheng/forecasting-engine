@@ -44,6 +44,12 @@ def _ml(panel):
     return result
 
 
+def _same(a: float, b: float) -> bool:
+    """Equal, or both undefined: a model that forecasts one value in every fold
+    has no signal to rank, so its Signal Rank IC is NaN each time it is run."""
+    return bool(a == b or (a != a and b != b))
+
+
 def test_ml_alone_and_ml_with_every_other_model_score_identically():
     panel = _panel()
     alone = _ml(panel)
@@ -54,7 +60,9 @@ def test_ml_alone_and_ml_with_every_other_model_score_identically():
     together = _ml(panel)
     derived_after_ml, _ = run_derived_polynomial(panel, _derived_splitter())
 
+    pd.testing.assert_series_equal(together.forecast, alone.forecast)
     assert together.oos_rank_ic == alone.oos_rank_ic
-    assert together.signal_rank_ic == alone.signal_rank_ic
+    assert _same(together.signal_rank_ic, alone.signal_rank_ic)
+    pd.testing.assert_series_equal(derived_after_ml.forecast, derived.forecast)
     assert derived_after_ml.oos_rank_ic == derived.oos_rank_ic
-    assert derived_after_ml.signal_rank_ic == derived.signal_rank_ic
+    assert _same(derived_after_ml.signal_rank_ic, derived.signal_rank_ic)

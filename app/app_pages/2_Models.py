@@ -178,8 +178,10 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 #: derived grid reaches degree 5, adds the shrinkage fit, and trains equity on
 #: every earlier date. 4: every model trains on the latest 504 dates, and machine
 #: learning tunes on 252-row folds inside its tuning period. 5: every model
-#: but the naive baseline is gated on Signal Rank IC and t.
-RESULT_VERSION = 5
+#: but the naive baseline is gated on Signal Rank IC and t. 6: every model's Signal
+#: Rank IC and baseline are measured against its own level, and the standard error
+#: for overlapping labels counts every lag in full.
+RESULT_VERSION = 6
 
 st.set_page_config(
     page_title="Models · Forecasting Engine", page_icon=":material/functions:", layout="wide"

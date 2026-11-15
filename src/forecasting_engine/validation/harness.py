@@ -95,6 +95,13 @@ class FoldResult:
     ``evaluate()`` ran without screening."""
     horizon: int = 1
     """The panel's label horizon, which sets how far apart errors stay correlated."""
+    own_level: float | None = None
+    """The level this fold's forecasts are judged against: the model's mean in-sample
+    forecast over the fold's training rows. For a least-squares fit with an intercept
+    that is the training-mean target; for a model whose level is its own (one
+    taken from other rows) it is not. ``None`` on a fold
+    built without one, which is judged against its training-mean target
+    (``fold_baseline``)."""
 
 
 def evaluate(
@@ -157,9 +164,22 @@ def evaluate(
                 description=forecaster.describe(),
                 screening=screening,
                 horizon=panel.horizon,
+                own_level=_own_level(predicted_train),
             )
         )
     return tuple(results)
+
+
+def _own_level(predicted_train: pd.Series) -> float:
+    """A forecaster's mean in-sample forecast, over the training rows it forecast, or
+    NaN if it forecast none. A forecast that is one value throughout is that value
+    exactly, not a mean carrying rounding dust, so a fold that forecasts it everywhere
+    adds exactly zero signal."""
+    values = predicted_train.dropna()
+    if values.empty:
+        return float("nan")
+    first = float(values.iloc[0])
+    return first if bool((values == first).all()) else float(values.mean())
 
 
 def _training_mean_fold(
@@ -184,6 +204,7 @@ def _training_mean_fold(
         description=ModelDescription(name=TRAINING_MEAN, terms=(), coefficients=(), intercept=mean),
         screening=screening,
         horizon=panel.horizon,
+        own_level=mean,
     )
 
 
@@ -197,16 +218,16 @@ def summarize(
     Pooling scores one long out-of-sample series rather than averaging short,
     noisy per-fold scores. Each fold's predictions come from its own fit, so a
     pooled Pearson IC mixes those fits' scales; Rank IC does not care about
-    scale. Two Newey-West standard errors of each pooled Rank IC are reported:
-    one over h - 1 lags, for the overlap between neighbouring h-day labels, and
-    one over as many lags as a test window has rows, for errors a fold's single
-    fit shares.
+    scale. Two standard errors of each pooled Rank IC are reported: one over
+    h - 1 lags counted in full (Hansen-Hodrick), for the overlap between
+    neighbouring h-day labels, and a Newey-West one over as many lags as a test
+    window has rows, for errors a fold's single fit shares.
 
     The gates read the Signal Rank IC, the pooled Rank IC of what the signals
-    add to each fold's training-mean return (``signal_forecasts``), and its t. The
-    plain pooled Rank IC also scores the forecast's level, which shifts with
-    each fold's training mean whatever the signals say, so a model with no
-    signal can score there and one with a real signal can be swamped there.
+    add to each fold's own level (``signal_forecasts``), and its t. The plain
+    pooled Rank IC also scores the forecast's level, which shifts from fold to
+    fold whatever the signals say, so a model with no signal can score there and
+    one with a real signal can be swamped there.
 
     Requires at least one fold. Callers should check ``evaluate()``'s output is
     non-empty themselves and raise their own domain-appropriate error message
@@ -220,7 +241,9 @@ def summarize(
     result = ModelRunResult(
         ic=metrics.ic(predicted, realised),
         oos_rank_ic=metrics.rank_ic(predicted, realised),
-        oos_rank_ic_se=metrics.rank_ic_se(predicted, realised, lags=folds[0].horizon - 1),
+        oos_rank_ic_se=metrics.rank_ic_se(
+            predicted, realised, lags=folds[0].horizon - 1, overlap=True
+        ),
         oos_rank_ic_se_test=metrics.rank_ic_se(predicted, realised, lags=test_window_lags),
         rmse=metrics.rmse(predicted, realised),
         crash=_crash_over_folds(folds),
@@ -234,7 +257,9 @@ def summarize(
         forecast=predicted,
         realised=realised,
         signal_rank_ic=metrics.rank_ic(signal, realised),
-        signal_rank_ic_se=metrics.rank_ic_se(signal, realised, lags=folds[0].horizon - 1),
+        signal_rank_ic_se=metrics.rank_ic_se(
+            signal, realised, lags=folds[0].horizon - 1, overlap=True
+        ),
         signal_rank_ic_se_test=metrics.rank_ic_se(signal, realised, lags=test_window_lags),
         baseline=predicted - signal,
     )
@@ -260,21 +285,32 @@ def select_best_candidate(per_candidate: dict[str, tuple[FoldResult, ...]]) -> s
 
 
 def fold_baseline(fold: FoldResult) -> float:
-    """The fold's training-window mean target: what the naive baseline forecasts
-    for it, and so the level a forecast is judged relative to."""
+    """The level a fold's forecasts are judged relative to: the model's own, its mean
+    in-sample forecast (``FoldResult.own_level``). A fold with none recorded, or with
+    no in-sample forecast to take one from, is judged against its training-window
+    mean target, which is what the naive baseline forecasts for it."""
+    if fold.own_level is not None and fold.own_level == fold.own_level:  # not NaN
+        return fold.own_level
     return float(fold.realised_train.mean())
 
 
 def signal_forecasts(folds: tuple[FoldResult, ...]) -> pd.Series:
-    """Every fold's test predictions less that fold's training-window mean target,
-    end to end: what the signals add to the naive forecast.
+    """Every fold's test predictions less that fold's own level (``fold_baseline``),
+    end to end: what the signals add to the forecast the model makes on average.
 
-    A forecast's level moves with its fold's training mean whatever the signals
-    say, and on daily equity data that trailing mean ranks future returns the
-    wrong way (returns mean-revert). Scored pooled, the level can swamp a real
-    signal or pass one that has none. Taking the training mean away leaves what
-    the model itself contributes. A fold that forecasts its training mean
-    contributes exactly zero.
+    A forecast's level is not skill, and scored pooled it can swamp a real signal
+    or pass a forecast that has none: the level differs from fold to fold, and on
+    daily equity data the trailing mean return ranks future returns the wrong way
+    (returns mean-revert). Taking each fold's level away leaves what the signals
+    say within it.
+
+    The level taken away is the model's own, its mean in-sample forecast. For a
+    least-squares fit with an intercept that is the fold's training-mean target,
+    to within rounding. Taking the training mean off every model instead scores
+    any gap between a model's level and that mean as skill: on the Sep 2026 data
+    a forecast of zero every day had a Signal Rank IC of +0.21, t 3.0, and
+    passed both gates, and rounding alone moved the derived polynomial's figure
+    by 0.01. A fold that forecasts one value throughout contributes exactly zero.
     """
     return pd.concat([f.predicted - fold_baseline(f) for f in folds])
 
