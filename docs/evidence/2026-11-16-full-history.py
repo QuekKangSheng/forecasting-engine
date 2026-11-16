@@ -3,8 +3,11 @@
 1. Every model's Signal Rank IC and t, for each target and horizon, and whether it
    passes the gates; the research models' pre-2016 hold-out.
 2. The portfolio per risk level against 50/50 and against the same level with no
-   forecasts, at each horizon. The active model is the derived polynomial for both
-   equity and bond, as in the optimiser evidence (decided before any result).
+   forecasts, at each horizon, for two model pairs: the team's Sprint 4 default
+   (derived polynomial for equity, machine learning for bond), the main result, and
+   the derived polynomial for both. Both were run before the Sprint 4 pair was made
+   the main result. Then the same backtests with ``β̂`` used whatever its t (still
+   zero before 252 pairs), as a diagnostic.
 3. Descriptive only, changing nothing: why the 20-day trust gate opens 3 times here
    against 26 in the 1 Nov file. Two model pairs (1 Nov's: derived polynomial for
    equity, machine learning for bond; and the derived polynomial for both) on two
@@ -71,7 +74,7 @@ NAMES = {
 }
 OLD, NEW = "Sep 2026 upload", "from 31 Aug 2006"
 PAIRINGS = {
-    "1 Nov pair (derived equity, ML bond)": {EQUITY: "derived", BOND: "ml"},
+    "Sprint 4 default (derived equity, ML bond)": {EQUITY: "derived", BOND: "ml"},
     "derived for both": {EQUITY: "derived", BOND: "derived"},
 }
 
@@ -223,7 +226,7 @@ def prices_of(bundle: dict) -> dict[TargetRole, pd.Series]:
     return {role: indexed[targets[role]].dropna() for role in (EQUITY, BOND)}
 
 
-def schedule(results, label, pairing, prices, horizon):
+def schedule(results, label, pairing, prices, horizon, *, gate=2.0):
     signals = {
         role: results[(label, role, model, horizon)].signal.dropna()
         for role, model in pairing.items()
@@ -240,6 +243,7 @@ def schedule(results, label, pairing, prices, horizon):
         train_window=TRAIN_WINDOW,
         test_window=TEST_WINDOW,
         embargo=EMBARGO_DAYS,
+        trust_gate=gate,
     )
     pairs = optimize.trust_pairs(signals, baselines, prices, horizon=horizon)
     return inputs, pairs
@@ -261,19 +265,39 @@ def no_forecast_t(runs) -> str:
 def portfolio_section(results, prices) -> None:
     print("## 2. Portfolio per risk level\n")
     print(
-        "Derived polynomial active for both indices. Net of 3 bp equity and 5 bp bond on "
-        "what each rebalance trades; turnover and costs a year leave out the first "
-        "allocation.\n"
+        "Each pair's levels, then 50/50. Net of 3 bp equity and 5 bp bond on what each "
+        "rebalance trades; turnover and costs a year leave out the first allocation. The "
+        "first pair is the main result.\n"
     )
     for h in HORIZONS:
-        inputs, _ = schedule(results, NEW, PAIRINGS["derived for both"], prices, h)
-        dates = list(inputs.rebalances)
-        runs = fixes.run_levels(inputs, prices, h)
-        print(
-            f"### h = {h}: {len(dates):,} rebalances, {day(dates[0])} to {day(dates[-1])}; "
-            f"trust gate open at {opened(inputs)}\n"
-        )
-        table(fixes.LEVEL_HEADER, fixes.level_rows(runs, "") + [fixes.benchmark_row(runs[3][0][1])])
+        rows, notes, dates = [], [], []
+        for name, pairing in PAIRINGS.items():
+            inputs, _ = schedule(results, NEW, pairing, prices, h)
+            dates = list(inputs.rebalances)
+            runs = fixes.run_levels(inputs, prices, h)
+            rows += fixes.level_rows(runs, name)
+            notes.append(f"{name}: trust gate open at {opened(inputs)}")
+        rows.append(fixes.benchmark_row(runs[3][0][1]))
+        print(f"### h = {h}: {len(dates):,} rebalances, {day(dates[0])} to {day(dates[-1])}\n")
+        print("; ".join(notes) + ".\n")
+        table(fixes.LEVEL_HEADER, rows)
+
+    print("## 2b. Diagnostic: the trust gate ignored\n")
+    print(
+        "The same backtests with β̂ used whatever its t: the slope clipped to [0, 1] as "
+        "soon as 252 pairs are known. The product never does this; it shows what the gate "
+        "is holding back. t vs no forecasts compares each level with itself at β̂ = 0.\n"
+    )
+    for h in HORIZONS:
+        rows, notes = [], []
+        for name, pairing in PAIRINGS.items():
+            inputs, _ = schedule(results, NEW, pairing, prices, h, gate=-np.inf)
+            runs = fixes.run_levels(inputs, prices, h)
+            rows += fixes.level_rows(runs, name)
+            notes.append(f"{name}: β̂ above zero at {opened(inputs)}")
+        print(f"### h = {h}, ungated\n")
+        print("; ".join(notes) + ".\n")
+        table(fixes.LEVEL_HEADER, rows)
 
 
 # ── 3. The gate breakdown ────────────────────────────────────────────────────

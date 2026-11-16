@@ -168,7 +168,9 @@ On the Bloomberg data from 31 Aug 2006 to Nov 2026 (16 Nov 2026 rerun):
   misses at the default 20 days (t 1.98).
 - No bond model passes at any horizon.
 - The optimiser's risk levels behave as designed, but the forecasts add no
-  value after costs at any horizon.
+  value after costs at any horizon. With the team's default pair (derived
+  equity, machine-learning bond) they cost significantly at the 5-day horizon,
+  and ignoring the trust gate makes every horizon worse.
 
 See [methodology §20](docs/methodology.md) and
 [the evidence](docs/evidence/2026-11-16-full-history.md).

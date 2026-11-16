@@ -2,9 +2,13 @@
 
 Phase 5, task 1 of the 15 Nov plan: the final rerun on the Bloomberg history from 31 Aug 2006, after Phases 1–4 (main at 02a8f7f). Produced by `docs/evidence/2026-11-16-full-history.py`. The script reads the 11 exports and merges them as the Data page does (the files' SHA-256 are listed below). It fits every model through the functions the Models page's runners call, at the page's defaults: tuning 504 rows, train 504, test 20, embargo 20.
 
-**Active models, decided before any result was seen.** The portfolio uses the derived polynomial for both equity and bond, as in the optimiser evidence (`2026-11-16-optimiser-fixes.md`). Neither research model is used, because both scored about zero on their pre-2016 hold-out.
+**Which model pair is the main result, and when that was decided.** The portfolio is reported for two model pairs:
+- the team's Sprint 4 default, the derived polynomial for equity with machine learning for bond, which is the main result;
+- the derived polynomial for both indices, beside it.
 
-Section 3 is descriptive only and changed nothing.
+The derived-for-both pair was chosen before any result was seen and was the only pair in this file's first version (and in `2026-11-16-optimiser-fixes.md`). **Toby made the Sprint 4 pair the main result on 16 Nov 2026, after both pairs had been run and their results seen.** The Sprint 4 pair's portfolio had already been computed at h = 5 and 20 in section 3, and the derived pair's at every horizon. That choice is therefore made after the results. Both pairs are shown in full, and neither is presented as an independent test. Neither research model is used, because both scored about zero on their pre-2016 hold-out.
+
+Section 2b, the backtests with the trust gate ignored, is a diagnostic. The product never runs without the gate. Section 3 is descriptive only. Nothing in either changed any rule.
 
 ## Summary
 
@@ -20,23 +24,56 @@ Section 3 is descriptive only and changed nothing.
 - **Fama-French 5 fails everywhere.**
 - **The research models score near zero on their pre-2016 hold-out at every horizon,** with t between −0.44 and +0.65. Their full-period passes for equity at h = 1 and 5 come from the years their inputs were chosen on.
 
-### The portfolio (derived polynomial for both)
+### The portfolio: main result, Sprint 4 default pair (derived equity, ML bond)
 
-- **Each level against 50/50.** The t-statistics mostly reflect equity weight:
-  - levels 1–3 hold more equity and beat 50/50 at every horizon except level 3 at h = 5;
-  - levels 4 and 5 hold less and trail it.
-- **Net Sharpe.** It rises from level 1 (0.78–0.80) to level 5 (1.03–1.05), against 0.88 for 50/50.
-- **The forecasts add no value at any horizon:**
-  - **h = 1 and h = 10:** the gate never opens, so the paths are identical;
-  - **h = 5:** t is −1.10 to −1.38;
-  - **h = 20:** t is +0.01 to +0.05.
-- **Costs** are at most 0.06% a year.
+| h | gate open | t vs no forecasts, levels 1–4 | net Sharpe, levels 1 → 5 | costs a year, levels 1–4 |
+|---|---|---|---|---|
+| 1 | 0 of 4,520 | identical paths | 0.79 → 1.04 | 0.026–0.041% |
+| 5 | 184 of 904 | **−3.10**, **−2.84**, −1.81, −1.03 | 0.74 → 1.03 | 0.109–0.130% |
+| 10 | 0 of 452 | identical paths | 0.79 → 1.04 | 0.008–0.012% |
+| 20 | 92 of 226 | −1.44, −1.17, −0.73, −0.15 | 0.76 → 1.05 | 0.061–0.082% |
+
+50/50 earns a net Sharpe of 0.88.
+
+- **The forecasts add no value at any horizon, and at h = 5 they cost significantly at levels 1 and 2** (t −3.10 and −2.84). They tilt the portfolio at 184 rebalances there, and the extra trading roughly doubles turnover (274–324% a year, against 145–150% for the derived pair). Costs stay small, at most 0.13% a year. The loss comes from the tilts themselves, not from costs.
+- **At h = 20 the gate is open at 92 of 226 rebalances, against 3 for the derived pair,** and every level 1–4 does worse than with no forecasts. None of those differences is significant.
+- **At h = 1 and 10 the gate never opens, so both pairs give identical portfolios.** At level 5 the forecasts are ignored by design.
+- **Against 50/50, the levels' t mostly reflects their equity weight,** as for the derived pair.
+
+### Beside it: the derived polynomial for both
+
+| h | gate open | t vs no forecasts, levels 1–4 |
+|---|---|---|
+| 1 | 0 of 4,520 | identical paths |
+| 5 | 137 of 904 | −1.10 to −1.38 |
+| 10 | 0 of 452 | identical paths |
+| 20 | 3 of 226 | +0.01 to +0.05 |
+
+Net Sharpe runs from 0.78–0.80 at level 1 to 1.03–1.05 at level 5. Costs are at most 0.06% a year.
+
+### Diagnostic: the trust gate ignored (section 2b)
+
+With β̂ used whatever its t, from 252 pairs on, the forecasts tilt at most rebalances. They add no value for either pair at any horizon, and at the short horizons they cost a great deal:
+
+| h | Sprint 4 pair: t vs no forecasts, levels 1–4 | derived for both | costs a year, levels 1–4 |
+|---|---|---|---|
+| 1 | **−4.37**, **−3.83**, **−3.00**, −1.62 | **−5.00**, **−4.50**, **−3.55**, −1.98 | 1.9–3.0% |
+| 5 | **−3.54**, **−2.64**, −1.19, +0.04 | **−2.00**, −1.04, +0.06, +0.46 | 0.19–0.50% |
+| 10 | **−2.37**, −1.61, −1.00, −0.67 | −0.20, −1.01, −1.01, −1.00 | 0.01–0.10% |
+| 20 | **−3.10**, −1.86, −0.01, +1.56 | **−2.58**, −1.56, −0.12, +0.76 | 0.10–0.16% |
+
+Bold marks t beyond ±2. No level at any horizon has t above +2. The best is the Sprint 4 pair at level 4, h = 20, with t +1.56.
+
+- **At h = 1** the ungated tilts trade 48 to 76 times the portfolio a year, which costs 2–3% a year.
+- **At h = 20** costs are small (0.10–0.16%) and the result is still negative at levels 1–2.
+
+The gate is not hiding forecast value: opening it costs more than keeping it shut.
 
 ### Why the 20-day gate opens 3 times here against 26 on 1 Nov
 
 | models | Sep 2026 upload (99 rebalances) | from 31 Aug 2006 (226) |
 |---|---|---|
-| 1 Nov pair: derived equity, ML bond | 19 open; t vs no forecasts −1.16 to +1.07 | 92 open; −1.44 to −0.15 |
+| Sprint 4 pair: derived equity, ML bond | 19 open; t vs no forecasts −1.16 to +1.07 | 92 open; −1.44 to −0.15 |
 | derived for both | 2 open; −0.26 to −0.13 | 3 open; +0.01 to +0.05 |
 
 - **The bond model accounts for most of the difference, not the longer history.** With machine learning for bond, as on 1 Nov, the gate opens about as often or more on the longer history (19 of 99 on the Sep 2026 upload, 92 of 226 on the data from 2006). With the derived polynomial for both, it opens 2 and 3 times.
@@ -51,8 +88,8 @@ Only partly, and only for the derived pair at h = 20. Starting the trust pairs o
 |---|---|---|---|
 | derived for both | 20 | 3 → 21 of 226 | +0.01 to +0.05 → −0.69 to +0.46 |
 | derived for both | 5 | 137 → 105 of 904 | −1.10 to −1.38 → −1.30 to −1.60 |
-| 1 Nov pair | 20 | 92 → 79 of 226 | −0.15 to −1.44 → −0.18 to −1.76 |
-| 1 Nov pair | 5 | 184 → 0 of 904 | −1.03 to −3.10 → identical paths |
+| Sprint 4 pair | 20 | 92 → 79 of 226 | −0.15 to −1.44 → −0.18 to −1.76 |
+| Sprint 4 pair | 5 | 184 → 0 of 904 | −1.03 to −3.10 → identical paths |
 
 - **The years on their own:**
   - **At h = 20,** the derived pair's 2008 slope (Oct–Dec only) is −0.52 at t −2.03; 2009's is +0.43 at t 0.53.
@@ -63,7 +100,7 @@ Only partly, and only for the derived pair at h = 20. Starting the trust pairs o
 
 ### Runtime
 
-All 42 fits took 1,309 s wall-clock, measured locally with 8 at a time. The per-fit seconds in section 1 are slower than a fit alone.
+All 42 fits took 1,336 s wall-clock on the rerun (1,309 s on the first run), measured locally with 8 at a time. The per-fit seconds in section 1 are slower than a fit alone.
 
 ## Full output
 
@@ -87,7 +124,7 @@ Merged: 5,271 rows, 31 Aug 2006 to 12 Nov 2026, 13 columns, content hash (`inges
 
 Sep 2026 upload (`data/last_commit.pkl`): content hash `58c06ef5d94b5736daeff9895ff8f7a75b181236f0bbfc80354836f6d49d51ba`.
 
-All 42 fits: 1309 s wall-clock.
+All 42 fits: 1336 s wall-clock.
 
 ## 1. Every model, each target and horizon
 
@@ -101,22 +138,22 @@ Signal Rank IC and t (the Signal Rank IC over the larger of its two standard err
 | Naive (training mean) | 5 | +nan | nan | 4,540 | not gated | 4 s |
 | Naive (training mean) | 10 | +nan | nan | 4,540 | not gated | 4 s |
 | Naive (training mean) | 20 | +nan | nan | 4,537 | not gated | 4 s |
-| Polynomial (derived) | 1 | +0.0331 | 2.10 | 4,540 | passes | 369 s |
-| Polynomial (derived) | 5 | +0.0833 | 3.20 | 4,540 | passes | 406 s |
-| Polynomial (derived) | 10 | +0.1041 | 2.84 | 4,540 | passes | 408 s |
-| Polynomial (derived) | 20 | +0.1032 | 1.98 | 4,537 | fails t | 420 s |
-| Polynomial, research | 1 | +0.0334 | 2.11 | 4,540 | passes | 157 s |
-| Polynomial, research | 5 | +0.0679 | 2.10 | 4,540 | passes | 146 s |
-| Polynomial, research | 10 | +0.0499 | 1.09 | 4,540 | fails t | 138 s |
+| Polynomial (derived) | 1 | +0.0331 | 2.10 | 4,540 | passes | 379 s |
+| Polynomial (derived) | 5 | +0.0833 | 3.20 | 4,540 | passes | 414 s |
+| Polynomial (derived) | 10 | +0.1041 | 2.84 | 4,540 | passes | 431 s |
+| Polynomial (derived) | 20 | +0.1032 | 1.98 | 4,537 | fails t | 423 s |
+| Polynomial, research | 1 | +0.0334 | 2.11 | 4,540 | passes | 160 s |
+| Polynomial, research | 5 | +0.0679 | 2.10 | 4,540 | passes | 149 s |
+| Polynomial, research | 10 | +0.0499 | 1.09 | 4,540 | fails t | 140 s |
 | Polynomial, research | 20 | +0.0706 | 1.10 | 4,537 | fails t | 128 s |
-| Machine learning | 1 | +0.0279 | 1.71 | 4,540 | fails t | 534 s |
-| Machine learning | 5 | +0.0676 | 2.34 | 4,540 | passes | 581 s |
-| Machine learning | 10 | +0.0968 | 2.48 | 4,540 | passes | 560 s |
-| Machine learning | 20 | +0.0822 | 1.71 | 4,537 | fails t | 529 s |
-| Fama-French 5 | 1 | -0.0058 | -0.35 | 4,528 | fails signal_rank_ic and t | 7 s |
+| Machine learning | 1 | +0.0279 | 1.71 | 4,540 | fails t | 555 s |
+| Machine learning | 5 | +0.0676 | 2.34 | 4,540 | passes | 593 s |
+| Machine learning | 10 | +0.0968 | 2.48 | 4,540 | passes | 567 s |
+| Machine learning | 20 | +0.0822 | 1.71 | 4,537 | fails t | 541 s |
+| Fama-French 5 | 1 | -0.0058 | -0.35 | 4,528 | fails signal_rank_ic and t | 8 s |
 | Fama-French 5 | 5 | +0.0208 | 1.27 | 4,528 | fails t | 8 s |
 | Fama-French 5 | 10 | -0.0028 | -0.17 | 4,528 | fails signal_rank_ic and t | 8 s |
-| Fama-French 5 | 20 | -0.0125 | -0.83 | 4,528 | fails signal_rank_ic and t | 7 s |
+| Fama-French 5 | 20 | -0.0125 | -0.83 | 4,528 | fails signal_rank_ic and t | 8 s |
 
 ### Bond
 
@@ -126,18 +163,18 @@ Signal Rank IC and t (the Signal Rank IC over the larger of its two standard err
 | Naive (training mean) | 5 | +nan | nan | 4,560 | not gated | 4 s |
 | Naive (training mean) | 10 | +nan | nan | 4,555 | not gated | 4 s |
 | Naive (training mean) | 20 | +nan | nan | 4,545 | not gated | 4 s |
-| Polynomial (derived) | 1 | +0.0286 | 1.84 | 4,560 | fails t | 367 s |
-| Polynomial (derived) | 5 | +0.0304 | 1.00 | 4,560 | fails t | 430 s |
-| Polynomial (derived) | 10 | +0.0206 | 0.48 | 4,555 | fails t | 428 s |
-| Polynomial (derived) | 20 | +0.0305 | 0.49 | 4,545 | fails t | 397 s |
-| Polynomial, research | 1 | +0.0031 | 0.20 | 4,560 | fails signal_rank_ic and t | 78 s |
-| Polynomial, research | 5 | +0.0201 | 0.60 | 4,560 | fails t | 77 s |
-| Polynomial, research | 10 | +0.0385 | 0.78 | 4,555 | fails t | 72 s |
+| Polynomial (derived) | 1 | +0.0286 | 1.84 | 4,560 | fails t | 379 s |
+| Polynomial (derived) | 5 | +0.0304 | 1.00 | 4,560 | fails t | 433 s |
+| Polynomial (derived) | 10 | +0.0206 | 0.48 | 4,555 | fails t | 447 s |
+| Polynomial (derived) | 20 | +0.0305 | 0.49 | 4,545 | fails t | 405 s |
+| Polynomial, research | 1 | +0.0031 | 0.20 | 4,560 | fails signal_rank_ic and t | 80 s |
+| Polynomial, research | 5 | +0.0201 | 0.60 | 4,560 | fails t | 78 s |
+| Polynomial, research | 10 | +0.0385 | 0.78 | 4,555 | fails t | 73 s |
 | Polynomial, research | 20 | +0.0661 | 0.99 | 4,545 | fails t | 70 s |
-| Machine learning | 1 | +0.0189 | 1.30 | 4,560 | fails signal_rank_ic and t | 549 s |
-| Machine learning | 5 | +0.0133 | 0.54 | 4,560 | fails signal_rank_ic and t | 527 s |
-| Machine learning | 10 | -0.0173 | -0.46 | 4,555 | fails signal_rank_ic and t | 522 s |
-| Machine learning | 20 | +0.0449 | 0.88 | 4,545 | fails t | 465 s |
+| Machine learning | 1 | +0.0189 | 1.30 | 4,560 | fails signal_rank_ic and t | 560 s |
+| Machine learning | 5 | +0.0133 | 0.54 | 4,560 | fails signal_rank_ic and t | 540 s |
+| Machine learning | 10 | -0.0173 | -0.46 | 4,555 | fails signal_rank_ic and t | 530 s |
+| Machine learning | 20 | +0.0449 | 0.88 | 4,545 | fails t | 468 s |
 
 ### Research models' pre-2016 hold-out (windows ending before 1 Aug 2016)
 
@@ -154,51 +191,151 @@ Signal Rank IC and t (the Signal Rank IC over the larger of its two standard err
 
 ## 2. Portfolio per risk level
 
-Derived polynomial active for both indices. Net of 3 bp equity and 5 bp bond on what each rebalance trades; turnover and costs a year leave out the first allocation.
+Each pair's levels, then 50/50. Net of 3 bp equity and 5 bp bond on what each rebalance trades; turnover and costs a year leave out the first allocation. The first pair is the main result.
 
-### h = 1: 4,520 rebalances, 6 Oct 2008 to 5 Nov 2026; trust gate open at 0 of 4520
+### h = 1: 4,520 rebalances, 6 Oct 2008 to 5 Nov 2026
 
-|  | level | net annual return | net Sharpe | max drawdown | turnover a year | costs a year | t vs 50/50 | t vs no forecasts |
-|---|---|---|---|---|---|---|---|---|
-|  | 1 | 11.64% | 0.79 | -28.2% | 66% | 0.026% | 3.25 | — |
-|  | 2 | 10.27% | 0.83 | -23.6% | 92% | 0.037% | 3.36 | — |
-|  | 3 | 8.80% | 0.88 | -19.9% | 103% | 0.041% | 3.69 | — |
-|  | 4 | 7.20% | 0.95 | -18.7% | 98% | 0.039% | -2.61 | — |
-|  | 5 | 5.18% | 1.04 | -17.7% | 66% | 0.026% | -2.85 | — |
-| 50/50 benchmark | — | 8.32% | 0.88 | -19.9% | 20% | 0.008% | — | — |
-
-### h = 5: 904 rebalances, 6 Oct 2008 to 30 Oct 2026; trust gate open at 137 of 904
+Sprint 4 default (derived equity, ML bond): trust gate open at 0 of 4520; derived for both: trust gate open at 0 of 4520.
 
 |  | level | net annual return | net Sharpe | max drawdown | turnover a year | costs a year | t vs 50/50 | t vs no forecasts |
 |---|---|---|---|---|---|---|---|---|
-|  | 1 | 11.33% | 0.78 | -28.5% | 145% | 0.058% | 3.00 | -1.16 |
-|  | 2 | 9.92% | 0.80 | -23.8% | 149% | 0.060% | 2.77 | -1.38 |
-|  | 3 | 8.50% | 0.85 | -20.0% | 150% | 0.060% | 1.18 | -1.15 |
-|  | 4 | 6.95% | 0.92 | -18.7% | 130% | 0.052% | -3.11 | -1.10 |
-|  | 5 | 5.10% | 1.03 | -17.7% | 28% | 0.011% | -2.92 | — |
+| Sprint 4 default (derived equity, ML bond) | 1 | 11.64% | 0.79 | -28.2% | 66% | 0.026% | 3.25 | — |
+| Sprint 4 default (derived equity, ML bond) | 2 | 10.27% | 0.83 | -23.6% | 92% | 0.037% | 3.36 | — |
+| Sprint 4 default (derived equity, ML bond) | 3 | 8.80% | 0.88 | -19.9% | 103% | 0.041% | 3.69 | — |
+| Sprint 4 default (derived equity, ML bond) | 4 | 7.20% | 0.95 | -18.7% | 98% | 0.039% | -2.61 | — |
+| Sprint 4 default (derived equity, ML bond) | 5 | 5.18% | 1.04 | -17.7% | 66% | 0.026% | -2.85 | — |
+| derived for both | 1 | 11.64% | 0.79 | -28.2% | 66% | 0.026% | 3.25 | — |
+| derived for both | 2 | 10.27% | 0.83 | -23.6% | 92% | 0.037% | 3.36 | — |
+| derived for both | 3 | 8.80% | 0.88 | -19.9% | 103% | 0.041% | 3.69 | — |
+| derived for both | 4 | 7.20% | 0.95 | -18.7% | 98% | 0.039% | -2.61 | — |
+| derived for both | 5 | 5.18% | 1.04 | -17.7% | 66% | 0.026% | -2.85 | — |
 | 50/50 benchmark | — | 8.32% | 0.88 | -19.9% | 20% | 0.008% | — | — |
 
-### h = 10: 452 rebalances, 6 Oct 2008 to 23 Oct 2026; trust gate open at 0 of 452
+### h = 5: 904 rebalances, 6 Oct 2008 to 30 Oct 2026
+
+Sprint 4 default (derived equity, ML bond): trust gate open at 184 of 904; derived for both: trust gate open at 137 of 904.
 
 |  | level | net annual return | net Sharpe | max drawdown | turnover a year | costs a year | t vs 50/50 | t vs no forecasts |
 |---|---|---|---|---|---|---|---|---|
-|  | 1 | 11.56% | 0.79 | -28.4% | 19% | 0.008% | 3.19 | — |
-|  | 2 | 10.16% | 0.82 | -23.6% | 27% | 0.011% | 3.20 | — |
-|  | 3 | 8.68% | 0.87 | -20.0% | 30% | 0.012% | 2.97 | — |
-|  | 4 | 7.08% | 0.94 | -18.8% | 29% | 0.012% | -2.87 | — |
-|  | 5 | 5.10% | 1.04 | -17.8% | 19% | 0.008% | -2.92 | — |
+| Sprint 4 default (derived equity, ML bond) | 1 | 10.61% | 0.74 | -28.5% | 274% | 0.109% | 2.43 | -3.10 |
+| Sprint 4 default (derived equity, ML bond) | 2 | 9.38% | 0.76 | -23.8% | 314% | 0.126% | 1.95 | -2.84 |
+| Sprint 4 default (derived equity, ML bond) | 3 | 8.15% | 0.81 | -20.5% | 324% | 0.130% | -0.24 | -1.81 |
+| Sprint 4 default (derived equity, ML bond) | 4 | 6.78% | 0.88 | -19.2% | 276% | 0.110% | -3.21 | -1.03 |
+| Sprint 4 default (derived equity, ML bond) | 5 | 5.10% | 1.03 | -17.7% | 28% | 0.011% | -2.92 | — |
+| derived for both | 1 | 11.33% | 0.78 | -28.5% | 145% | 0.058% | 3.00 | -1.16 |
+| derived for both | 2 | 9.92% | 0.80 | -23.8% | 149% | 0.060% | 2.77 | -1.38 |
+| derived for both | 3 | 8.50% | 0.85 | -20.0% | 150% | 0.060% | 1.18 | -1.15 |
+| derived for both | 4 | 6.95% | 0.92 | -18.7% | 130% | 0.052% | -3.11 | -1.10 |
+| derived for both | 5 | 5.10% | 1.03 | -17.7% | 28% | 0.011% | -2.92 | — |
 | 50/50 benchmark | — | 8.32% | 0.88 | -19.9% | 20% | 0.008% | — | — |
 
-### h = 20: 226 rebalances, 6 Oct 2008 to 9 Oct 2026; trust gate open at 3 of 226
+### h = 10: 452 rebalances, 6 Oct 2008 to 23 Oct 2026
+
+Sprint 4 default (derived equity, ML bond): trust gate open at 0 of 452; derived for both: trust gate open at 0 of 452.
 
 |  | level | net annual return | net Sharpe | max drawdown | turnover a year | costs a year | t vs 50/50 | t vs no forecasts |
 |---|---|---|---|---|---|---|---|---|
-|  | 1 | 11.60% | 0.80 | -28.5% | 37% | 0.015% | 3.22 | 0.05 |
-|  | 2 | 10.20% | 0.83 | -23.7% | 36% | 0.015% | 3.23 | 0.05 |
-|  | 3 | 8.72% | 0.89 | -20.1% | 33% | 0.013% | 2.47 | 0.04 |
-|  | 4 | 7.11% | 0.96 | -18.8% | 26% | 0.011% | -2.71 | 0.01 |
-|  | 5 | 5.11% | 1.05 | -17.8% | 13% | 0.005% | -2.90 | — |
+| Sprint 4 default (derived equity, ML bond) | 1 | 11.56% | 0.79 | -28.4% | 19% | 0.008% | 3.19 | — |
+| Sprint 4 default (derived equity, ML bond) | 2 | 10.16% | 0.82 | -23.6% | 27% | 0.011% | 3.20 | — |
+| Sprint 4 default (derived equity, ML bond) | 3 | 8.68% | 0.87 | -20.0% | 30% | 0.012% | 2.97 | — |
+| Sprint 4 default (derived equity, ML bond) | 4 | 7.08% | 0.94 | -18.8% | 29% | 0.012% | -2.87 | — |
+| Sprint 4 default (derived equity, ML bond) | 5 | 5.10% | 1.04 | -17.8% | 19% | 0.008% | -2.92 | — |
+| derived for both | 1 | 11.56% | 0.79 | -28.4% | 19% | 0.008% | 3.19 | — |
+| derived for both | 2 | 10.16% | 0.82 | -23.6% | 27% | 0.011% | 3.20 | — |
+| derived for both | 3 | 8.68% | 0.87 | -20.0% | 30% | 0.012% | 2.97 | — |
+| derived for both | 4 | 7.08% | 0.94 | -18.8% | 29% | 0.012% | -2.87 | — |
+| derived for both | 5 | 5.10% | 1.04 | -17.8% | 19% | 0.008% | -2.92 | — |
 | 50/50 benchmark | — | 8.32% | 0.88 | -19.9% | 20% | 0.008% | — | — |
+
+### h = 20: 226 rebalances, 6 Oct 2008 to 9 Oct 2026
+
+Sprint 4 default (derived equity, ML bond): trust gate open at 92 of 226; derived for both: trust gate open at 3 of 226.
+
+|  | level | net annual return | net Sharpe | max drawdown | turnover a year | costs a year | t vs 50/50 | t vs no forecasts |
+|---|---|---|---|---|---|---|---|---|
+| Sprint 4 default (derived equity, ML bond) | 1 | 10.38% | 0.76 | -28.5% | 205% | 0.082% | 2.19 | -1.44 |
+| Sprint 4 default (derived equity, ML bond) | 2 | 9.37% | 0.79 | -23.7% | 204% | 0.082% | 1.61 | -1.17 |
+| Sprint 4 default (derived equity, ML bond) | 3 | 8.25% | 0.83 | -21.9% | 191% | 0.076% | -0.01 | -0.73 |
+| Sprint 4 default (derived equity, ML bond) | 4 | 6.99% | 0.89 | -21.0% | 152% | 0.061% | -2.07 | -0.15 |
+| Sprint 4 default (derived equity, ML bond) | 5 | 5.11% | 1.05 | -17.8% | 13% | 0.005% | -2.90 | — |
+| derived for both | 1 | 11.60% | 0.80 | -28.5% | 37% | 0.015% | 3.22 | 0.05 |
+| derived for both | 2 | 10.20% | 0.83 | -23.7% | 36% | 0.015% | 3.23 | 0.05 |
+| derived for both | 3 | 8.72% | 0.89 | -20.1% | 33% | 0.013% | 2.47 | 0.04 |
+| derived for both | 4 | 7.11% | 0.96 | -18.8% | 26% | 0.011% | -2.71 | 0.01 |
+| derived for both | 5 | 5.11% | 1.05 | -17.8% | 13% | 0.005% | -2.90 | — |
+| 50/50 benchmark | — | 8.32% | 0.88 | -19.9% | 20% | 0.008% | — | — |
+
+## 2b. Diagnostic: the trust gate ignored
+
+The same backtests with β̂ used whatever its t: the slope clipped to [0, 1] as soon as 252 pairs are known. The product never does this; it shows what the gate is holding back. t vs no forecasts compares each level with itself at β̂ = 0.
+
+### h = 1, ungated
+
+Sprint 4 default (derived equity, ML bond): β̂ above zero at 4265 of 4520; derived for both: β̂ above zero at 4241 of 4520.
+
+|  | level | net annual return | net Sharpe | max drawdown | turnover a year | costs a year | t vs 50/50 | t vs no forecasts |
+|---|---|---|---|---|---|---|---|---|
+| Sprint 4 default (derived equity, ML bond) | 1 | 6.43% | 0.52 | -28.2% | 7574% | 3.030% | -1.09 | -4.37 |
+| Sprint 4 default (derived equity, ML bond) | 2 | 6.19% | 0.54 | -23.2% | 7619% | 3.048% | -1.58 | -3.83 |
+| Sprint 4 default (derived equity, ML bond) | 3 | 5.69% | 0.54 | -19.1% | 7177% | 2.871% | -2.38 | -3.00 |
+| Sprint 4 default (derived equity, ML bond) | 4 | 5.44% | 0.59 | -18.0% | 5976% | 2.390% | -2.87 | -1.62 |
+| Sprint 4 default (derived equity, ML bond) | 5 | 5.18% | 1.04 | -17.7% | 66% | 0.026% | -2.85 | — |
+| derived for both | 1 | 5.89% | 0.48 | -28.2% | 6140% | 2.456% | -1.54 | -5.00 |
+| derived for both | 2 | 5.70% | 0.50 | -23.2% | 6052% | 2.421% | -2.08 | -4.50 |
+| derived for both | 3 | 5.31% | 0.52 | -19.4% | 5635% | 2.254% | -2.88 | -3.55 |
+| derived for both | 4 | 5.20% | 0.58 | -18.7% | 4844% | 1.938% | -3.27 | -1.98 |
+| derived for both | 5 | 5.18% | 1.04 | -17.7% | 66% | 0.026% | -2.85 | — |
+
+### h = 5, ungated
+
+Sprint 4 default (derived equity, ML bond): β̂ above zero at 852 of 904; derived for both: β̂ above zero at 852 of 904.
+
+|  | level | net annual return | net Sharpe | max drawdown | turnover a year | costs a year | t vs 50/50 | t vs no forecasts |
+|---|---|---|---|---|---|---|---|---|
+| Sprint 4 default (derived equity, ML bond) | 1 | 8.34% | 0.64 | -28.5% | 1222% | 0.489% | 0.52 | -3.54 |
+| Sprint 4 default (derived equity, ML bond) | 2 | 7.93% | 0.66 | -23.7% | 1252% | 0.501% | 0.00 | -2.64 |
+| Sprint 4 default (derived equity, ML bond) | 3 | 7.60% | 0.71 | -21.9% | 1211% | 0.485% | -0.64 | -1.19 |
+| Sprint 4 default (derived equity, ML bond) | 4 | 7.01% | 0.81 | -19.5% | 975% | 0.390% | -1.74 | 0.04 |
+| Sprint 4 default (derived equity, ML bond) | 5 | 5.10% | 1.03 | -17.7% | 28% | 0.011% | -2.92 | — |
+| derived for both | 1 | 10.40% | 0.74 | -28.5% | 588% | 0.235% | 2.27 | -2.00 |
+| derived for both | 2 | 9.55% | 0.77 | -24.7% | 603% | 0.241% | 1.90 | -1.04 |
+| derived for both | 3 | 8.65% | 0.82 | -22.2% | 582% | 0.233% | 0.80 | 0.06 |
+| derived for both | 4 | 7.26% | 0.87 | -21.9% | 467% | 0.187% | -1.79 | 0.46 |
+| derived for both | 5 | 5.10% | 1.03 | -17.7% | 28% | 0.011% | -2.92 | — |
+
+### h = 10, ungated
+
+Sprint 4 default (derived equity, ML bond): β̂ above zero at 252 of 452; derived for both: β̂ above zero at 16 of 452.
+
+|  | level | net annual return | net Sharpe | max drawdown | turnover a year | costs a year | t vs 50/50 | t vs no forecasts |
+|---|---|---|---|---|---|---|---|---|
+| Sprint 4 default (derived equity, ML bond) | 1 | 10.57% | 0.75 | -28.4% | 196% | 0.078% | 2.45 | -2.37 |
+| Sprint 4 default (derived equity, ML bond) | 2 | 9.50% | 0.77 | -23.6% | 238% | 0.095% | 1.97 | -1.61 |
+| Sprint 4 default (derived equity, ML bond) | 3 | 8.20% | 0.80 | -20.0% | 230% | 0.092% | -0.02 | -1.00 |
+| Sprint 4 default (derived equity, ML bond) | 4 | 6.72% | 0.84 | -18.8% | 191% | 0.076% | -2.86 | -0.67 |
+| Sprint 4 default (derived equity, ML bond) | 5 | 5.10% | 1.04 | -17.8% | 19% | 0.008% | -2.92 | — |
+| derived for both | 1 | 11.56% | 0.79 | -28.4% | 19% | 0.008% | 3.19 | -0.20 |
+| derived for both | 2 | 10.14% | 0.82 | -23.6% | 27% | 0.011% | 3.17 | -1.01 |
+| derived for both | 3 | 8.67% | 0.87 | -20.0% | 30% | 0.012% | 2.85 | -1.01 |
+| derived for both | 4 | 7.07% | 0.94 | -18.8% | 29% | 0.012% | -2.88 | -1.00 |
+| derived for both | 5 | 5.10% | 1.04 | -17.8% | 19% | 0.008% | -2.92 | — |
+
+### h = 20, ungated
+
+Sprint 4 default (derived equity, ML bond): β̂ above zero at 212 of 226; derived for both: β̂ above zero at 211 of 226.
+
+|  | level | net annual return | net Sharpe | max drawdown | turnover a year | costs a year | t vs 50/50 | t vs no forecasts |
+|---|---|---|---|---|---|---|---|---|
+| Sprint 4 default (derived equity, ML bond) | 1 | 8.34% | 0.65 | -28.5% | 387% | 0.155% | 0.47 | -3.10 |
+| Sprint 4 default (derived equity, ML bond) | 2 | 8.46% | 0.72 | -24.5% | 389% | 0.156% | 0.48 | -1.86 |
+| Sprint 4 default (derived equity, ML bond) | 3 | 8.59% | 0.80 | -23.8% | 361% | 0.144% | 0.49 | -0.01 |
+| Sprint 4 default (derived equity, ML bond) | 4 | 8.24% | 0.90 | -21.7% | 296% | 0.118% | -0.13 | 1.56 |
+| Sprint 4 default (derived equity, ML bond) | 5 | 5.11% | 1.05 | -17.8% | 13% | 0.005% | -2.90 | — |
+| derived for both | 1 | 9.20% | 0.70 | -28.5% | 370% | 0.148% | 1.24 | -2.58 |
+| derived for both | 2 | 8.85% | 0.74 | -26.1% | 367% | 0.147% | 0.93 | -1.56 |
+| derived for both | 3 | 8.52% | 0.81 | -23.2% | 333% | 0.133% | 0.43 | -0.12 |
+| derived for both | 4 | 7.50% | 0.88 | -21.4% | 254% | 0.102% | -1.17 | 0.76 |
+| derived for both | 5 | 5.11% | 1.05 | -17.8% | 13% | 0.005% | -2.90 | — |
 
 ## 3. Why the 20-day gate opens 3 times here against 26 on 1 Nov
 
@@ -208,8 +345,8 @@ Descriptive only; nothing was changed because of it. Every cell runs today's opt
 
 | models | data | trust pairs | gate open at | t vs no forecasts, levels 1–4 |
 |---|---|---|---|---|
-| 1 Nov pair (derived equity, ML bond) | Sep 2026 upload | 1,988 from 2 Oct 2018 | 0 of 396 | identical paths |
-| 1 Nov pair (derived equity, ML bond) | from 31 Aug 2006 | 4,508 from 3 Oct 2008 | 184 of 904 | -3.10 to -1.03 |
+| Sprint 4 default (derived equity, ML bond) | Sep 2026 upload | 1,988 from 2 Oct 2018 | 0 of 396 | identical paths |
+| Sprint 4 default (derived equity, ML bond) | from 31 Aug 2006 | 4,508 from 3 Oct 2008 | 184 of 904 | -3.10 to -1.03 |
 | derived for both | Sep 2026 upload | 1,988 from 2 Oct 2018 | 0 of 396 | identical paths |
 | derived for both | from 31 Aug 2006 | 4,508 from 3 Oct 2008 | 137 of 904 | -1.38 to -1.10 |
 
@@ -217,8 +354,8 @@ Descriptive only; nothing was changed because of it. Every cell runs today's opt
 
 | models | data | trust pairs | gate open at | t vs no forecasts, levels 1–4 |
 |---|---|---|---|---|
-| 1 Nov pair (derived equity, ML bond) | Sep 2026 upload | pairs start 2 Oct 2018: unchanged | — | — |
-| 1 Nov pair (derived equity, ML bond) | from 31 Aug 2006 | 4,198 | 0 of 904 | identical paths |
+| Sprint 4 default (derived equity, ML bond) | Sep 2026 upload | pairs start 2 Oct 2018: unchanged | — | — |
+| Sprint 4 default (derived equity, ML bond) | from 31 Aug 2006 | 4,198 | 0 of 904 | identical paths |
 | derived for both | Sep 2026 upload | pairs start 2 Oct 2018: unchanged | — | — |
 | derived for both | from 31 Aug 2006 | 4,198 | 105 of 904 | -1.60 to -1.30 |
 
@@ -226,7 +363,7 @@ Descriptive only; nothing was changed because of it. Every cell runs today's opt
 
 OLS of y on x with an intercept over the year's pairs (by forecast date), standard errors over 4 lags counted in full, as the gate's. One year holds about 50 independent 5-day returns, so each t is noisy.
 
-**1 Nov pair (derived equity, ML bond), Sep 2026 upload**
+**Sprint 4 default (derived equity, ML bond), Sep 2026 upload**
 
 | year | pairs | slope | t |
 |---|---|---|---|
@@ -240,7 +377,7 @@ OLS of y on x with an intercept over the year's pairs (by forecast date), standa
 | 2025 | 250 | -0.95 | -1.93 |
 | 2026 (part) | 177 | +1.89 | +1.43 |
 
-**1 Nov pair (derived equity, ML bond), from 31 Aug 2006**
+**Sprint 4 default (derived equity, ML bond), from 31 Aug 2006**
 
 | year | pairs | slope | t |
 |---|---|---|---|
@@ -306,8 +443,8 @@ OLS of y on x with an intercept over the year's pairs (by forecast date), standa
 
 | models | data | trust pairs | gate open at | t vs no forecasts, levels 1–4 |
 |---|---|---|---|---|
-| 1 Nov pair (derived equity, ML bond) | Sep 2026 upload | 1,978 from 2 Oct 2018 | 19 of 99 | -1.16 to +1.07 |
-| 1 Nov pair (derived equity, ML bond) | from 31 Aug 2006 | 4,505 from 3 Oct 2008 | 92 of 226 | -1.44 to -0.15 |
+| Sprint 4 default (derived equity, ML bond) | Sep 2026 upload | 1,978 from 2 Oct 2018 | 19 of 99 | -1.16 to +1.07 |
+| Sprint 4 default (derived equity, ML bond) | from 31 Aug 2006 | 4,505 from 3 Oct 2008 | 92 of 226 | -1.44 to -0.15 |
 | derived for both | Sep 2026 upload | 1,978 from 2 Oct 2018 | 2 of 99 | -0.26 to -0.13 |
 | derived for both | from 31 Aug 2006 | 4,505 from 3 Oct 2008 | 3 of 226 | +0.01 to +0.05 |
 
@@ -315,8 +452,8 @@ OLS of y on x with an intercept over the year's pairs (by forecast date), standa
 
 | models | data | trust pairs | gate open at | t vs no forecasts, levels 1–4 |
 |---|---|---|---|---|
-| 1 Nov pair (derived equity, ML bond) | Sep 2026 upload | pairs start 2 Oct 2018: unchanged | — | — |
-| 1 Nov pair (derived equity, ML bond) | from 31 Aug 2006 | 4,195 | 79 of 226 | -1.76 to -0.18 |
+| Sprint 4 default (derived equity, ML bond) | Sep 2026 upload | pairs start 2 Oct 2018: unchanged | — | — |
+| Sprint 4 default (derived equity, ML bond) | from 31 Aug 2006 | 4,195 | 79 of 226 | -1.76 to -0.18 |
 | derived for both | Sep 2026 upload | pairs start 2 Oct 2018: unchanged | — | — |
 | derived for both | from 31 Aug 2006 | 4,195 | 21 of 226 | -0.69 to +0.46 |
 
@@ -324,7 +461,7 @@ OLS of y on x with an intercept over the year's pairs (by forecast date), standa
 
 OLS of y on x with an intercept over the year's pairs (by forecast date), standard errors over 19 lags counted in full, as the gate's. One year holds about 12 independent 20-day returns, so each t is noisy.
 
-**1 Nov pair (derived equity, ML bond), Sep 2026 upload**
+**Sprint 4 default (derived equity, ML bond), Sep 2026 upload**
 
 | year | pairs | slope | t |
 |---|---|---|---|
@@ -338,7 +475,7 @@ OLS of y on x with an intercept over the year's pairs (by forecast date), standa
 | 2025 | 250 | -1.26 | -1.11 |
 | 2026 (part) | 167 | +2.59 | +4.44 |
 
-**1 Nov pair (derived equity, ML bond), from 31 Aug 2006**
+**Sprint 4 default (derived equity, ML bond), from 31 Aug 2006**
 
 | year | pairs | slope | t |
 |---|---|---|---|

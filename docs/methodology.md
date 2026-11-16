@@ -1026,7 +1026,9 @@ in it (findings 2, 3, 5 and 6 of the 12 Nov optimiser audit):
   | 5 | at 137 of 904 | −1.10 to −1.38 |
   | 20 | at 3 of 226 | +0.01 to +0.05 |
 
-  None is significant, and at h = 5 the sign is against the forecasts. Costs are
+  None is significant, and at h = 5 the sign is against the forecasts. With the
+  team's Sprint 4 pair (machine learning for bond) the forecasts do no better, and
+  at h = 5 they cost significantly at levels 1 and 2 (§20). Costs are
   not the reason: they are at most 0.06 points a year. The optimiser is sound as a
   risk-level allocator; on this data the forecasts it tilts on have not earned
   their place.
@@ -1235,15 +1237,35 @@ No bond model passes at any horizon, and at the default 20-day horizon no model
 passes for either index. Both research models score near zero on their pre-2016
 hold-out at every horizon (t −0.44 to +0.65; §9.2 has the 20-day figures).
 
-**Portfolio.** With the derived polynomial active for both indices (decided before
-any result), net of costs, 6 Oct 2008 to Nov 2026, the levels' net Sharpe runs
-from 0.78–0.80 at level 1 to 1.03–1.05 at level 5, against 0.88 for 50/50. Their t
-against 50/50 mostly reflects equity weight. The forecasts add no value at any
-horizon (§17, known limitations): the trust gate never opens at h = 1 or 10, and t
-against no forecasts is −1.10 to −1.38 at h = 5 and +0.01 to +0.05 at h = 20.
+**Portfolio.** The main result uses the team's Sprint 4 default pair, the derived
+polynomial for equity and machine learning for bond. The derived polynomial for
+both is shown beside it. The derived pair was chosen before any result; the
+Sprint 4 pair was made the main result after both had been run
+([evidence](evidence/2026-11-16-full-history.md) says so). The period is
+6 Oct 2008 to Nov 2026, net of costs.
 
-**Why the 20-day gate opened 26 times on 1 Nov and 3 times now.** Mostly the bond
-model, not the longer history. With machine learning for bond, as on 1 Nov, it
+The levels' net Sharpe runs from about 0.75–0.80 at level 1 to 1.03–1.05 at
+level 5, against 0.88 for 50/50, and their t against 50/50 mostly reflects equity
+weight. Neither pair's forecasts add value at any horizon (§17, known
+limitations):
+
+| h | Sprint 4 pair: gate open, t vs no forecasts (levels 1–4) | Derived for both |
+|---|---|---|
+| 1 | never; identical paths | never; identical paths |
+| 5 | 184 of 904; −3.10, −2.84, −1.81, −1.03 | 137 of 904; −1.10 to −1.38 |
+| 10 | never; identical paths | never; identical paths |
+| 20 | 92 of 226; −1.44 to −0.15 | 3 of 226; +0.01 to +0.05 |
+
+At h = 5 the Sprint 4 pair's forecasts cost significantly at levels 1 and 2.
+
+With the trust gate ignored (a diagnostic only: `β̂` used whatever its t), no
+level at any horizon has t above +2 against no forecasts. Many are significantly
+negative, down to −5.00 at h = 1, where the tilts cost 2–3% a year. The gate is
+not hiding forecast value.
+
+**Why the 20-day gate opened 26 times on 1 Nov and 3 times with the derived
+pair.** Mostly the bond model, not the longer history. With machine learning for
+bond, as on 1 Nov, it
 opens at 19 of 99 rebalances on the Sep 2026 upload and 92 of 226 on the data
 from 2006; with the derived polynomial for both, at 2 and 3. Starting the trust
 pairs in 2010 opens it at 21 rebalances for the derived pair, since 2008's slope

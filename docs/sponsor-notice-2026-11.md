@@ -96,23 +96,37 @@ results; nothing was changed because of them.
   the same bound, why level 5 sits at the 20% floor, and why the latest weights
   can trail the data by up to about 7 weeks.
 
-**What the results say now.** On the longer history, net of your costs, the risk
-levels behave as designed: net Sharpe rises from about 0.79 at level 1 to about
-1.04 at level 5, against 0.88 for 50/50. But the forecasts add no value at any
-horizon. Against the same risk level without forecasts, t is between −1.38 and
-+0.05, and never significant. We report this as a known limitation, not a
-delivery failure, as the CTQ provides.
+**What the results say now.** Our main portfolio result uses the team's default
+pair from Sprint 4: the derived polynomial for equity and machine learning for
+bond. We also show the derived polynomial for both indices. We chose to lead with
+the Sprint 4 pair after both had been run, and the evidence says so.
+
+On the longer history, net of your costs, the risk levels behave as designed: net
+Sharpe rises from about 0.75–0.80 at level 1 to about 1.04 at level 5, against
+0.88 for 50/50. But neither pair's forecasts add value at any horizon. At the
+default 20-day horizon, against the same risk level without forecasts, t is
+between −1.44 and −0.15 for the Sprint 4 pair and between +0.01 and +0.05 for the
+other. At 5 days the Sprint 4 pair's forecasts cost significantly at the two
+riskiest levels (t −3.10 and −2.84).
+
+We also ran the backtests with the trust gate switched off, using the forecasts
+whatever their reliability. No level at any horizon did better than without
+forecasts, and many did significantly worse. So the gate is protecting the
+portfolio, not hiding value from it.
+
+We report all of this as a known limitation, not a delivery failure, as the CTQ
+provides.
 
 Two more disclosures:
 - **The forecast-trust gate is re-checked at every rebalance.** A model with no
   skill can therefore pass it at some point far more often than the 2.3% one
   check allows. A simulation on our data estimates 11% of the time at 1 day, 18%
   at 5 days and 35% at 20 days.
-- **Why the gate opened less than at UAT 3.** At UAT 3 the gate opened at 26 of
-  99 rebalances; on the longer history, with the derived polynomial for both
-  indices, it opens at 3 of 226. That difference comes mostly from the choice of
-  bond model, not from the longer history. In no combination did the forecasts
-  add value.
+- **How often the gate opens depends mostly on the bond model.** At UAT 3, at 20
+  days, the gate opened at 26 of 99 rebalances. On the longer history it opens
+  at 92 of 226 with the Sprint 4 pair, and at only 3 with the derived polynomial
+  for both. The bond model matters more than the longer history. In no
+  combination did the forecasts add value.
 
 Kind regards,
 Toby Chan, for Team Finlytics
