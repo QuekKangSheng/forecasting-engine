@@ -337,13 +337,33 @@ def test_no_value_dated_on_or_after_the_test_window_changes_the_fit():
     assert after == before
 
 
-def test_the_last_value_the_training_labels_reach_does_change_the_fit():
-    # The check above would pass vacuously if the fit read nothing near its window's
-    # end: the day before the test window is in the last training label's window.
+@pytest.mark.parametrize("horizon", [1, 5, 20])
+def test_no_test_window_row_of_the_panel_changes_the_fit(horizon):
+    # Rewriting the raw data from the test window on leaves the panel's first test row
+    # holding the level from the day before; this rewrites the panel's rows themselves.
+    # The embargo equals the horizon, as on the Models page.
+    panel = _levels(_carry_world(), horizon=horizon)
+    splitter = PurgedWalkForward(train=120, test=20, embargo=horizon, tuning_rows=200)
+    train, test = list(expanding(splitter).split(panel))[10]
+    later = panel.frame.index >= test[0]
+    rewritten = panel.frame.copy()
+    rng = np.random.default_rng(0)
+    rewritten.loc[later] *= rng.uniform(0.5, 1.5, size=(int(later.sum()), panel.frame.shape[1]))
+
+    before = _fitted(panel, train).describe()
+    after = _fitted(replace(panel, frame=rewritten), train).describe()
+
+    assert after == before
+
+
+def test_the_last_level_the_fit_may_read_does_change_the_fit():
+    # The checks above would pass vacuously if the fit read nothing near its window's
+    # end. The last training label ends the day before the test window; the level two
+    # days before sits on the row before the test window, the last row the fit reads.
     frame = _carry_world()
     train, test = _fold(_levels(frame), 10)
     rewritten = frame.copy()
-    day_before = frame.index[frame.index.get_loc(test[0]) - 1]
+    day_before = frame.index[frame.index.get_loc(test[0]) - 2]
     rewritten.loc[day_before, "rate"] += 0.5
 
     before = _fitted(_levels(frame), train).describe()
@@ -355,7 +375,8 @@ def test_the_last_value_the_training_labels_reach_does_change_the_fit():
 def test_a_row_whose_label_or_innovation_is_not_yet_complete_is_not_used():
     panel = _levels(_carry_world())
     index = panel.frame.index
-    complete = index[: len(index) - H - 1]
+    # The last row kept has a complete label but no complete move; the fit drops it too.
+    complete = index[: len(index) - H]
     assert panel.frame[panel.targets[0]].iloc[-H - 1 :].notna().iloc[0]
 
     everything = _fitted(panel, index, kappa=_zero_kappa).describe()

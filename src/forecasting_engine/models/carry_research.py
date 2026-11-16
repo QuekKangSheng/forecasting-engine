@@ -45,10 +45,13 @@ soaking up the window's whole move. With several correlated inputs, correcting e
 input's ``κ`` on its own is an approximation of the multi-predictor method (Amihud,
 Hurvich & Wang 2009).
 
-The innovation looks forward exactly as far as the label does. It is read on training
-rows only, whose labels the splitter has already purged against the test window, and a
-row whose label or innovation is not yet complete is not used. Every fold trains on all
-earlier rows (an expanding window), as the research ran it.
+The innovation's levels are dated no later than the label's end, but a level sits on the
+panel row after its own date, so a row's move is read ``lag`` rows past its label. A
+training row whose move would be read from a row past every training label's end is
+not used: the splitter purges labels against the test window, not that extra row, so no
+fit reads a test-window row at any horizon. A row whose label or innovation is not yet
+complete is not used either. Every fold trains on all earlier rows (an expanding
+window), as the research ran it.
 """
 
 from __future__ import annotations
@@ -91,7 +94,7 @@ _MIN_TRAINING_ROWS: int = 30
 """Fewer complete training rows than this, and a fit with an intercept, one innovation
 per input and a penalised slope per input is more noise than signal."""
 
-VERSION: int = 1
+VERSION: int = 2
 """Raise when a change above alters a fit, so results saved under the old one refit."""
 
 
@@ -110,10 +113,25 @@ def label_window_moves(panel: FeaturePanel) -> pd.DataFrame:
     """Each signal's change over each row's label window, ``level(t+h) − level(t)``.
 
     A panel's signals are lagged one row, so the level dated ``t`` sits on the next
-    row and this reads ``h + 1`` rows ahead: as far as the row's label reaches and no
-    further. That is a look ahead, so it is for training rows only."""
+    row and this reads ``h + 1`` rows ahead: levels dated no later than the label's
+    end, from one row past it. That is a look ahead, so it is for training rows only,
+    and only those ``moves_within_labels`` allows."""
     levels = panel.frame[list(panel.signals)].shift(-panel.lag_days)
     return levels.shift(-panel.horizon) - levels
+
+
+def moves_within_labels(panel: FeaturePanel, train: pd.DatetimeIndex) -> pd.Series:
+    """Per training row, whether its move is read from no row past the latest training
+    label's end. The splitter ends every training label before the test window, so
+    such a move reads no test-window row."""
+    rows = pd.Series(panel.frame.index, index=panel.frame.index)
+    read_from = rows.shift(-(panel.lag_days + panel.horizon)).loc[train]
+    if panel.label_end is not None:
+        reach = panel.label_end.loc[train].max()
+    else:  # a panel built by hand: a label reaches ``horizon`` rows ahead
+        last = min(rows.index.get_loc(train.max()) + panel.horizon, len(rows) - 1)
+        reach = rows.iloc[last]
+    return read_from <= reach
 
 
 def corrected_rho(levels: pd.Series) -> float:
@@ -223,7 +241,11 @@ class CarryResearchPolynomial:
         signals, target = list(panel.signals), panel.targets[0]
         rows = panel.frame.loc[train, [*signals, target]]
         moves = label_window_moves(panel).loc[train]
-        complete = rows.notna().all(axis=1) & moves.notna().all(axis=1)
+        complete = (
+            rows.notna().all(axis=1)
+            & moves.notna().all(axis=1)
+            & moves_within_labels(panel, train)
+        )
         if complete.sum() < _MIN_TRAINING_ROWS:
             raise CarryResearchDataError(
                 f"not enough complete training rows for the bond research model (need at "

@@ -469,7 +469,20 @@ so and the row does not run.
 
 The equation is `α + Σ c·z` in the standardised levels, one term per input the
 penalty kept. A fold needs at least `_MIN_TRAINING_ROWS` (`models/carry_research`)
-complete rows. Its level is its own (§10): a fold that keeps no term forecasts `α`
+complete rows.
+
+**No test-window row is read.** `Δx` ends at the label's end, but a level sits on
+the panel row after its own date, so a row's move is read `lag` rows past its
+label. The splitter purges labels against the test window, not that extra row, so
+at h = 20 (embargo 20) each fold's last training row read the first test-window
+row (found in the Phase 6 verification). Since `VERSION` 2, a training row is used
+only if its move is read from no row past the latest training label's end
+(`moves_within_labels`). The fit sees only its training rows, not where the test
+window starts, so this drops each fold's last training row at every horizon,
+including h = 1–10, where that row did not reach the test window. Whole-period
+scores moved by at most 0.003 in Signal Rank IC and 0.06 in t; the 20-day
+pre-2016 hold-out moved from −0.004 (t −0.05) to −0.020 (t −0.24)
+([evidence](evidence/2026-11-16-carry-lookahead.md)). Its level is its own (§10): a fold that keeps no term forecasts `α`
 everywhere and adds exactly zero to the Signal Rank IC.
 
 **Why the correction uses `κᶜ` and not plain OLS.** With `κ` from a plain
@@ -513,12 +526,13 @@ from the period the research looked at enters a hold-out score; each such fold
 trains only on rows before its own test window. The Sep 2026 upload starts on
 31 Aug 2016 and has no such window. On the data from 31 Aug 2006 (§7.1) each model
 has 96 or 97, from Oct 2008 to Jul 2016
-([evidence](evidence/2026-11-15-history-2006.md)):
+([evidence](evidence/2026-11-15-history-2006.md); the bond row is `VERSION` 2,
+[evidence](evidence/2026-11-16-carry-lookahead.md)):
 
 | Research model | Signal Rank IC, t: whole period | Pre-2016 hold-out | Windows |
 |---|---|---|---|
 | Equity (§9.1) | +0.071, t 1.10 | −0.032, t −0.30 | 97 |
-| Bond (§9.2) | +0.066, t 0.99 | −0.004, t −0.05 | 96 |
+| Bond (§9.2) | +0.063, t 0.94 | −0.020, t −0.24 | 96 |
 
 Neither passes the gate on the longer history, and neither scores above zero on
 the windows its research never saw. These are reported as they came out; neither
@@ -1230,7 +1244,7 @@ current results.
 | Equity | Machine learning | +0.028, t 1.71 | +0.068, t 2.34, passes | +0.097, t 2.48, passes | +0.082, t 1.71 |
 | Equity | Fama-French 5 | −0.006, t −0.35 | +0.021, t 1.27 | −0.003, t −0.17 | −0.013, t −0.83 |
 | Bond | Polynomial (derived) | +0.029, t 1.84 | +0.030, t 1.00 | +0.021, t 0.48 | +0.031, t 0.49 |
-| Bond | Polynomial – fixed carry inputs | +0.003, t 0.20 | +0.020, t 0.60 | +0.039, t 0.78 | +0.066, t 0.99 |
+| Bond | Polynomial – fixed carry inputs (`VERSION` 2) | +0.004, t 0.26 | +0.021, t 0.62 | +0.039, t 0.79 | +0.063, t 0.94 |
 | Bond | Machine learning | +0.019, t 1.30 | +0.013, t 0.54 | −0.017, t −0.46 | +0.045, t 0.88 |
 
 No bond model passes at any horizon, and at the default 20-day horizon no model

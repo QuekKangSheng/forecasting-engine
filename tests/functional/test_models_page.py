@@ -64,7 +64,7 @@ DEFAULT_MODEL_SETTINGS = {
     POLY: 10,
     USER_POLY: ("", ()),
     "Polynomial – fixed economic inputs": "sign-ruled v1",
-    "Polynomial – fixed carry inputs (research)": "carry v1",
+    "Polynomial – fixed carry inputs (research)": "carry v2",
 }
 NAIVE = "Naive (training mean)"
 

@@ -35,7 +35,7 @@ equity but none for bond. We added one, labelled as research, on seven fixed
 inputs: rates, spreads and volatility gauges, read as levels. It is corrected for
 a known small-sample bias (Stambaugh bias; Amihud & Hurvich 2004). Its inputs were
 chosen on the Aug 2016 – Sep 2026 data, so its score there is optimistic. On data
-it was not chosen on, before Aug 2016, it scores −0.004 (t −0.05) at the default
+it was not chosen on, before Aug 2016, it scores −0.020 (t −0.24) at the default
 20-day horizon. It does not pass the gate, and we have not used it in the
 portfolio.
 
