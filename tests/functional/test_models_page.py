@@ -1609,6 +1609,24 @@ def test_the_directional_check_says_it_reads_the_signal_and_dates_returns_by_the
     assert "Each return is plotted at the end of its holding period" in captions
 
 
+def test_the_directional_check_says_a_flat_line_is_time_in_cash():
+    assert "the strategy's line is flat wherever it sat in cash" in _captions(_directional_page())
+
+
+def test_a_model_with_no_signal_says_there_is_nothing_to_test():
+    """A forecast that is always the model's own level (Naive) would sit in cash
+    throughout, with a hit rate that only counts the steps the index fell."""
+    forecast = _oos([LEVEL] * 100)
+    realised = _oos([0.02, -0.03] * 50)
+    run = _with_forecast(forecast, realised, _oos([LEVEL] * 100))
+
+    app = _page({EQUITY: {POLY: _polynomial_run(run)}})
+
+    assert not app.exception
+    assert any("has no signal to test" in i.value for i in app.info)
+    assert not [m for m in app.metric if m.label in ("Hit rate", "Long/cash strategy")]
+
+
 def test_a_result_saved_without_its_levels_asks_for_a_rerun():
     forecast, realised = _oos([0.01] * 30), _oos([0.01] * 30)
     run = replace(_result(), forecast=forecast, realised=realised)

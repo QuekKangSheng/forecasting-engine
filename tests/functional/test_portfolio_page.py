@@ -322,6 +322,40 @@ def test_the_latest_weights_say_how_they_were_set():
     assert re.search(r"How this was set: level 3 targets \d+% S&P 500", captions)
 
 
+def test_level_5_says_why_it_holds_what_it_holds_instead_of_listing_signals():
+    app = _happy_page()
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+
+    scale.set_value(5).run()
+
+    assert not app.exception
+    how_set = next(c.value for c in app.caption if c.value.startswith("How this was set"))
+    assert re.search(
+        r"level 5 holds the lowest-risk mix the 20%–80% limits allow and ignores the "
+        r"forecasts, giving \d+% S&P 500\.",
+        how_set,
+    )
+    # It never tilts, so "the signals ... adds 0%" would contradict itself.
+    assert "signal" not in how_set and "adds" not in how_set
+
+
+def test_the_latest_weights_say_how_far_behind_the_latest_prices_they_are():
+    app = _happy_page()
+
+    (behind,) = [c.value for c in app.caption if c.value.startswith("These weights were set")]
+    match = re.search(
+        r"set at the last rebalance, (\d\d \w{3} \d{4}), (\d+) trading days before the "
+        r"latest prices \((\d\d \w{3} \d{4})\)",
+        behind,
+    )
+    assert match, behind
+    rebalance, days, last = pd.Timestamp(match[1]), int(match[2]), pd.Timestamp(match[3])
+    assert days > 0 and rebalance < last
+    assert "can trail the data by up to" in behind
+    # The run report repeats it, as it repeats the rest of "How this was set".
+    assert behind in _report()
+
+
 def test_risk_level_is_a_1_to_5_scale_defaulting_to_the_middle_and_sets_the_target_weight():
     app = _happy_page()
     (scale,) = [s for s in app.select_slider if s.label == "Risk level"]

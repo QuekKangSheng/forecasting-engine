@@ -12,6 +12,7 @@ own parameters (risk level, weight bounds) are configurable on this page.
 from __future__ import annotations
 
 import html
+import math
 import traceback
 from dataclasses import replace
 
@@ -308,22 +309,54 @@ unreliable = (
     if risk_level != optimize.RISK_LEVELS[-1] and solved.forecasts_gated
     else ""
 )
-how_set = [
-    f"How this was set: level {risk_level} targets {breakdown.level_weight:.0%} {equity_name}. "
-    f"The signals — what each model adds to its own average forecast — ({equity_name} "
-    f"signal {latest_signal[EQUITY]:+.2%}, {bond_name} signal {latest_signal[BOND]:+.2%} "
-    f"over {equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%}, giving "
-    f"{breakdown.unconstrained:.0%}{cap}{unreliable}."
-]
-st.caption(how_set[0])
+if risk_level == optimize.RISK_LEVELS[-1]:
+    # Level 5 never tilts, so listing the signals and then "adds 0%" read as a
+    # contradiction. Say instead why it holds what it holds.
+    floor = (
+        f" The lowest-risk mix of these two indices holds less {equity_name} than that, "
+        f"so it sits on the {lower:.0%} floor."
+        if math.isclose(breakdown.level_weight, lower)
+        else ""
+    )
+    how_set = [
+        f"How this was set: level {risk_level} holds the lowest-risk mix the "
+        f"{lower:.0%}–{upper:.0%} limits allow and ignores the forecasts, giving "
+        f"{breakdown.equity:.0%} {equity_name}.{floor}"
+    ]
+else:
+    how_set = [
+        f"How this was set: level {risk_level} targets {breakdown.level_weight:.0%} "
+        f"{equity_name}. The signals — what each model adds to its own average forecast — "
+        f"({equity_name} signal {latest_signal[EQUITY]:+.2%}, {bond_name} signal "
+        f"{latest_signal[BOND]:+.2%} over {equity_active.horizon} days) {direction} "
+        f"{abs(breakdown.forecast_tilt):.0%}, giving {breakdown.unconstrained:.0%}{cap}"
+        f"{unreliable}."
+    ]
+
+# The last allocation is held to the last day both indices have a price.
+held_until = min(series.index[-1] for series in prices.values())
+# "Latest" weights are the last rebalance's, which can be weeks before the last
+# price: say how far behind they are and why, so they aren't read as today's.
+behind = int(
+    ((prices[EQUITY].index > latest_date) & (prices[EQUITY].index <= held_until)).sum()
+)
+most_behind = (equity_active.test_window - 1) + (equity_active.horizon - 1)
+if behind:
+    how_set.append(
+        f"These weights were set at the last rebalance, {latest_date:%d %b %Y}, "
+        f"{behind} trading days before the latest prices ({held_until:%d %b %Y}). "
+        f"Rebalances are {equity_active.horizon} trading days apart and forecasts arrive "
+        f"in whole {equity_active.test_window}-day test windows, so the latest weights "
+        f"can trail the data by up to {most_behind} trading days."
+    )
+for line in how_set:
+    st.caption(line)
 
 
 # The weights above how volatile each index has been, on one time axis, so a move
 # towards bonds can be read against the volatility around it. The volatility comes
 # from the backtest, so the place is held here and filled once it has run.
 renamed = schedule.rename(columns={EQUITY: equity_name, BOND: bond_name})
-# The last allocation is held to the last day both indices have a price.
-held_until = min(series.index[-1] for series in prices.values())
 allocation_chart_slot = st.container()
 
 
