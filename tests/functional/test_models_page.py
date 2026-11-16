@@ -544,11 +544,37 @@ def test_setting_a_model_active_persists_it_and_shows_it():
     next(b for b in app.button if b.label == "Set as active").click().run()
 
     assert not app.exception
-    assert "Active model · S&P 500" in _markdown(app)
+    assert "Active model · S&amp;P 500" in _markdown(app)  # escaped in the page's HTML
     assert "Polynomial" in _markdown(app)
     stored = active_model.get_active_model(EQUITY)
     assert stored.model_name == POLY
     assert stored.high_risk is False
+
+
+def test_a_target_named_with_html_in_its_column_shows_the_name_as_text():
+    """Column names come from the uploaded file: a crafted one must not insert an
+    element where the page writes its own HTML."""
+    hostile = "EVIL_Index_<img src=x onerror=alert(1)>"
+    committed = _committed().rename(columns={SPX: hostile})
+    active_model.set_active_model(
+        EQUITY,
+        POLY,
+        _result(),
+        high_risk=False,
+        horizon=5,
+        train_window=120,
+        test_window=20,
+        dataset_fingerprint=str(dataset_fingerprint(committed)),
+    )
+    app = AppTest.from_file(str(PAGE), default_timeout=60)
+    app.session_state["extraction_committed"] = committed
+    app.session_state["extraction_committed_targets"] = {EQUITY: hostile}
+    app.run()
+
+    raw_html = " ".join(m.value for m in app.markdown if m.proto.allow_html)
+    assert not app.exception
+    assert "Active model · EVIL Index (&lt;img src=x onerror=alert(1)&gt;)" in raw_html
+    assert "<img" not in raw_html
 
 
 def test_setting_a_polynomial_active_stores_its_function_for_scenarios():

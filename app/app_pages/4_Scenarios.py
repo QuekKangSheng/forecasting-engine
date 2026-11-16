@@ -72,10 +72,11 @@ sources = st.session_state.get(bloomberg_extraction_panel.COMMITTED_SOURCES_KEY,
 frame = merged.set_index(DATE_COLUMN)
 
 # Per index: its active model, and the function a scenario evaluates, or why not.
+actives = {role: active_model.get_active_model(role) for role in ROLES}
 records, functions, unavailable = {}, {}, {}
 for role in ROLES:
     name = label(target_columns[role]) if role in target_columns else role.value.title()
-    record = active_model.get_active_model(role)
+    record = actives[role]
     if role not in target_columns:
         unavailable[role] = f"No {role.value} target is in the committed data."
     elif record is None:
@@ -318,7 +319,7 @@ with st.expander("What each model reads"):
                 }
             )
     if detail:
-        st.dataframe(pd.DataFrame(detail), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(detail), hide_index=True, width="stretch")
     st.caption(
         "Each input after the transform the model was fitted on (a level, a one-day "
         "change, or a one-day log return) and the one-day lag. Trained on is the input's "
@@ -376,6 +377,15 @@ if summary is None or summary.dataset_fingerprint != fingerprint:
         "Open the Portfolio Optimizer page first, so the latest optimised weights are "
         "known. The shocked forecasts are then carried through to the portfolio at "
         "those weights.",
+        icon=":material/info:",
+    )
+    st.stop()
+if not summary.models_match(actives):
+    # Weights solved from a model since replaced aren't the optimised weights now.
+    st.info(
+        "The latest optimised weights were solved from other active models than the ones "
+        "set now. Open the Portfolio Optimizer page again to refresh them. The shocked "
+        "forecasts are then carried through to the portfolio at those weights.",
         icon=":material/info:",
     )
     st.stop()

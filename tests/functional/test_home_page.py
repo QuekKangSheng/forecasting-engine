@@ -1,5 +1,6 @@
 """The Home page's pipeline status, driven through the real page script (FYP-218)."""
 
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -169,6 +170,26 @@ def test_models_that_ran_are_listed_with_their_gate_signal_rank_ic_and_t():
     assert "set an active equity model on the **Models** page" in _next_step(app)
 
 
+def test_a_target_named_with_html_in_its_column_shows_the_name_as_text():
+    """Column names come from the uploaded file: a crafted one must not insert an
+    element where the page writes its own HTML."""
+    hostile = "EVIL_Index_<img src=x onerror=alert(1)>"
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state[bloomberg_extraction_panel.COMMITTED_KEY] = _committed().rename(
+        columns={SPX: hostile}
+    )
+    app.session_state[bloomberg_extraction_panel.COMMITTED_TARGETS_KEY] = {
+        EQUITY: hostile,
+        BOND: AGG,
+    }
+    app.run()
+
+    raw_html = " ".join(m.value for m in app.markdown if m.proto.allow_html)
+    assert not app.exception
+    assert "Equity · EVIL Index (&lt;img src=x onerror=alert(1)&gt;)" in raw_html
+    assert "<img" not in raw_html
+
+
 def test_a_stale_active_model_and_portfolio_run_are_flagged_amber():
     committed = _committed()
     for role in (EQUITY, BOND):
@@ -220,6 +241,7 @@ def test_an_up_to_date_pipeline_says_there_is_nothing_left_to_do():
         bond_weight=0.4,
         net_sharpe=0.85,
         baseline_net_sharpe=0.83,
+        active_set_at={role: active_model.get_active_model(role).set_at for role in (EQUITY, BOND)},
     )
     app = _page(committed, runs=_stored_runs(committed), summary=summary)
 
@@ -231,6 +253,42 @@ def test_an_up_to_date_pipeline_says_there_is_nothing_left_to_do():
     strip = next(m.value for m in app.markdown if '<div class="fe-strip' in m.value)
     assert "60% / 40%" in strip and "0.83 for 50/50" in strip
     assert "Latest weights (01 Mar 2024): 60% equity, 40% bond." in _captions(app)
+
+
+def test_a_portfolio_run_on_an_active_model_since_replaced_is_flagged_amber():
+    committed = _committed()
+    for role in (EQUITY, BOND):
+        active_model.set_active_model(
+            role,
+            DERIVED,
+            _result(0.04),
+            high_risk=False,
+            horizon=20,
+            train_window=504,
+            test_window=20,
+            dataset_fingerprint=str(dataset_fingerprint(committed)),
+        )
+    summary = portfolio_summary.PortfolioSummary(
+        dataset_fingerprint=str(dataset_fingerprint(committed)),
+        as_of=pd.Timestamp("2024-03-01"),
+        equity_weight=0.6,
+        bond_weight=0.4,
+        net_sharpe=0.85,
+        baseline_net_sharpe=0.83,
+        # The run combined an equity model that another has since replaced.
+        active_set_at={
+            EQUITY: datetime(2024, 3, 1, 9, 30),
+            BOND: active_model.get_active_model(BOND).set_at,
+        },
+    )
+    app = _page(committed, runs=_stored_runs(committed), summary=summary)
+
+    assert not app.exception
+    warnings = [w.value for w in app.warning]
+    assert any("last run used different active models" in w for w in warnings)
+    assert "open the **Portfolio Optimizer**" in _next_step(app)
+    # Its weights no longer lead the page as the latest result.
+    assert not [m for m in app.markdown if '<div class="fe-strip' in m.value]
 
 
 def test_an_active_model_saved_under_its_old_name_shows_the_new_one():

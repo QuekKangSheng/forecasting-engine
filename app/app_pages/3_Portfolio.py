@@ -393,6 +393,7 @@ st.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSum
     net_sharpe=backtest.metrics[("optimised", "net")].sharpe,
     baseline_net_sharpe=backtest.metrics[("baseline", "net")].sharpe,
     solve_inputs=latest_solve_inputs,
+    active_set_at={EQUITY: equity_active.set_at, BOND: bond_active.set_at},
 )
 
 # Recorded once per distinct set of inputs (store/portfolio_runs): the key is the

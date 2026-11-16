@@ -1094,10 +1094,11 @@ def _show_active_status(
         return
     tone = "danger" if current.high_risk else "success"
     note = " · set despite failing both gates" if current.high_risk else ""
+    # Escaped: the target's name comes from a column in the uploaded file.
     st.markdown(
         ui.status_row(
-            f"Active model · {target_name}",
-            ui.lozenge(current.model_name, tone),
+            html.escape(f"Active model · {target_name}"),
+            ui.lozenge(html.escape(current.model_name), tone),
             f"set {current.set_at:%d %b %Y}{note}",
         ),
         unsafe_allow_html=True,

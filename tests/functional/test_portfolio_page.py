@@ -247,6 +247,23 @@ def test_the_latest_rebalance_inputs_are_shared_for_re_optimising_under_a_shock(
     assert inputs.bounds == pytest.approx((0.2, 0.8))
 
 
+def test_the_summary_records_the_data_and_the_active_models_it_was_computed_from():
+    """Home and Scenarios check these against what is committed and active when they
+    read the summary, so weights from models since replaced aren't shown as current."""
+    import portfolio_summary
+
+    committed = _committed()
+    _set_active(EQUITY, forecast=_forecast(committed, seed=1))
+    _set_active(BOND, forecast=_forecast(committed, seed=2))
+    app = _page(committed)
+
+    summary = app.session_state[portfolio_summary.SUMMARY_KEY]
+    actives = {role: active_model.get_active_model(role) for role in (EQUITY, BOND)}
+    assert summary.dataset_fingerprint == str(dataset_fingerprint(committed))
+    assert summary.active_set_at == {role: record.set_at for role, record in actives.items()}
+    assert summary.models_match(actives)
+
+
 # --- FYP-19: performance against the equal-weight benchmark -------------------------
 
 
