@@ -90,7 +90,8 @@ def select_signals(
     itself: SPX's bid is SPX. Of a security's remaining fields, the total-return
     index is kept if there is one, otherwise ``PX_LAST``, otherwise its first
     other field by name; bid and ask quotes never are. A column with no known
-    source stands alone.
+    source, or from a file with no Security line, stands alone: nothing says
+    it shares a security with any other column.
     """
     target_securities = {sources[c].security for c in target_columns if c in sources}
     by_security: dict[str, list[str]] = {}
@@ -98,9 +99,11 @@ def select_signals(
         if column in target_columns:
             continue
         source = sources.get(column)
-        if source is None:
+        if source is not None and source.field in _QUOTE_FIELDS:
+            continue
+        if source is None or not source.security:
             by_security[column] = [column]
-        elif source.security not in target_securities and source.field not in _QUOTE_FIELDS:
+        elif source.security not in target_securities:
             by_security.setdefault(source.security, []).append(column)
 
     def rank(column: str) -> int:

@@ -30,7 +30,9 @@ from forecasting_engine.extraction.bloomberg_csv import (
     BloombergCsvError,
     BloombergCsvExport,
     label,
+    no_security_message,
     parse_lines,
+    read_dates,
 )
 
 DATA_SHEET = "Data"
@@ -48,6 +50,11 @@ UNSAVED_MESSAGE = (
 #: What Bloomberg's add-in leaves in a cell while it is still fetching.
 _REQUESTING = "#N/A Requesting"
 
+#: What openpyxl raises for bytes that are not a workbook: not a zip at all, a
+#: zip with no workbook inside (a KeyError for the missing part), or a part
+#: whose XML is broken (a SyntaxError, from either XML parser it may use).
+_UNREADABLE = (zipfile.BadZipFile, KeyError, OSError, SyntaxError)
+
 
 class BloombergXlsxError(ValueError):
     """A file that is not shaped like a Bloomberg workbook export."""
@@ -60,48 +67,72 @@ def read_export(filename: str, data: bytes) -> BloombergCsvExport:
     value. Returns the same ``BloombergCsvExport`` shape
     ``bloomberg_csv.read_export`` does, so both readers feed the same ``merge()``.
     """
+    # Opening and reading both stay inside the try: read-only mode parses a
+    # sheet's XML only as its rows are read.
     try:
         book = openpyxl.load_workbook(BytesIO(data), read_only=True, data_only=True)
-    except (zipfile.BadZipFile, OSError) as exc:
+        try:
+            two_sheet = DATA_SHEET in book.sheetnames
+            if two_sheet:
+                rows = list(book[DATA_SHEET].iter_rows(values_only=True))
+                security = _security(book)
+                metadata = _metadata(book)
+            else:
+                rows = list(book.worksheets[0].iter_rows(values_only=True))
+        finally:
+            book.close()
+    except _UNREADABLE as exc:
         raise BloombergXlsxError(f"{filename}: not a readable .xlsx file ({exc})") from exc
-
-    two_sheet = DATA_SHEET in book.sheetnames
-    try:
-        if two_sheet:
-            rows = list(book[DATA_SHEET].iter_rows(values_only=True))
-            security = _security(book)
-        else:
-            rows = list(book.worksheets[0].iter_rows(values_only=True))
-    finally:
-        book.close()
 
     if not two_sheet:
         _refuse_unsaved(filename, data, rows)
         return _first_sheet(filename, rows)
 
-    if not rows:
-        raise BloombergXlsxError(f"{filename}: the {DATA_SHEET!r} sheet is empty")
+    width = _named_width(rows[0]) if rows else 0
+    if not width:
+        raise BloombergXlsxError(f"{filename}: the {DATA_SHEET!r} sheet has no header row")
 
+    # Cut to the header's width: one stray cell to the right of the table makes
+    # every row that wide, and the empty header cells it leaves name no field.
+    rows = [row[:width] for row in rows]
     header = [str(cell) for cell in rows[0]]
+    repeated = sorted({name for name in header if header.count(name) > 1})
+    if repeated:
+        raise BloombergXlsxError(
+            f"{filename}: the {DATA_SHEET!r} sheet has more than one column headed "
+            f"{', '.join(repr(name) for name in repeated)}. Keep one column per field and "
+            "upload it again."
+        )
+    if len(rows) < 2:
+        raise BloombergXlsxError(
+            f"{filename}: the {DATA_SHEET!r} sheet has a header but no rows of data."
+        )
     frame = pd.DataFrame(rows[1:], columns=header)
     frame = frame.rename(columns={frame.columns[0]: DATE_COLUMN})
-    frame[DATE_COLUMN] = pd.to_datetime(frame[DATE_COLUMN], errors="coerce")
+    fields = [c for c in frame.columns if c != DATE_COLUMN]
+    if not security and len(fields) > 1:
+        raise BloombergXlsxError(
+            no_security_message(filename, len(fields), f"no Security in a {METADATA_SHEET!r} sheet")
+        )
+    # A date cell holds a datetime, or an Excel serial number when it is shown
+    # as a plain number; text dates go through the same reading as a CSV's.
+    try:
+        dates = frame[DATE_COLUMN].map(_date_text).astype("string")
+        frame[DATE_COLUMN] = read_dates(filename, dates, metadata)
+    except BloombergCsvError as exc:
+        raise BloombergXlsxError(str(exc)) from exc
 
     # Read straight from cell values rather than through pandas' CSV parser,
     # so Bloomberg's "#N/A N/A" placeholder (and anything else non-numeric)
     # needs coercing to NaN explicitly here — pd.read_csv does this for the
     # CSV reader automatically via its default NA-string list, this doesn't.
-    for col in frame.columns:
-        if col != DATE_COLUMN:
-            frame[col] = pd.to_numeric(frame[col], errors="coerce")
-
-    frame, notes = _dedupe_dates(frame, filename)
+    for col in fields:
+        frame[col] = pd.to_numeric(frame[col], errors="coerce")
 
     lbl = label(security, filename)
-    fields = [c for c in frame.columns if c != DATE_COLUMN]
     frame = frame.rename(columns={field: f"{lbl}_{field}" for field in fields})
 
-    return BloombergCsvExport(filename=filename, security=security, frame=frame, notes=notes)
+    return BloombergCsvExport(filename=filename, security=security, frame=frame)
 
 
 def _first_sheet(filename: str, rows: list[tuple]) -> BloombergCsvExport:
@@ -129,8 +160,7 @@ def _csv_lines(rows: list[tuple]) -> list[str]:
     )
     width = None
     if header_idx is not None:
-        header = rows[header_idx]
-        width = max(i for i, cell in enumerate(header) if cell is not None) + 1
+        width = _named_width(rows[header_idx])
     lines = []
     for i, row in enumerate(rows):
         cells = list(row)
@@ -147,11 +177,21 @@ def _csv_lines(rows: list[tuple]) -> list[str]:
     return lines
 
 
+def _named_width(header: tuple) -> int:
+    """How many cells of a header row there are up to its last non-empty one."""
+    return max((i + 1 for i, cell in enumerate(header) if cell is not None), default=0)
+
+
 def _date_text(cell: object) -> object:
     if isinstance(cell, bool):
         return cell
     if isinstance(cell, int | float):
-        cell = from_excel(cell)
+        try:
+            cell = from_excel(cell)
+        except (OverflowError, ValueError):
+            # Too large to be a serial date (20240102, say): left as written,
+            # for the date reader to make sense of or refuse.
+            return cell
     if isinstance(cell, datetime | date):
         return cell.isoformat()
     return cell
@@ -202,19 +242,14 @@ def _security(book: openpyxl.Workbook) -> str:
     return ""
 
 
-def _dedupe_dates(frame: pd.DataFrame, name: str) -> tuple[pd.DataFrame, tuple[str, ...]]:
-    """Keep the last row for any date the sheet repeats, and say so.
-
-    A workbook's ``Data`` sheet has every field for a date on one row, so a
-    repeated date is resolved once for the whole row, not per field — unlike
-    ``ingest.bloomberg.dedupe_dates``, which dedupes one field's series at a
-    time. The message shape mirrors that function's.
-    """
-    repeated = frame[DATE_COLUMN].duplicated(keep="last")
-    if not repeated.any():
-        return frame, ()
-    dates = sorted({d.date().isoformat() for d in frame.loc[repeated, DATE_COLUMN].dropna()})
-    shown = ", ".join(dates[:5]) + (f" and {len(dates) - 5} more" if len(dates) > 5 else "")
-    plural = "s" if len(dates) != 1 else ""
-    note = f"{name}: {len(dates)} repeated date{plural} ({shown}); the last value on each was kept"
-    return frame[~repeated].reset_index(drop=True), (note,)
+def _metadata(book: openpyxl.Workbook) -> dict[str, str]:
+    """The ``Metadata`` sheet's rows as text, keys lower-cased: the Start Date,
+    End Date and Period lines the date reader weighs."""
+    if METADATA_SHEET not in book.sheetnames:
+        return {}
+    found: dict[str, str] = {}
+    for row in book[METADATA_SHEET].iter_rows(values_only=True):
+        if row and row[0] is not None:
+            value = row[1] if len(row) > 1 else None
+            found.setdefault(str(row[0]).strip().lower(), _text(value).strip())
+    return found

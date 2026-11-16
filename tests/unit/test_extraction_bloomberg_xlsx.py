@@ -213,7 +213,10 @@ def test_a_workbook_without_metadata_still_reads_with_an_empty_security():
     assert export.security == ""
 
 
-def test_a_repeated_date_keeps_the_last_value_and_reports_a_note():
+def test_a_repeated_date_is_kept_for_validation_to_judge_not_resolved_here():
+    # Keeping the last row would pick one of two different values without
+    # saying which was right; the Data page refuses to commit it instead
+    # (extraction/validation.repeated_date_error).
     data = workbook_bytes(
         security="A Index",
         fields=("PX_LAST",),
@@ -222,9 +225,8 @@ def test_a_repeated_date_keeps_the_last_value_and_reports_a_note():
 
     export = read_export("a.xlsx", data)
 
-    assert export.frame["A_Index_PX_LAST"].tolist() == [2.0, 3.0]
-    assert len(export.notes) == 1
-    assert "repeated date" in export.notes[0]
+    assert export.frame["A_Index_PX_LAST"].tolist() == [1.0, 2.0, 3.0]
+    assert export.notes == ()
 
 
 def test_dates_are_parsed_as_real_datetimes():
@@ -239,3 +241,83 @@ def test_dates_are_parsed_as_real_datetimes():
 def test_not_a_real_xlsx_file_is_refused_not_crashed():
     with pytest.raises(BloombergXlsxError, match="not a readable .xlsx"):
         read_export("fake.xlsx", b"this is not a zip file")
+
+
+def _data_sheet(rows, *, header=("Date", "PX_LAST"), metadata=(("Security", "SPX Index"),)):
+    """A two-sheet workbook whose Data sheet holds ``rows`` exactly as given."""
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = "Data"
+    sheet.append(list(header))
+    for row in rows:
+        sheet.append(list(row))
+    if metadata:
+        meta = book.create_sheet("Metadata")
+        for row in metadata:
+            meta.append(list(row))
+    return _saved(book)
+
+
+def test_excel_serial_numbers_in_a_data_sheet_are_read_as_the_dates_they_stand_for():
+    # 45293 is 2 January 2024 in Excel's date numbering.
+    export = read_export("spx.xlsx", _data_sheet([(45293, 1.0), (45294, 2.0)]))
+
+    assert export.frame["Date"].tolist() == [pd.Timestamp("2024-01-02"), pd.Timestamp("2024-01-03")]
+
+
+def test_day_first_text_dates_in_a_one_sheet_export_are_read_from_its_period():
+    rows = [
+        ["Security", "CPI Index"],
+        ["Period", "M"],
+        [None, None],
+        ["Date", "PX_LAST"],
+        *[[f"05/{month:02d}/2025", 100.0 + month] for month in range(1, 13)],
+    ]
+
+    export = read_export("cpi.xlsx", one_sheet_bytes(rows))
+
+    assert export.frame["Date"].iloc[1] == pd.Timestamp("2025-02-05")
+
+
+def test_a_data_sheet_with_several_fields_and_no_metadata_naming_its_security_is_refused():
+    data = _data_sheet([(datetime(2024, 1, 2), 1.0, 2.0)], header=("Date", "A", "B"), metadata=())
+
+    with pytest.raises(BloombergXlsxError, match="no Security"):
+        read_export("mystery.xlsx", data)
+
+
+def test_a_data_sheet_with_a_header_and_no_rows_is_refused():
+    with pytest.raises(BloombergXlsxError, match="no rows"):
+        read_export("spx.xlsx", _data_sheet([]))
+
+
+def test_a_one_sheet_export_with_a_header_and_no_rows_is_refused():
+    with pytest.raises(BloombergXlsxError, match="no rows"):
+        read_export("spx.xlsx", one_sheet_bytes(ONE_SHEET_ROWS[:7]))
+
+
+def test_a_data_sheet_naming_one_field_twice_is_refused_not_crashed():
+    data = _data_sheet([(datetime(2024, 1, 2), 1.0, 2.0)], header=("Date", "PX_LAST", "PX_LAST"))
+
+    with pytest.raises(BloombergXlsxError, match="PX_LAST"):
+        read_export("spx.xlsx", data)
+
+
+def test_blank_columns_to_the_right_of_a_data_sheet_are_not_read_as_fields():
+    # One stray cell in column E makes openpyxl read every row five cells wide,
+    # so the header ends in three empty cells that name no field.
+    rows = [(datetime(2024, 1, 2), 1.0), (datetime(2024, 1, 3), 2.0, None, None, "checked")]
+
+    export = read_export("spx.xlsx", _data_sheet(rows))
+
+    assert list(export.frame.columns) == ["Date", "SPX_Index_PX_LAST"]
+    assert export.frame["SPX_Index_PX_LAST"].tolist() == [1.0, 2.0]
+
+
+def test_a_zip_that_is_not_a_workbook_is_refused_not_crashed():
+    archive = BytesIO()
+    with zipfile.ZipFile(archive, "w") as target:
+        target.writestr("a.csv", "Date,PX_LAST\n1/2/2024,1\n")
+
+    with pytest.raises(BloombergXlsxError, match="not a readable .xlsx"):
+        read_export("renamed.xlsx", archive.getvalue())

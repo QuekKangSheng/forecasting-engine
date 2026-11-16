@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import pickle
 from collections import Counter
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +36,7 @@ from forecasting_engine.ingest.align import MAX_STALENESS
 from forecasting_engine.ingest.upload import (
     MAX_UPLOAD_BYTES,
     AcceptedUpload,
+    FileSizeError,
     UploadError,
     accept_upload,
     check_extension,
@@ -44,6 +45,7 @@ from forecasting_engine.ingest.upload import (
     keep_source,
 )
 from forecasting_engine.portfolio import optimize
+from forecasting_engine.portfolio.backtest import ASSETS
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.store import lineage
 from model_settings import DEFAULT_HORIZON, DEFAULT_TEST_WINDOW, EMBARGO_DAYS, TRAIN_WINDOW
@@ -61,6 +63,16 @@ _SIGNAL_DROPPED_KEY = "_signal_dropped"
 #: Each uploader's files as last read, with what they were read as: see ``_read_once``.
 _TARGET_READ_KEY = "_target_read"
 _SIGNAL_READ_KEY = "_signal_read"
+#: Each uploader's problems that stop a commit until they are fixed (see
+#: _UploadResult.blocking). Kept in session state, not only shown when the
+#: files are read, so leaving the page and coming back does not lift them;
+#: removing the files they came from does (``_forget_block``).
+_TARGET_BLOCKING_KEY = "_target_blocking"
+_SIGNAL_BLOCKING_KEY = "_signal_blocking"
+#: Why the two uploads together are too big to use, set whenever they are logged.
+#: Kept because the merged frames stay in session state after the uploaders empty,
+#: and the size is only measured when there are files to log.
+_TOO_BIG_KEY = "_merge_too_big"
 #: filename -> the Role/Field the user last picked for it, so navigating to
 #: another page and back doesn't lose the choice (a fresh upload resets the
 #: file_uploader widget itself, but this dict is plain session state).
@@ -125,6 +137,10 @@ class _UploadResult:
     report: ValidationReport | None = None
     errors: list[str] = field(default_factory=list)
     dropped: list[str] = field(default_factory=list)
+    blocking: list[str] = field(default_factory=list)
+    """Files left out because only the person uploading can settle them, such
+    as one date given two different values. Unlike ``errors``, these stop the
+    commit: committing without the file would quietly change the dataset."""
 
 
 def _parse_and_merge(files) -> _UploadResult:
@@ -132,7 +148,9 @@ def _parse_and_merge(files) -> _UploadResult:
 
     Shared between the target and signal uploaders — parsing, merging and
     validating a batch of Bloomberg exports doesn't depend on what role
-    they'll play afterward.
+    they'll play afterward. Every model needs one value per date, so a date is
+    settled here: a row repeating an earlier one is dropped, and a file giving
+    a date two values, or one security's files disagreeing, blocks the commit.
     """
     result = _UploadResult()
     for file in files:
@@ -156,6 +174,7 @@ def _parse_and_merge(files) -> _UploadResult:
             result.errors.append(str(exc))
             continue
 
+        export = validation.drop_exact_repeats(export)
         # A file whose own data fails the schema (wrong type, an impossible
         # value) is excluded the same way a file that fails to parse is —
         # good files still merge, this one does not ride along with a bad
@@ -167,8 +186,14 @@ def _parse_and_merge(files) -> _UploadResult:
         if file_errors:
             result.errors.append(f"{file.name}: " + "; ".join(file_errors))
             continue
+        repeated = validation.repeated_date_error(export)
+        if repeated:
+            result.blocking.append(repeated)
+            continue
         result.exports.append(export)
 
+    result.exports, split_problems = bloomberg_csv.join_split_files(result.exports)
+    result.blocking.extend(split_problems)
     if result.exports:
         merged = bloomberg_csv.merge(result.exports)
         merged, dropped = bloomberg_csv.drop_empty_columns(merged)
@@ -192,6 +217,20 @@ def _read_once(files, kept_key: str) -> _UploadResult:
         kept = (identity, _parse_and_merge(files))
         st.session_state[kept_key] = kept
     return kept[1]
+
+
+def _forget_block(blocking_key: str) -> None:
+    """Lift an uploader's block when the user changes its files (its on_change).
+
+    A block belongs to the files it came from, and once the user removes or adds
+    a file those are no longer the upload; what the uploader now holds is read
+    again and blocks again if it should. Only this tells an uploader the user
+    emptied from one emptied by leaving the page: Streamlit drops the widgets of
+    a page it does not draw, so coming back finds the uploader empty without a
+    change of the user's, this is not called, and the block stays with the files
+    still waiting to be committed.
+    """
+    st.session_state.pop(blocking_key, None)
 
 
 def render() -> None:
@@ -219,6 +258,9 @@ def render() -> None:
             SIGNAL_REPORT_KEY,
             _SIGNAL_EXPORTS_KEY,
             _SIGNAL_DROPPED_KEY,
+            _TARGET_BLOCKING_KEY,
+            _SIGNAL_BLOCKING_KEY,
+            _TOO_BIG_KEY,
             COMMITTED_KEY,
             COMMITTED_REPORT_KEY,
             COMMITTED_TARGETS_KEY,
@@ -251,6 +293,8 @@ def render() -> None:
         type=["csv", "xlsx"],
         accept_multiple_files=True,
         key=f"target_uploader_{version}",
+        on_change=_forget_block,
+        args=(_TARGET_BLOCKING_KEY,),
     )
     target_columns, target_merged = _render_target_uploader(target_files, version)
 
@@ -266,25 +310,31 @@ def render() -> None:
         type=["csv", "xlsx"],
         accept_multiple_files=True,
         key=f"signal_uploader_{version}",
+        on_change=_forget_block,
+        args=(_SIGNAL_BLOCKING_KEY,),
     )
     if signal_files:
         with st.spinner("Reading and merging the signal files…"):
             result = _read_once(signal_files, _SIGNAL_READ_KEY)
         for message in result.errors:
             st.error(message, icon=":material/error:")
+        st.session_state[_SIGNAL_BLOCKING_KEY] = result.blocking
         if result.merged is not None:
             st.session_state[SIGNAL_MERGED_KEY] = result.merged
             st.session_state[SIGNAL_REPORT_KEY] = result.report
             st.session_state[_SIGNAL_EXPORTS_KEY] = result.exports
             st.session_state[_SIGNAL_DROPPED_KEY] = result.dropped
+        read = result.exports
     else:
-        _render_kept_files(st.session_state.get(_SIGNAL_EXPORTS_KEY, []))
+        read = st.session_state.get(_SIGNAL_EXPORTS_KEY, [])
+        _render_kept_files(read)
+    _render_loading_notes(read, st.session_state.get(_SIGNAL_BLOCKING_KEY, []))
 
     signal_merged = st.session_state.get(SIGNAL_MERGED_KEY)
     if signal_merged is not None:
         signal_dropped = st.session_state.get(_SIGNAL_DROPPED_KEY, [])
         st.success(
-            f"Merged {len(st.session_state.get(_SIGNAL_EXPORTS_KEY, []))} file(s) into "
+            f"Merged {_file_count(st.session_state.get(_SIGNAL_EXPORTS_KEY, []))} file(s) into "
             f"{len(signal_merged):,} rows, {len(signal_merged.columns) - 1} data columns.",
             icon=":material/check_circle:",
         )
@@ -297,8 +347,8 @@ def render() -> None:
 
     # Uploading the same file to both merges its data in twice, once under
     # each role's own label — caught here before it happens.
-    target_names = {e.filename for e in st.session_state.get(_TARGET_EXPORTS_KEY, [])}
-    signal_names = {e.filename for e in st.session_state.get(_SIGNAL_EXPORTS_KEY, [])}
+    target_names = _file_names(st.session_state.get(_TARGET_EXPORTS_KEY, []))
+    signal_names = _file_names(st.session_state.get(_SIGNAL_EXPORTS_KEY, []))
     overlapping_names = sorted(target_names & signal_names)
     if overlapping_names:
         st.error(
@@ -344,6 +394,7 @@ def render() -> None:
                 st.session_state.get(COMMITTED_REPORT_KEY) or validation.validate(committed),
                 committed,
                 st.session_state.get(COMMITTED_DROPPED_KEY, []),
+                st.session_state.get(COMMITTED_TARGETS_KEY, {}),
             )
             return
         st.info(
@@ -359,6 +410,10 @@ def render() -> None:
     )
     if file_id:
         _keep_and_log(combined, file_id=file_id)
+    too_big = st.session_state.get(_TOO_BIG_KEY)
+    if too_big:
+        st.error(too_big, icon=":material/error:")
+        st.stop()
 
     # Committing is the one thing every other page waits on, so it comes straight
     # after the uploads, not under the whole quality report and gap review, where
@@ -368,7 +423,21 @@ def render() -> None:
         "Every other page reads whichever dataset was last committed here. Check the "
         "roles and fields above, then commit."
     )
-    if st.button("Use Updated Data", icon=":material/publish:", type="primary"):
+    blocking = [
+        *st.session_state.get(_TARGET_BLOCKING_KEY, []),
+        *st.session_state.get(_SIGNAL_BLOCKING_KEY, []),
+    ]
+    clicked = st.button(
+        "Use Updated Data", icon=":material/publish:", type="primary", disabled=bool(blocking)
+    )
+    if blocking:
+        earlier = COMMITTED_KEY in st.session_state
+        st.caption(
+            "Nothing can be committed until the files marked above are removed, or "
+            "corrected and uploaded again."
+            + (" The other pages keep the data committed earlier." if earlier else "")
+        )
+    elif clicked:
         with st.spinner("Validating the cleaned dataset…"):
             st.session_state[COMMITTED_KEY] = combined
             st.session_state[COMMITTED_REPORT_KEY] = validation.validate(combined)
@@ -406,7 +475,7 @@ def render() -> None:
         if just_committed and COMMITTED_REPORT_KEY in st.session_state
         else validation.validate(combined)
     )
-    _render_report(report, combined, _dropped())
+    _render_report(report, combined, _dropped(), target_columns)
 
     st.download_button(
         "Bloomberg merged (.csv)",
@@ -432,6 +501,7 @@ def _render_target_uploader(
             result = _read_once(files, _TARGET_READ_KEY)
         for message in result.errors:
             st.error(message, icon=":material/error:")
+        st.session_state[_TARGET_BLOCKING_KEY] = result.blocking
         if result.merged is not None:
             st.session_state[TARGET_MERGED_KEY] = result.merged
             st.session_state[TARGET_REPORT_KEY] = result.report
@@ -442,8 +512,11 @@ def _render_target_uploader(
                     f"Dropped {len(result.dropped)} column(s) with no data at all: "
                     f"{', '.join(result.dropped)}."
                 )
+        read = result.exports
     else:
-        _render_kept_files(st.session_state.get(_TARGET_EXPORTS_KEY, []))
+        read = st.session_state.get(_TARGET_EXPORTS_KEY, [])
+        _render_kept_files(read)
+    _render_loading_notes(read, st.session_state.get(_TARGET_BLOCKING_KEY, []))
 
     merged = st.session_state.get(TARGET_MERGED_KEY)
     exports: list[BloombergCsvExport] = st.session_state.get(_TARGET_EXPORTS_KEY, [])
@@ -451,7 +524,7 @@ def _render_target_uploader(
         return {}, None
 
     st.success(
-        f"{len(exports)} target file(s) merged into {len(merged):,} rows.",
+        f"{_file_count(exports)} target file(s) merged into {len(merged):,} rows.",
         icon=":material/check_circle:",
     )
 
@@ -522,7 +595,7 @@ def _render_target_uploader(
                 icon=":material/warning:",
             )
             continue
-        merged_label = bloomberg_csv.label("", export.filename) if label_counts[lbl] > 1 else lbl
+        merged_label = bloomberg_csv.file_label(export) if label_counts[lbl] > 1 else lbl
         resolved_col = f"{merged_label}_{field_choice}"
         if resolved_col not in merged.columns:
             st.error(
@@ -565,6 +638,29 @@ def _render_kept_files(exports: list[BloombergCsvExport]) -> None:
         )
 
 
+def _render_loading_notes(exports: list[BloombergCsvExport], blocking: list[str]) -> None:
+    """What loading the files repaired, and what stops them being committed.
+    Shown on every run, not only the one that read the files, so neither goes
+    out of view when the user leaves the page and comes back."""
+    for export in exports:
+        for note in export.notes:
+            st.info(note, icon=":material/info:")
+    for message in blocking:
+        st.error(message, icon=":material/block:")
+
+
+def _file_count(exports: list[BloombergCsvExport]) -> int:
+    """How many uploaded files ``exports`` were read from: a security joined
+    from several files counts each of them."""
+    return sum(len(export.parts) or 1 for export in exports)
+
+
+def _file_names(exports: list[BloombergCsvExport]) -> set[str]:
+    """The name of every uploaded file ``exports`` were read from, each part of
+    a joined security by its own name."""
+    return {part.filename for export in exports for part in (export.parts or (export,))}
+
+
 def _deconflict_signal_columns(
     signal_merged: pd.DataFrame,
     signal_exports: list[BloombergCsvExport],
@@ -577,7 +673,7 @@ def _deconflict_signal_columns(
     renames = {}
     for export in signal_exports:
         lbl = bloomberg_csv.label(export.security, export.filename)
-        distinct = bloomberg_csv.label("", export.filename)
+        distinct = bloomberg_csv.file_label(export)
         for col in colliding:
             if col in signal_merged.columns and col.startswith(f"{lbl}_"):
                 renames[col] = distinct + col[len(lbl) :]
@@ -602,26 +698,40 @@ def _combine(target: pd.DataFrame | None, signal: pd.DataFrame | None) -> pd.Dat
     )
 
 
-def _keep_and_log(merged: pd.DataFrame, *, file_id: str) -> AcceptedUpload:
+def _keep_and_log(merged: pd.DataFrame, *, file_id: str) -> AcceptedUpload | None:
     """Store the merged file under its content hash and log it to DuckDB.
 
     The merge is an upload like any other: the bytes go under data/uploads and
     a row goes in the uploads table, once per set of files rather than once
     per Streamlit rerun. Dates are written ISO so the stored copy reads back
-    unambiguously.
+    unambiguously. Returns None, with the reason kept under ``_TOO_BIG_KEY``,
+    if the merge is over the size limit: files each under it can still add up
+    to more than it.
     """
     # Canonical bytes, so the same merge hashes the same on every machine, and a
     # model run on it records the same hash (store/runs.py).
-    accepted = accept_upload(MERGED_NAME, frame_csv_bytes(merged))
+    data = frame_csv_bytes(merged)
+    try:
+        accepted = accept_upload(MERGED_NAME, data)
+    except FileSizeError:
+        st.session_state[_TOO_BIG_KEY] = (
+            f"Together these files make {len(data) / 1_000_000:.1f} MB of merged data, more "
+            f"than the {MAX_UPLOAD_BYTES // 1_000_000} MB one dataset may hold, so they "
+            "cannot be used together. Upload fewer files, or a shorter history of each."
+        )
+        return None
+    st.session_state.pop(_TOO_BIG_KEY, None)
     if st.session_state.get(_LOGGED_KEY) != file_id:
         # The merged file, each export it was merged from, and the links between
-        # them, in one transaction.
+        # them, in one transaction. A security joined from several files links
+        # each file.
         roles = ((_TARGET_EXPORTS_KEY, lineage.TARGET), (_SIGNAL_EXPORTS_KEY, lineage.SIGNAL))
         sources = [
-            (AcceptedUpload(frame=e.frame, source=e.source), role)
+            (AcceptedUpload(frame=part.frame, source=part.source), role)
             for key, role in roles
             for e in st.session_state.get(key, [])
-            if e.source is not None
+            for part in (e.parts or (e,))
+            if part.source is not None
         ]
         lineage.record_merge(accepted, sources)
         st.session_state[_LOGGED_KEY] = file_id
@@ -726,14 +836,15 @@ def _render_report(
     report: ValidationReport,
     merged: pd.DataFrame,
     dropped: list[str],
+    targets: Mapping[TargetRole, str],
     *,
     gaps: pd.DataFrame | None = None,
 ) -> None:
     """The verdict and coverage figures in view, the detail in tabs under them: the
     detail is for checking, and stacked one part after another it used to fill most
-    of the page."""
+    of the page. ``targets`` is the column each picked target role reads."""
     _render_verdict(report)
-    _render_coverage(report, merged)
+    _render_coverage(report, merged, targets)
     label = labeller([c for c in merged.columns if c != bloomberg_csv.DATE_COLUMN])
     completeness, moves, gaps_tab = st.tabs(["Completeness", "Unusual moves", "Missing rows"])
     with completeness:
@@ -787,7 +898,9 @@ def _render_verdict(report: ValidationReport) -> None:
         st.success("Merged and validated. Nothing flagged.", icon=":material/check_circle:")
 
 
-def _render_coverage(report: ValidationReport, merged: pd.DataFrame) -> None:
+def _render_coverage(
+    report: ValidationReport, merged: pd.DataFrame, targets: Mapping[TargetRole, str]
+) -> None:
     rows, signals, flag_col = st.columns(3)
     rows.metric("Rows", f"{len(merged):,}", icon=":material/table_rows:")
     # Every column, targets' fields included: Home counts signals alone, so the two
@@ -798,14 +911,23 @@ def _render_coverage(report: ValidationReport, merged: pd.DataFrame) -> None:
     dates = merged["Date"].dropna()
     if not dates.empty:
         st.caption(f"Covering {_fmt(dates.min())} to {_fmt(dates.max())}")
-        _warn_of_an_unpublished_premium(dates)
+        indexed = merged.set_index(bloomberg_csv.DATE_COLUMN)
+        _warn_of_an_unpublished_premium(
+            {role: indexed[column] for role, column in targets.items()}
+        )
 
 
-def _warn_of_an_unpublished_premium(dates: pd.Series) -> None:
+def _warn_of_an_unpublished_premium(prices: Mapping[TargetRole, pd.Series]) -> None:
     """The optimiser's long-run premium starts from a figure published in April 2005,
-    so a portfolio rebalanced before May 2005 would use it before anyone had it."""
-    rebalances = optimize.rebalance_dates_on(
-        pd.DatetimeIndex(pd.to_datetime(dates)).unique().sort_values(),
+    so a portfolio rebalanced before May 2005 would use it before anyone had it.
+
+    ``prices`` holds each picked target's column by date. The portfolio rebalances
+    on the dates both targets have a price (``optimize.common_rebalance_dates``), not
+    on every date some signal has, so nothing is said until both are picked."""
+    if any(role not in prices for role in ASSETS):
+        return
+    rebalances = optimize.common_rebalance_dates(
+        prices,
         horizon=DEFAULT_HORIZON,
         train_window=TRAIN_WINDOW,
         test_window=DEFAULT_TEST_WINDOW,
