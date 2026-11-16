@@ -188,11 +188,14 @@ def draw(chart: dict[str, Any]) -> None:
 
     ``theme=None``: the chart states its own dress (``_CONFIG``), and Streamlit's chart
     theme would otherwise restyle the axes and legend over it. The chart's key
-    (``_key``) is written above it, and is not part of what the chart itself is sent."""
-    spec = {name: part for name, part in chart.items() if name != "key"}
+    (``_key``) is written above it, and a ``key_below`` under it, for a chart whose
+    lower part has a key of its own. Neither is part of what the chart itself is sent."""
+    spec = {name: part for name, part in chart.items() if name not in ("key", "key_below")}
     if chart.get("key"):
         st.markdown(chart["key"], unsafe_allow_html=True)
     st.vega_lite_chart(_named_by_content(spec), width="stretch", theme=None)
+    if chart.get("key_below"):
+        st.markdown(chart["key_below"], unsafe_allow_html=True)
 
 
 def _named_by_content(spec: dict[str, Any]) -> dict[str, Any]:
@@ -682,7 +685,13 @@ def weights_and_volatility_chart(
             crosshair,
             targets,
         ],
-        "resolve": {"scale": {"y": "independent"}, "axis": {"y": "independent"}},
+        # Colour too: shared, the weights' two-colour range was used for the volatility
+        # lines as well, and the third line (the optimised portfolio) wrapped round to
+        # the first colour instead of its own.
+        "resolve": {
+            "scale": {"y": "independent", "color": "independent"},
+            "axis": {"y": "independent"},
+        },
         "params": [
             {
                 "name": "nearest",
@@ -702,7 +711,10 @@ def weights_and_volatility_chart(
             "drawn": bottom["datasets"]["drawn"],
             "hover": days,
         },
-        "key": _labelled(top["key"], "Weight") + _labelled(bottom["key"], "Volatility"),
+        # Each panel's key beside it: the weights' above the chart, the volatility's
+        # under it.
+        "key": _labelled(top["key"], "Weight"),
+        "key_below": _labelled(bottom["key"], "Volatility"),
     }
 
 
