@@ -1037,11 +1037,17 @@ in it (findings 2, 3, 5 and 6 of the 12 Nov optimiser audit):
   allows. A simulation on the data from 2006, with the derived polynomial's
   signal difference shifted against its dates so it has no skill, estimates the
   chance it opens at least once over the backtest at 11% at h = 1, 18% at h = 5
-  and 35% at h = 20 ([evidence](evidence/2026-11-16-trust-gate-rechecks.md)). At
-  h = 20 the gate also opens too often at a single check (about 5–8% against
-  2.3%), since 252 overlapping 20-day pairs hold only about 13 independent
-  observations. An open gate is therefore weak evidence of skill, above all at
-  h = 20. No threshold or window was changed because of this.
+  and 35% at h = 20 ([evidence](evidence/2026-11-16-trust-gate-rechecks.md)). An
+  open gate is therefore weak evidence of skill, above all at h = 20. No threshold
+  or window was changed because of this.
+- **The trust gate's minimum sample is 252 pairs at every horizon.** At h = 20,
+  252 overlapping pairs hold only about 13 independent observations, and the
+  overlap-adjusted standard error is too small on samples that short. The same
+  simulation finds that with no skill each check at h = 20 opens the gate about
+  5–8% of the time (5.4% at the last rebalance, 7.8% averaged over all of them),
+  not the 2.3% a t above 2 should allow. A minimum that grows with the horizon
+  would fix this. It isn't built, because the forecasts add no value at any
+  horizon (above), so a stricter gate would change no conclusion.
 
 ## 18. Signal shock scenarios
 
