@@ -1211,6 +1211,45 @@ number of paths (under Advanced settings) as its only settings. A result is show
 only while its inputs (dataset, active models, latest rebalance and weights,
 method, paths) are unchanged.
 
+## 20. Results on the data from 31 Aug 2006
+
+The final rerun after the 16 Nov 2026 changes, at the page's defaults, on the 11
+Bloomberg exports from 31 Aug 2006 to 11–12 Nov 2026 (the files' SHA-256 are in
+the [evidence](evidence/2026-11-16-full-history.md)). The figures in earlier sections that are marked
+"on the Sep 2026 data" are the evidence for the decisions they support, not
+current results.
+
+**Models.** Signal Rank IC and t (§10), and whether each passes the gate (§12):
+
+| Target | Model | h = 1 | h = 5 | h = 10 | h = 20 (default) |
+|---|---|---|---|---|---|
+| Equity | Polynomial (derived) | +0.033, t 2.10, passes | +0.083, t 3.20, passes | +0.104, t 2.84, passes | +0.103, t 1.98, fails on t |
+| Equity | Polynomial – fixed economic inputs | +0.033, t 2.11, passes | +0.068, t 2.10, passes | +0.050, t 1.09 | +0.071, t 1.10 |
+| Equity | Machine learning | +0.028, t 1.71 | +0.068, t 2.34, passes | +0.097, t 2.48, passes | +0.082, t 1.71 |
+| Equity | Fama-French 5 | −0.006, t −0.35 | +0.021, t 1.27 | −0.003, t −0.17 | −0.013, t −0.83 |
+| Bond | Polynomial (derived) | +0.029, t 1.84 | +0.030, t 1.00 | +0.021, t 0.48 | +0.031, t 0.49 |
+| Bond | Polynomial – fixed carry inputs | +0.003, t 0.20 | +0.020, t 0.60 | +0.039, t 0.78 | +0.066, t 0.99 |
+| Bond | Machine learning | +0.019, t 1.30 | +0.013, t 0.54 | −0.017, t −0.46 | +0.045, t 0.88 |
+
+No bond model passes at any horizon, and at the default 20-day horizon no model
+passes for either index. Both research models score near zero on their pre-2016
+hold-out at every horizon (t −0.44 to +0.65; §9.2 has the 20-day figures).
+
+**Portfolio.** With the derived polynomial active for both indices (decided before
+any result), net of costs, 6 Oct 2008 to Nov 2026, the levels' net Sharpe runs
+from 0.78–0.80 at level 1 to 1.03–1.05 at level 5, against 0.88 for 50/50. Their t
+against 50/50 mostly reflects equity weight. The forecasts add no value at any
+horizon (§17, known limitations): the trust gate never opens at h = 1 or 10, and t
+against no forecasts is −1.10 to −1.38 at h = 5 and +0.01 to +0.05 at h = 20.
+
+**Why the 20-day gate opened 26 times on 1 Nov and 3 times now.** Mostly the bond
+model, not the longer history. With machine learning for bond, as on 1 Nov, it
+opens at 19 of 99 rebalances on the Sep 2026 upload and 92 of 226 on the data
+from 2006; with the derived polynomial for both, at 2 and 3. Starting the trust
+pairs in 2010 opens it at 21 rebalances for the derived pair, since 2008's slope
+was negative (t −2.03), but the forecasts still add nothing (t −0.69 to +0.46).
+This is descriptive; no rule was changed because of it.
+
 ## Parameters
 
 Values are Python literals as the code holds them.
