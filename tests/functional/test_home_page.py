@@ -309,3 +309,50 @@ def test_an_active_model_saved_under_its_old_name_shows_the_new_one():
     captions = _captions(app)
     assert "Polynomial – fixed economic inputs" in captions
     assert "Research model (fixed inputs)" not in captions
+
+
+def _set_both_active(committed: pd.DataFrame, targets: dict | None = None) -> None:
+    for role in (EQUITY, BOND):
+        active_model.set_active_model(
+            role,
+            DERIVED,
+            _result(0.04),
+            high_risk=False,
+            horizon=20,
+            train_window=504,
+            test_window=20,
+            dataset_fingerprint=str(dataset_fingerprint(committed)),
+            target_column=(targets or {}).get(role),
+        )
+
+
+def test_after_the_data_is_cleared_the_last_allocation_is_not_shown_as_current():
+    committed = _committed()
+    _set_both_active(committed)
+    summary = portfolio_summary.PortfolioSummary(
+        dataset_fingerprint=str(dataset_fingerprint(committed)),
+        as_of=pd.Timestamp("2024-03-01"),
+        equity_weight=0.6,
+        bond_weight=0.4,
+        net_sharpe=0.85,
+        baseline_net_sharpe=0.83,
+        active_set_at={role: active_model.get_active_model(role).set_at for role in (EQUITY, BOND)},
+    )
+
+    app = _page(None, summary=summary)
+
+    assert not app.exception
+    assert not [m for m in app.markdown if '<div class="fe-strip' in m.value]
+    assert "**Data** page" in _next_step(app)
+
+
+def test_a_model_fitted_on_another_target_column_is_flagged_on_home():
+    committed = _committed()
+    # Fitted when the price field was the equity target; the total return is now.
+    _set_both_active(committed, {EQUITY: "SPX_Index_PX_LAST", BOND: AGG})
+
+    app = _page(committed)
+
+    assert not app.exception
+    assert any("fitted on different data" in w.value for w in app.warning)
+    assert "re-run the equity models" in _next_step(app)

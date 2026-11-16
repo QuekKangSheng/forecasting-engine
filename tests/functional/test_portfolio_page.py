@@ -180,7 +180,26 @@ def test_active_models_set_on_another_dataset_are_refused():
     app = _page(committed)
 
     assert not app.exception
-    assert any("different dataset than the one committed now" in w.value for w in app.warning)
+    assert any(
+        "different dataset or target than the one committed now" in w.value for w in app.warning
+    )
+    assert not app.metric
+
+
+def test_an_active_model_fitted_on_another_field_of_the_same_data_is_refused():
+    """The same exports committed again with another field as the target leave the
+    data's fingerprint as it was; the model fitted on the old field is still refused."""
+    committed = _committed()
+    fingerprint = SETTINGS["dataset_fingerprint"]
+    other_field = "SPX_Index_TOT_RETURN_INDEX_GROSS_DVDS"
+    assert other_field != EQUITY_COL
+    _set_active(EQUITY, forecast=_forecast(committed), target_column=other_field)
+    _set_active(BOND, forecast=_forecast(committed), target_column=BOND_COL)
+    app = _page(committed)
+
+    assert fingerprint == str(dataset_fingerprint(committed))  # the data alone matches
+    assert not app.exception
+    assert any("active equity model was set" in w.value for w in app.warning)
     assert not app.metric
 
 
@@ -1605,5 +1624,7 @@ def test_active_models_set_on_a_same_shape_dataset_with_other_values_are_refused
     app = _page(corrected)
 
     assert not app.exception
-    assert any("different dataset than the one committed now" in w.value for w in app.warning)
+    assert any(
+        "different dataset or target than the one committed now" in w.value for w in app.warning
+    )
     assert not app.metric

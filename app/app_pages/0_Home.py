@@ -81,11 +81,24 @@ def _stale(fingerprint_then: str | None) -> bool:
     return fingerprint is not None and fingerprint_then != fingerprint
 
 
+def _active_stale(role: TargetRole) -> bool:
+    """Whether ``role``'s active model was fitted on other data or another target
+    column than the ones committed now."""
+    active = actives[role]
+    return (
+        active is not None
+        and fingerprint is not None
+        and not active.fitted_on(fingerprint, targets.get(role))
+    )
+
+
 def _portfolio_current() -> bool:
     """Whether the last Portfolio run used the committed data and the models active
-    now: its weights and Sharpe ratios are out of date once either is replaced."""
+    now: its weights and Sharpe ratios are out of date once either is replaced, and
+    once the data is cleared."""
     return (
         summary is not None
+        and merged is not None
         and not _stale(summary.dataset_fingerprint)
         and summary.models_match(actives)
     )
@@ -114,7 +127,7 @@ def _next_step() -> tuple[str, str] | None:
                 f"set an active {ROLE_NAMES[role].lower()} model on the **Models** page.",
                 "models",
             )
-        if _stale(active.dataset_fingerprint):
+        if _active_stale(role):
             return (
                 f"re-run the {ROLE_NAMES[role].lower()} models on the committed data and set "
                 "one active on the **Models** page.",
@@ -208,7 +221,7 @@ def _models_card() -> None:
         active = actives[role]
         if active is None:
             st.caption("Active model: none set.")
-        elif _stale(active.dataset_fingerprint):
+        elif _active_stale(role):
             st.warning(
                 f"Active model {display_model_name(active.model_name)} was fitted on "
                 "different data from the one committed now.",

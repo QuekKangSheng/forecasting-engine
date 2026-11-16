@@ -81,10 +81,10 @@ for role in ROLES:
         unavailable[role] = f"No {role.value} target is in the committed data."
     elif record is None:
         unavailable[role] = f"No active model is set for {name}."
-    elif record.dataset_fingerprint != fingerprint:
+    elif not record.fitted_on(fingerprint, target_columns[role]):
         unavailable[role] = (
-            f"The active {name} model was set on another dataset. Run it on this data on "
-            "the Models page and set it active again."
+            f"The active {name} model was set on another dataset or target. Run it on this "
+            "data on the Models page and set it active again."
         )
     else:
         function = active_model.get_active_function(role)
@@ -338,8 +338,8 @@ def _base_forecast(role: TargetRole) -> float | None:
     """The index's base-case forecast for an index the scenario didn't evaluate:
     its active model's latest saved forecast, as the Portfolio page centres the
     simulation on. ``None`` if the index has no usable active model."""
-    record = active_model.get_active_model(role)
-    if record is None or record.dataset_fingerprint != fingerprint:
+    record = actives[role]
+    if record is None or not record.fitted_on(fingerprint, target_columns.get(role)):
         return None
     saved = active_model.get_active_model_forecast(role)
     if saved is None or saved.dropna().empty:

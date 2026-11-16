@@ -43,6 +43,7 @@ ALTER TABLE active_models ADD COLUMN IF NOT EXISTS test_window INTEGER;
 ALTER TABLE active_models ADD COLUMN IF NOT EXISTS dataset_fingerprint TEXT;
 ALTER TABLE active_models ADD COLUMN IF NOT EXISTS signal_rank_ic DOUBLE;
 ALTER TABLE active_models ADD COLUMN IF NOT EXISTS run_id TEXT;
+ALTER TABLE active_models ADD COLUMN IF NOT EXISTS target_column TEXT;
 CREATE TABLE IF NOT EXISTS active_model_forecasts (
     role       TEXT      NOT NULL,
     model_name TEXT      NOT NULL,
@@ -126,6 +127,22 @@ class ActiveModelRecord:
     """The run in ``store/runs`` that produced the model's result: lineage from the
     active model to its fit, settings and data. ``None`` for a result fitted before
     runs were recorded, or set active before this column existed."""
+    target_column: str | None = None
+    """The committed column the model forecast. ``None`` for a model set active
+    before this column existed."""
+
+    def fitted_on(self, dataset_fingerprint: str | None, target_column: str | None) -> bool:
+        """Whether the model was fitted on the data ``dataset_fingerprint`` names and
+        forecast ``target_column`` in it.
+
+        The same data can be committed again with another field confirmed as the
+        target (a price index in place of a total return) or the two roles swapped:
+        the fingerprint is unchanged, but a model fitted on the old target is not
+        this target's model. A model set active before the target was recorded is
+        judged on the data alone, as it was then."""
+        if self.dataset_fingerprint != dataset_fingerprint:
+            return False
+        return self.target_column is None or self.target_column == target_column
 
 
 def set_active_model(
@@ -141,6 +158,7 @@ def set_active_model(
     function: ActiveFunction | None = None,
     attribution: ModelDescription | None = None,
     run_id: str | None = None,
+    target_column: str | None = None,
     db_path: Path = DEFAULT_DB_PATH,
     set_at: datetime | None = None,
 ) -> ActiveModelRecord:
@@ -168,14 +186,15 @@ def set_active_model(
         dataset_fingerprint=dataset_fingerprint,
         signal_rank_ic=result.signal_rank_ic,
         run_id=run_id,
+        target_column=target_column,
     )
     with connect(db_path, _CREATE_TABLES) as conn:
         conn.execute("BEGIN TRANSACTION")
         conn.execute(
             "INSERT INTO active_models "
             "(role, model_name, ic, oos_rank_ic, rmse, high_risk, set_at, "
-            "horizon, train_window, test_window, dataset_fingerprint, signal_rank_ic, run_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "horizon, train_window, test_window, dataset_fingerprint, signal_rank_ic, run_id, "
+            "target_column) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 record.role.value,
                 record.model_name,
@@ -190,6 +209,7 @@ def set_active_model(
                 record.dataset_fingerprint,
                 record.signal_rank_ic,
                 record.run_id,
+                record.target_column,
             ],
         )
         if result.forecast is not None:
@@ -351,8 +371,8 @@ def get_active_model(
     with connect(db_path, _CREATE_TABLES) as conn:
         row = conn.execute(
             "SELECT role, model_name, ic, oos_rank_ic, rmse, high_risk, set_at, "
-            "horizon, train_window, test_window, dataset_fingerprint, signal_rank_ic, run_id "
-            "FROM active_models WHERE role = ? ORDER BY set_at DESC LIMIT 1",
+            "horizon, train_window, test_window, dataset_fingerprint, signal_rank_ic, run_id, "
+            "target_column FROM active_models WHERE role = ? ORDER BY set_at DESC LIMIT 1",
             [role.value],
         ).fetchone()
     if row is None:
@@ -371,6 +391,7 @@ def get_active_model(
         dataset_fingerprint=row[10],
         signal_rank_ic=row[11],
         run_id=row[12],
+        target_column=row[13],
     )
 
 

@@ -543,3 +543,48 @@ def test_a_model_read_earlier_keeps_its_function_and_attribution_after_a_newer_o
     }
     assert get_active_function(TargetRole.EQUITY, db_path=db) == USER
     assert get_active_attribution(TargetRole.EQUITY, db_path=db) is None
+
+
+def test_the_target_column_a_model_forecast_round_trips(db):
+    set_active_model(
+        TargetRole.EQUITY,
+        "Machine Learning",
+        _result(),
+        high_risk=False,
+        db_path=db,
+        target_column="SPX_Index_TOT_RETURN_INDEX_GROSS_DVDS",
+        **SETTINGS,
+    )
+
+    row = get_active_model(TargetRole.EQUITY, db_path=db)
+    assert row.target_column == "SPX_Index_TOT_RETURN_INDEX_GROSS_DVDS"
+
+
+def test_a_model_is_fitted_on_the_data_and_the_target_column_it_was_run_on(db):
+    set_active_model(
+        TargetRole.EQUITY,
+        "Machine Learning",
+        _result(),
+        high_risk=False,
+        db_path=db,
+        target_column="SPX_Index_TOT_RETURN_INDEX_GROSS_DVDS",
+        **SETTINGS,
+    )
+    row = get_active_model(TargetRole.EQUITY, db_path=db)
+
+    assert row.fitted_on("fp-1", "SPX_Index_TOT_RETURN_INDEX_GROSS_DVDS")
+    # The same data committed with the price field as the target, or the roles swapped.
+    assert not row.fitted_on("fp-1", "SPX_Index_PX_LAST")
+    assert not row.fitted_on("fp-1", "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS")
+    assert not row.fitted_on("fp-2", "SPX_Index_TOT_RETURN_INDEX_GROSS_DVDS")
+
+
+def test_a_model_set_before_targets_were_recorded_is_judged_on_its_data_alone(db):
+    set_active_model(
+        TargetRole.EQUITY, "Machine Learning", _result(), high_risk=False, db_path=db, **SETTINGS
+    )
+    row = get_active_model(TargetRole.EQUITY, db_path=db)
+
+    assert row.target_column is None
+    assert row.fitted_on("fp-1", "anything")
+    assert not row.fitted_on("fp-2", "anything")

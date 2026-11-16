@@ -114,18 +114,19 @@ if merged is None or EQUITY not in target_columns or BOND not in target_columns:
 data_sha256 = page_cache.dataset_sha256(merged)
 fingerprint = str(dataset_fingerprint(merged, data_sha256))
 
-# Each active model's saved forecast belongs to the dataset it was run on. One
-# set on an earlier upload (other dates, another bond index) would otherwise be
-# combined with today's prices without a word.
+# Each active model's saved forecast belongs to the dataset and the target column it
+# was run on. One set on an earlier upload (other dates, another bond index), or on
+# another field of the same index, would otherwise be combined with today's prices
+# without a word.
 stale = [
     name
-    for name, record in (("equity", equity_active), ("bond", bond_active))
-    if record.dataset_fingerprint != fingerprint
+    for name, role, record in (("equity", EQUITY, equity_active), ("bond", BOND, bond_active))
+    if not record.fitted_on(fingerprint, target_columns[role])
 ]
 if stale:
     st.warning(
         f"The active {' and '.join(stale)} model{'s were' if len(stale) > 1 else ' was'} "
-        "set from a run on a different dataset than the one committed now, so "
+        "set from a run on a different dataset or target than the one committed now, so "
         f"{'their forecasts' if len(stale) > 1 else 'its forecast'} can't be combined with "
         "these prices. Run the models on this data on the Models page and set them active "
         "again.",

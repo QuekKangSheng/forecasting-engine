@@ -617,12 +617,13 @@ def _recorder(
     return record
 
 
-def _active_settings(name: str) -> dict[str, int | str | None]:
-    """What a model set active was run under. The research models train on every
-    earlier date, so they have no train window."""
+def _active_settings(role: TargetRole, name: str) -> dict[str, int | str | None]:
+    """What a model set active was run under, and the column it forecast. The
+    research models train on every earlier date, so they have no train window."""
+    settings = {**ACTIVE_SETTINGS, "target_column": target_columns[role]}
     if name in RESEARCH_MODELS:
-        return {**ACTIVE_SETTINGS, "train_window": None}
-    return ACTIVE_SETTINGS
+        return {**settings, "train_window": None}
+    return settings
 
 
 def _run_user(
@@ -1134,7 +1135,7 @@ def _confirm_high_risk(
             function=function,
             attribution=attribution,
             run_id=run_id,
-            **_active_settings(model_name),
+            **_active_settings(role, model_name),
         )
         st.session_state.pop(pending_key, None)
         st.rerun()
@@ -1201,7 +1202,7 @@ def _show_active_picker(
                 function=_active_function(selected, runs[selected]),
                 attribution=_active_attribution(selected, runs[selected]),
                 run_id=_run_id(role, selected, settings),
-                **_active_settings(selected),
+                **_active_settings(role, selected),
             )
             st.rerun()
     pending = st.session_state.get(pending_key)

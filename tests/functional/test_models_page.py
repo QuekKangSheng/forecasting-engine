@@ -1920,3 +1920,11 @@ def test_a_research_row_shows_its_pre_2016_holdout_score():
         "test windows from Sep 2008 whose every label ends before 1 Aug 2016: out of sample "
         "for its research's choices."
     ) in _captions(app)
+
+
+def test_a_model_set_active_records_the_target_column_it_forecast():
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert not app.exception
+    assert active_model.get_active_model(EQUITY).target_column == SPX
