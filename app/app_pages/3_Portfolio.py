@@ -311,8 +311,8 @@ unreliable = (
 how_set = [
     f"How this was set: level {risk_level} targets {breakdown.level_weight:.0%} {equity_name}. "
     f"The signals — what each model adds to its own average forecast — ({equity_name} "
-    f"{latest_signal[EQUITY]:+.2%}, {bond_name} {latest_signal[BOND]:+.2%} over "
-    f"{equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%}, giving "
+    f"signal {latest_signal[EQUITY]:+.2%}, {bond_name} signal {latest_signal[BOND]:+.2%} "
+    f"over {equity_active.horizon} days) {direction} {abs(breakdown.forecast_tilt):.0%}, giving "
     f"{breakdown.unconstrained:.0%}{cap}{unreliable}."
 ]
 st.caption(how_set[0])
@@ -943,9 +943,10 @@ else:
     st.caption(
         f"{simulated.paths:,} paths of the next {simulated.horizon} trading days from "
         f"{simulated.as_of:%d %b %Y}, each portfolio held at its weights then and left to "
-        f"drift, with no trading costs. The paths centre on the active models' forecasts "
-        f"({equity_name} {base[EQUITY]:+.2%}, {bond_name} {base[BOND]:+.2%} over "
-        f"{simulated.horizon} days) and draw their daily moves "
+        f"drift, with no trading costs. The paths centre on the active models' whole "
+        f"forecasts, their own average included ({equity_name} forecast {base[EQUITY]:+.2%}, "
+        f"{bond_name} forecast {base[BOND]:+.2%} over {simulated.horizon} days), not on the "
+        f"signals the weights were set from, and draw their daily moves "
         + (
             "by resampling whole days"
             if simulated.method == monte_carlo.BOOTSTRAP

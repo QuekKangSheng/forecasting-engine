@@ -16,6 +16,10 @@ The rebalances run every h trading days from 6 Oct 2008.
 
 The old band is rerun beside the new rule as a sensitivity only. It comes from this script's own copy of the removed `_banded` and its drift loop. The two prior settings, 3.6% and 9.6% a year, are for disclosure only. Neither changed anything in the code.
 
+## After the checkpoint
+
+Toby reviewed these results on 16 Nov 2026 and confirmed that the band removal stands. Nothing in the code or this file was changed because of the results. As task 5 asks, the forecasts adding no value after costs at any horizon is recorded as a known limitation in `docs/methodology.md` §17.
+
 ## Summary
 
 ### Cost drag and turnover, a year, without the band and with it

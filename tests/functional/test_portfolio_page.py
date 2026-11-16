@@ -826,6 +826,16 @@ def test_running_the_simulation_shows_var_cvar_and_drawdown_at_both_levels():
     assert "the one-day Monte Carlo rows above are the first day of these same paths" in captions
 
 
+def test_the_simulations_forecasts_and_the_weights_signals_are_named_apart():
+    app = _run_simulation(_happy_page())
+
+    captions = _captions(app)
+    how_set = next(c.value for c in app.caption if c.value.startswith("How this was set"))
+    assert re.search(r"S&P 500 signal [+-]\d", how_set)
+    assert re.search(r"S&P 500 forecast [+-]\d", captions)
+    assert "not on the signals the weights were set from" in captions
+
+
 def test_the_path_count_is_adjustable_under_advanced_settings():
     app = _happy_page()
     (paths,) = [n for n in app.number_input if n.label == "Simulated paths"]

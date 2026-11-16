@@ -179,7 +179,7 @@ window, 20-row embargo) by `docs/evidence/2026-11-15-history-2006.py`
 | Machine-learning retuning | Every `RETUNE_EVERY` (252) rows, on a 252-row window | Unchanged |
 | Covariance | 504 rows before each rebalance | Unchanged |
 | Forecast trust `β̂` | Expanding over out-of-sample pairs; zero until `MIN_TRUST_HISTORY` (252) pairs and t > 2 | Pairs from 3 Oct 2008; the 252nd pair's outcome is known on 4 Nov 2009, the earliest it can open |
-| Long-run premium `π̄` | Expanding mean of daily equity-minus-bond returns since the data starts (§17) | From 31 Aug 2006 |
+| Long-run premium `π̄` | Expanding mean of daily equity-minus-bond returns since the data starts, blended with a published prior worth 30 years (§17) | Data from 31 Aug 2006, blended with the prior (published April 2005, before any of our data) |
 | VaR backtest | `VAR_WINDOW` (252) rows | Unchanged |
 | Portfolio backtest | From the first rebalance, every 20th out-of-sample date both targets share | 226 rebalances, 6 Oct 2008 to 9 Oct 2026 |
 
@@ -763,11 +763,15 @@ FYP-52).
 
 ## 15. Directional P&L
 
-`portfolio/directional.directional_pnl` asks whether a forecast's direction would
-have paid, per index, for one model's run (FYP-162). It uses the run's pooled
-out-of-sample forecasts and the realised forward returns they were scored
-against (`ModelRunResult.forecast`, `.realised`), so every day replayed is one
-the model never trained on.
+`portfolio/directional.directional_pnl` asks whether a model's signals point the
+right way, per index, for one model's run (FYP-162). It uses the run's pooled
+out-of-sample signals, each forecast less its fold's level
+(`ModelRunResult.forecast` less `.baseline`, the figure the Signal Rank IC scores,
+§10), and the realised forward returns they were scored against (`.realised`), so
+every day replayed is one the model never trained on. The raw forecast is not
+used: its level is mostly the training window's mean return, so a model with a
+positive level would hold the index on almost every step whatever its signals
+said. A result saved before levels were kept asks to be run again.
 
 1. **Period.** Every out-of-sample date the run produced that has a realised
    return; a run's last `h` dates have none yet. A slider narrows this to a
@@ -779,14 +783,18 @@ the model never trained on.
    stepped every `h` dates from the first, so each step's `h`-day return ends
    where the next begins and compounding never counts a day twice. Each horizon is reported
    separately; the page shows the one its results were run under.
-3. **Strategy.** Fully invested in the index on a step whose forecast is above
+3. **Strategy.** Fully invested in the index on a step whose signal is above
    zero, in cash otherwise, earning that step's realised return or nothing. The
-   forecast's size is never used. A step with no forecast (a signal missing) is
+   signal's size is never used. A step with no forecast (an input missing) is
    held in cash.
 4. **Buy and hold.** The realised return on every step.
-5. **Hit rate** is the share of steps with a forecast whose direction matched the
-   realised return's (a forecast at or below zero counts as a fall); **share
+5. **Hit rate** is the share of steps with a signal whose direction matched the
+   realised return's (a signal at or below zero counts as a fall); **share
    invested** is the share of steps in the index.
+6. **Dates.** Each step's return is plotted at the end of its holding period,
+   `h` of the run's dates after the call, when it was earned, and both lines start
+   from zero on the first call's date. Plotted at the call's date, a 20-day
+   return would appear four weeks before it happened.
 
 Everything is gross: no trading cost is charged and cash earns nothing.
 
@@ -864,9 +872,50 @@ signals into the weight schedule step 14 backtests.
    covariance at every rebalance, and level 3 is not pinned to 50/50.
    `BASELINE_WEIGHTS`, the fixed 50/50 the benchmark comparison uses, is separate
    and never changes.
-5. **Long-run premium.** `π̄`, the mean daily equity-minus-bond return over every
-   day to date, scaled to `h` days (`long_run_premium`). A rebalance trades at its
-   day's close, so that day's own return counts.
+5. **Long-run premium.** `π̄` (`long_run_premium`), the mean daily
+   equity-minus-bond return over every day to date blended with a published
+   long-run premium, scaled to `h` days. With `t` the trading days of the shared
+   price calendar since the data starts:
+
+   `π̄_t = (N0·p + Σ_{s≤t} (r_eq,s − r_bond,s)) / (N0 + t) × h`
+
+   - `p = PREMIUM_PRIOR_ANNUAL / 252`, with `PREMIUM_PRIOR_ANNUAL` = 6.6% a year:
+     US large-company stocks over long-term government bonds, arithmetic mean,
+     1926–2004 (Goetzmann & Ibbotson, "History and the Equity Risk Premium", Yale
+     ICF working paper, April 2005). It was published before our first rebalance
+     and its data ends before ours starts, so there is no look-ahead.
+   - `N0 = PREMIUM_PRIOR_YEARS × 252`, with `PREMIUM_PRIOR_YEARS` = 30: the prior
+     counts as 30 years of daily data. Basis: a mean is known to about `σ/√n` from
+     `n` years, so for the prior to be uncertain by `s` = 3 points a year (long-run
+     eras differ by about that) with `σ` ≈ 17–18% a year, the volatility of
+     equity-minus-bond returns, `n = (σ/s)²` = 32–36 years. That is rounded down
+     to 30, so the data counts for a little more, and kept below the source's 79
+     years.
+   - With no day of data `π̄` is the prior; after 30 years of data the two weigh
+     equally. A rebalance trades at its day's close, so that day's own return
+     counts.
+
+   **Why a prior.** On data from 31 Aug 2006 a plain expanding mean rests on two
+   years ending in the 2008 crash, and would very likely have gone to zero or
+   below in 2008–09: the forecasts would have switched off (step 7's limitation)
+   and, just above zero, the tilts would have exploded. With the prior, `π̄` stayed
+   between 4.19% and 7.86% a year over the backtest from 6 Oct 2008, at its lowest
+   on 9 Mar 2009, the S&P 500's low; it was 5.01% at end-2008, 4.67% at end-March
+   2009 and 6.38% at end-May 2020 ([evidence](evidence/2026-11-16-optimiser-fixes.md)).
+
+   **Limitations.**
+   - The source's bond leg is long-term government bonds; ours (LBUSTRUU) covers
+     every maturity and earns less, so the prior probably understates our premium
+     by about 0.4 points a year. That is stated, not adjusted.
+   - On data from 2006 the prior still carries about 60% of the weight in 2026, so
+     `π̄` adapts slowly if the true premium has changed.
+   - An upload whose first rebalance falls before May 2005
+     (`PREMIUM_PRIOR_PUBLISHED`) would use the prior before it was published. The
+     Data page warns of such an upload.
+   - Disclosed as a sensitivity only: with the prior at 3.6% or 9.6% a year the
+     forecasts' value against no forecasts (step 9) moves by no more than about
+     0.3 in t at h = 5 and 0.13 at h = 20. The constants were not changed because
+     of it.
 6. **Forecast trust.** `β̂` (`forecast_trust`), how much of the signal difference
    `Δs = s_equity − s_bond` the models have earned trust for (Grinold 1994). Each
    date with a stored forecast from both models gives a pair (`trust_pairs`): `x`
@@ -899,29 +948,33 @@ signals into the weight schedule step 14 backtests.
    bounds, not a separate rule. The tilt scales with `1/π̄`, so a small premium makes a
    large tilt.
 
-   **Limitation.** When `π̄ ≤ 0` the rule has no positive `λ_L`, so the tilt and
-   the no-trade band are both zero: it ignores even a perfect forecast until the
-   running premium is positive again.
-8. **No-trade band** (FYP-49). Between rebalances the portfolio drifts with the
-   two indices' returns, exactly as the backtest drifts it (§14). At each
-   rebalance after the first, with `c` the cost of moving the equity weight by 1
-   (equity's plus bond's `DEFAULT_COSTS_BPS`, over 10,000), the band is
-   `c / (λ_L·D) = c·(w*_L − w_mv)/π̄`. It is zero at level 5, where `π̄ ≤ 0`, where
-   `D ≤ 0`, and where `w*_L` is not above `w_mv`. If the bounded target is within the
-   band of the drifted equity weight, the portfolio holds and trades nothing;
-   otherwise it moves to the band's near edge,
-   `target − sign(target − drifted) × band`, clipped to the bounds. Before any of
-   that, if drift has carried the equity weight outside the bounds, the rebalance
-   trades back to the nearest bound, whatever the band, and pays for it like any
-   trade, so no rebalance ever leaves the portfolio outside them. The first rebalance
-   buys the target from cash. With zero costs there is no band and the schedule is
-   the one step 7 gives. On the Sep 2026 data, under the fixed-strength weight rule
-   steps 4 to 7 replaced, the band raised net Sharpe at every horizon (h = 1 from 0.85
-   to 1.02, h = 20 from 0.80 to 0.85) and cut the cost drag at h = 1 from 404 to 9 bp
-   a year ([evidence](evidence/2026-10-12-design-verification.md)). Directional P&L
-   (§15) is unaffected and stays gross.
+   **Limitation.** When `π̄ ≤ 0` the rule has no positive `λ_L`, so the tilt is
+   zero: it would ignore even a perfect forecast until the premium is positive
+   again. `_tilt_scale` keeps that guard, but with step 5's prior `π̄` has never
+   reached zero on our data.
+8. **Trading.** Between rebalances the portfolio drifts with the two indices'
+   returns, exactly as the backtest drifts it (§14). Every rebalance trades
+   straight back to its target, step 7's bounded weight, and pays
+   `DEFAULT_COSTS_BPS` on what it trades in each index (§14); the first buys the
+   target from cash. Directional P&L (§15) is unaffected and stays gross.
+
+   **The no-trade band was removed on 16 Nov 2026.** From 12 Oct (FYP-49) a
+   rebalance traded only as far as a band around the drifted weight, of width
+   `c·(w*_L − w_mv)/π̄`, with `c` the cost of moving the equity weight by 1. The
+   cost is per trade but `π̄` is in `h`-day terms, so the band widened as the
+   horizon shortened: at h = 1, `π̄` is about 0.02%, which made the band about four
+   times `w*_L − w_mv`, wider than any move, and the portfolio all but froze
+   (turnover 0–3% a year). At h = 5 it let a riskier level hold less equity than
+   a safer one at 22 rebalances; with no band there are none at any horizon.
+   Without it, costs are at most 0.06 points a year at any level and horizon
+   (at h = 1, 0.026–0.041% on 66–103% turnover; at h = 5, up to 0.060%; at h = 20,
+   up to 0.015%), so the band saved at most that
+   ([evidence](evidence/2026-11-16-optimiser-fixes.md), which reruns the band beside the
+   new rule as a sensitivity). The removal was planned before these figures were
+   run; Toby confirmed it after seeing them, and nothing was changed because of
+   them. This supersedes CTQ v5 Module 3's "cost-aware no-trade band".
 9. **What the forecasts added.** "Level L, no forecasts" is the same schedule with
-   `β̂ = 0` and the same no-trade band, so the forecasts are the only difference from
+   `β̂ = 0`, so the forecasts are the only difference from
    the optimised portfolio. The page shows it as a column beside the optimised
    portfolio and the benchmark, and runs §14's spread t-statistic against it as well
    as against 50/50, which also reflects the level's equity weight. At level 5 the two
@@ -930,9 +983,63 @@ signals into the weight schedule step 14 backtests.
 A rebalance whose signal is missing, or whose window can't support a covariance,
 is left out, and the portfolio drifts on through it. The Portfolio page shows,
 for the latest rebalance, the level's target weight, the signals and the tilt they
-gave, why they were not used where the gate is shut, the drifted weight and band,
-whether it held, and the share of rebalances the band held. It never shows `β̂`, `λ`
-or `π̄`.
+gave, the weight that gives before and after the bounds, and why the signals were
+not used where the gate is shut. It never shows `β̂`, `λ` or `π̄`.
+
+### Reading the weights
+
+Four things about the weights that follow from the rule above, not from a fault
+in it (findings 2, 3, 5 and 6 of the 12 Nov optimiser audit):
+
+- **The forecasts set the direction; the bounds set the size.** The tilt is
+  `k·(w*_L − w_mv)` with `k = β̂·Δs/π̄`: the signal difference measured in units of
+  the premium. `π̄` over `h` days is small (about 0.5% at h = 20, 0.13% at h = 5),
+  so a signal difference of the same order is a large `k`. Whenever the gate is
+  open the tilt is usually big enough that the 20%–80% bounds decide where the
+  weight lands, and the forecasts decide only which way it goes.
+- **Strong signals put every level on the same bound.** When `|k|` is above 1 the
+  tilt is larger than the level's own distance from `w_mv`, so levels 1–4 all reach
+  the same bound and hold the same weight. At h = 5, 30 of the 137 rebalances with
+  the gate open had `|k|` above 1; at h = 20, 2 of 3
+  ([evidence](evidence/2026-11-16-optimiser-fixes.md)).
+- **Level 5 is the 20% floor, by design.** Level 5 holds the lowest-risk mix the
+  bounds allow and ignores the forecasts (infinite risk aversion, step 7). With
+  equity several times as volatile as bond the minimum-variance equity weight is
+  below 20%, so the lowest-risk mix the bounds allow is the 20% floor. Its
+  turnover comes from trading back to 20% after the indices drift.
+- **The latest weights trail the data by up to about 7 weeks.** Forecasts come in
+  whole 20-row test windows (§7), so up to 19 of the most recent days wait for the
+  next window to fill; and each rebalance is held for `h` days, so the latest one
+  can be up to `h − 1` days before the latest forecast. At h = 20 that is up to 38
+  trading days. On the data to 11–12 Nov 2026, at h = 20, the latest rebalance is 9 Oct 2026.
+
+### Known limitations
+
+- **The forecasts don't add value after costs, at any horizon** (finding 4). Tested
+  against the same level with no forecasts (step 9), on the data from 2006 with the
+  derived polynomial active for both indices
+  ([evidence](evidence/2026-11-16-optimiser-fixes.md)):
+
+  | h | trust gate open | t against no forecasts, levels 1–4 |
+  |---|---|---|
+  | 1 | at none of 4,520 rebalances | the paths are identical |
+  | 5 | at 137 of 904 | −1.10 to −1.38 |
+  | 20 | at 3 of 226 | +0.01 to +0.05 |
+
+  None is significant, and at h = 5 the sign is against the forecasts. Costs are
+  not the reason: they are at most 0.06 points a year. The optimiser is sound as a
+  risk-level allocator; on this data the forecasts it tilts on have not earned
+  their place.
+- **The trust gate is checked again at every rebalance**, on an expanding sample,
+  so with no skill it opens at some point far more often than the 2.3% one check
+  allows. A simulation on the data from 2006, with the derived polynomial's
+  signal difference shifted against its dates so it has no skill, estimates the
+  chance it opens at least once over the backtest at 11% at h = 1, 18% at h = 5
+  and 35% at h = 20 ([evidence](evidence/2026-11-16-trust-gate-rechecks.md)). At
+  h = 20 the gate also opens too often at a single check (about 5–8% against
+  2.3%), since 252 overlapping 20-day pairs hold only about 13 independent
+  observations. An open gate is therefore weak evidence of skill, above all at
+  h = 20. No threshold or window was changed because of this.
 
 ## 18. Signal shock scenarios
 
@@ -1033,10 +1140,9 @@ column, *Shocked, re-optimised*.
    `shocked signal = signal + (shocked forecast − base-case forecast)`
    (`scenario/portfolio_impact.shocked_signal`). An index the scenario did not
    evaluate keeps its signal.
-3. **Target, not trade.** The result is the target before §17's no-trade band:
-   a re-optimisation is a what-if, not a trade from the drifted weights. A zero
-   shock therefore gives the rebalance's target, which can differ from the
-   weights held when the band held the portfolio; the page says so.
+3. **The rebalance's target.** The result is the weight the latest rebalance
+   would have traded to under the shock (§17 step 8). A zero shock gives the
+   rebalance's own target, which is the weight it traded to.
 4. **Simulated on the same paths.** The re-optimised weights are simulated under
    the shocked forecasts in the same run as the held weights, so both see the
    same paths and the held weights' figures are unchanged by asking.
@@ -1190,6 +1296,9 @@ Values are Python literals as the code holds them.
 | `DEFAULT_RISK_LEVEL` | `forecasting_engine.portfolio.optimize` | `3` |
 | `DEFAULT_WEIGHT_BOUNDS` | `forecasting_engine.portfolio.optimize` | `(0.2, 0.8)` |
 | `MIN_TRUST_HISTORY` | `forecasting_engine.portfolio.optimize` | `252` |
+| `PREMIUM_PRIOR_ANNUAL` | `forecasting_engine.portfolio.optimize` | `0.066` |
+| `PREMIUM_PRIOR_YEARS` | `forecasting_engine.portfolio.optimize` | `30` |
+| `PREMIUM_PRIOR_PUBLISHED` | `forecasting_engine.portfolio.optimize` | `pd.Timestamp("2005-05-01")` |
 | `SAMPLING_METHODS` | `forecasting_engine.risk.monte_carlo` | `("bootstrap", "parametric")` |
 | `DEFAULT_PATHS` | `forecasting_engine.risk.monte_carlo` | `100_000` |
 | `MIN_PATHS` | `forecasting_engine.risk.monte_carlo` | `1_000` |
@@ -1215,5 +1324,5 @@ them is [docs/evidence/2026-10-12-verify.py](evidence/2026-10-12-verify.py).
 | Derived grid: Lasso at degrees 1–3 plus shrinkage; no elastic net, no degrees 4–5 (§9) | FYP-161 | 2B, run times |
 | No PBO; Rank IC within folds and Beyond 2 s.e. dropped from the table (§10, §11) | FYP-216 | 2A, 2C |
 | Gate: Signal Rank IC above 0.02 and t above 2, for every model but the naive baseline (§12) | FYP-216 | 1A |
-| A cost-aware no-trade band on the optimiser (§17) | FYP-49 | 3A, 3B |
+| A cost-aware no-trade band on the optimiser (§17). Removed on 16 Nov 2026 (§17 step 8) | FYP-49 | 3A, 3B |
 | Home shows the pipeline's status; the data quality report stays on the Data page | FYP-218 | — |

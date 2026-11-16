@@ -242,7 +242,9 @@ TERMS: Mapping[str, str] = {
     ),
     "Long/cash strategy": (
         "Compounded return of holding the index on every call where the "
-        "forecast was positive and holding cash on every other. Before "
+        "model's signal was above zero and holding cash on every other. The "
+        "signal is the forecast less the model's own average forecast, so a model "
+        "that always forecasts a rise is not simply buy and hold. Before "
         "transaction costs, and cash earns nothing."
     ),
     "Buy and hold": (
@@ -251,9 +253,11 @@ TERMS: Mapping[str, str] = {
         "the forecast's direction to have been worth following."
     ),
     "Hit rate": (
-        "How often the forecast's direction matched what the index actually "
-        "did: a forecast rise followed by a rise, or a forecast fall followed by "
-        "a fall. 50% is a coin toss."
+        "How often the signal's direction matched what the index actually "
+        "did: a signal above zero followed by a rise, or one at or below zero "
+        "followed by a fall. It is not a coin toss's 50%: an index that rises "
+        "most of the time scores well above 50% on a signal that is always "
+        "above zero."
     ),
     "Days invested": (
         "The share of calls on which the strategy held the index. A low share "

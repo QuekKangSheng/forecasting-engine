@@ -112,9 +112,9 @@ hosting step is needed.
   too, once, under a key hashed from everything it depends on. See [docs/run-history.md](docs/run-history.md)
   for the tables, guarantees and example queries.
 - **Directional P&L** — for one model and one index, what holding the index only
-  when the forecast says it will rise would have earned against holding it
-  throughout, over the whole out-of-sample period, with hit rate and share of
-  days invested.
+  when the model's signal (its forecast less its own average forecast) is above
+  zero would have earned against holding it throughout, over the whole
+  out-of-sample period, with hit rate and share of days invested.
 
 **Portfolio**
 
@@ -122,9 +122,9 @@ hosting step is needed.
   volatility evenly spaced between the lowest-risk and highest-risk mixes the
   weight bounds allow, and tilts from there towards whichever index the active
   models' signals favour, by as much as their record has earned and only once that
-  record is statistically significant. It rebalances every forecast horizon and
-  trades only when a move is worth its cost (a no-trade band around the weight the
-  portfolio has drifted to).
+  record is statistically significant. The long-run premium it starts from blends
+  the data's own with a published one (6.6% a year, worth 30 years). It rebalances
+  every forecast horizon, trading straight back to each target.
 - **Backtest against 50/50** — runs the optimised weights and a monthly-reset
   50/50 benchmark through the same days, before and after trading costs, and
   compares Sharpe, Sortino, Calmar and maximum drawdown side by side.
