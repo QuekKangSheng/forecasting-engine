@@ -840,7 +840,18 @@ def _show_table(results: dict[str, ModelRunResult]) -> None:
 
 def _gate_line(name: str, result: ModelRunResult) -> str:
     if name == NAIVE:
-        return f"**{name}**: the baseline to beat — not gated."
+        # Its OOS Rank IC is often well below zero, which reads as a model with
+        # skill in reverse. It is the training mean's drift between blocks.
+        level = (
+            ""
+            if result.oos_rank_ic != result.oos_rank_ic  # NaN
+            else f" Its OOS Rank IC ({result.oos_rank_ic:+.4f}) scores that average "
+            "alone as it moves from one training block to the next, not any skill."
+        )
+        return (
+            f"**{name}**: the baseline to beat — not gated. It forecasts its training "
+            f"mean, so it has no signal and no Signal Rank IC.{level}"
+        )
     outcome = _outcome(result)
     if outcome.promoted:
         return f"**{name}**: gate met — Signal Rank IC above 0.02 and t above 2."

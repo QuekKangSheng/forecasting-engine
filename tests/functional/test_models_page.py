@@ -957,6 +957,17 @@ def test_the_naive_baseline_runs_every_time_on_the_polynomials_rows(stub_ml):
     assert "Naive (training mean)" in _table(app)
 
 
+def test_the_naive_line_says_its_oos_rank_ic_is_its_average_not_skill(stub_ml):
+    app = _press_run(_untick(_page(), "Fama-French 5", "Machine learning"))
+
+    oos = _stored_runs(app)[NAIVE].result.oos_rank_ic
+    markdown = _markdown(app)
+    assert "It forecasts its training mean, so it has no signal and no Signal Rank IC." in (
+        markdown
+    )
+    assert f"Its OOS Rank IC ({oos:+.4f}) scores that average alone" in markdown
+
+
 def test_an_unticked_model_is_not_run(monkeypatch, stub_ml):
     monkeypatch.setattr(fama_french, "resolve", lambda: pytest.fail("FF5 was unticked"))
     app = _run_equity(_untick(_page(), "Fama-French 5", "Machine learning"))
