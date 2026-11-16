@@ -13,6 +13,7 @@ from streamlit.dataframe_util import convert_arrow_bytes_to_pandas_df
 from streamlit.testing.v1 import AppTest
 
 import bloomberg_extraction_panel
+import charts
 import model_settings
 import saved_run
 from forecasting_engine.extraction.targets import TargetRole
@@ -633,6 +634,36 @@ def test_one_hover_marks_the_same_day_in_the_weights_and_the_volatility():
     assert len(weights) == 2
     assert days[weights].notna().all().all()
     assert days[weights].sum(axis=1).round(9).eq(1).all()
+
+
+def test_each_panel_keeps_its_own_colours_and_its_key_beside_it():
+    app = _happy_page()
+
+    (chart,) = [c for c in app.get("vega_lite_chart") if '"Weight: ' in c.proto.spec]
+    spec = json.loads(chart.proto.spec)
+    # Shared, the weights' two colours were used for the three volatility lines too,
+    # and the optimised portfolio's line was drawn in the first index's colour.
+    assert spec["resolve"]["scale"]["color"] == "independent"
+    _, volatility_panel, *_ = spec["layer"]
+    scale = next(
+        layer["encoding"]["color"]["scale"]
+        for layer in volatility_panel["layer"]
+        if "color" in layer["encoding"]
+    )
+    assert scale["range"][scale["domain"].index("Optimised")] == charts.OPTIMISED
+    # The weights' key above the chart, the volatility's under it.
+    order = [
+        e.proto.spec
+        if e.type == chart.type
+        else e.value
+        if e.type == "markdown"
+        else ""
+        for e in app.main
+    ]
+    chart_at = order.index(chart.proto.spec)
+    weight_key = next(i for i, v in enumerate(order) if ">Weight</span>" in str(v))
+    volatility_key = next(i for i, v in enumerate(order) if ">Volatility</span>" in str(v))
+    assert weight_key < chart_at < volatility_key
 
 
 def test_without_active_models_the_page_explains_what_will_appear():

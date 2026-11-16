@@ -191,9 +191,10 @@ def test_the_weights_charts_specification_holds_none_of_its_figures():
 
 
 def _without_tables(chart: dict) -> dict:
-    """The specification alone: without the figures, and without the key that is
-    written above the chart and never sent with it."""
-    return {key: value for key, value in chart.items() if key not in ("datasets", "key")}
+    """The specification alone: without the figures, and without the keys that are
+    written above and below the chart and never sent with it."""
+    unsent = ("datasets", "key", "key_below")
+    return {key: value for key, value in chart.items() if key not in unsent}
 
 
 def test_a_charts_key_names_each_line_with_its_latest_figure_and_the_day():
