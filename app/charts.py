@@ -16,6 +16,7 @@ longer waits on the charts:
 
 from __future__ import annotations
 
+import hashlib
 import html
 from collections.abc import Mapping
 from typing import Any
@@ -191,7 +192,52 @@ def draw(chart: dict[str, Any]) -> None:
     spec = {name: part for name, part in chart.items() if name != "key"}
     if chart.get("key"):
         st.markdown(chart["key"], unsafe_allow_html=True)
-    st.vega_lite_chart(spec, width="stretch", theme=None)
+    st.vega_lite_chart(_named_by_content(spec), width="stretch", theme=None)
+
+
+def _named_by_content(spec: dict[str, Any]) -> dict[str, Any]:
+    """``spec`` with each named table renamed to its name plus a hash of its contents.
+
+    Streamlit keeps a drawn chart and swaps new figures in only when it can tell the
+    figures changed, and it tells by the tables' names: it expects them to carry a
+    hash of the data, as Altair's names do. With fixed names ("drawn", "weights") a
+    chart whose figures changed but whose specification didn't kept showing the old
+    figures: another model on the direction check, or another risk level's weights,
+    updated the numbers above the chart and left the lines as they were. Named by
+    content, a change of figures is a change of name, so the chart is drawn afresh,
+    and figures that didn't change keep their name and the chart is kept."""
+    datasets = spec.get("datasets")
+    if not datasets:
+        return spec
+    names = {name: f"{name}-{_content_hash(table)}" for name, table in datasets.items()}
+    renamed = _rename_data(spec, names)
+    renamed["datasets"] = {names[name]: table for name, table in datasets.items()}
+    return renamed
+
+
+def _content_hash(table: pd.DataFrame) -> str:
+    digest = hashlib.blake2b(digest_size=8)
+    digest.update(repr(list(table.columns)).encode())
+    digest.update(pd.util.hash_pandas_object(table, index=True).to_numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _rename_data(part: Any, names: Mapping[str, str]) -> Any:
+    """``part`` with every ``"data": {"name": ...}`` reference renamed by ``names``.
+    Other ``name`` keys (a layer's, a parameter's) are left as they are."""
+    if isinstance(part, list):
+        return [_rename_data(item, names) for item in part]
+    if not isinstance(part, dict):
+        return part
+    out = {}
+    for key, value in part.items():
+        if key == "datasets":
+            out[key] = value
+        elif key == "data" and isinstance(value, dict) and value.get("name") in names:
+            out[key] = {**value, "name": names[value["name"]]}
+        else:
+            out[key] = _rename_data(value, names)
+    return out
 
 
 def weights_chart(

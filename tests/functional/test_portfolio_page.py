@@ -440,8 +440,32 @@ def _line_chart(app: AppTest, value: str):
 def _line_data(app: AppTest, value: str) -> pd.DataFrame:
     """The chart's lines, a column each: it is sent a row per day and unfolded into
     its lines in the browser. (Beside them it is sent the days a hover can land on.)"""
-    (dataset,) = [d for d in _line_chart(app, value).proto.datasets if d.name == "drawn"]
+    (dataset,) = [
+        d for d in _line_chart(app, value).proto.datasets if d.name.startswith("drawn-")
+    ]
     return convert_arrow_bytes_to_pandas_df(dataset.data.data).set_index("date")
+
+
+def _weights_tables(app: AppTest) -> set[str]:
+    (chart,) = [c for c in app.get("vega_lite_chart") if '"Weight"' in c.proto.spec]
+    return {d.name for d in chart.proto.datasets}
+
+
+def test_a_new_risk_level_sends_the_weights_under_new_table_names():
+    # The browser keeps a chart and swaps figures in only when a table's name says
+    # its contents changed; under fixed names the weights stayed at the old level.
+    app = _happy_page()
+    before = _weights_tables(app)
+    (scale,) = [s for s in app.select_slider if s.label == "Risk level"]
+
+    scale.set_value(5).run()
+
+    assert not app.exception
+    after = _weights_tables(app)
+    changed = {name.split("-")[0] for name in after - before}
+    assert {"weights", "shares"} <= changed
+    # The weight limits didn't move, so that table keeps its name.
+    assert {name for name in after if name.startswith("limits-")} <= before
 
 
 def test_rolling_volatility_is_charted_for_both_indices_and_the_optimised_portfolio():
