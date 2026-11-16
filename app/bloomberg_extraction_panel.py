@@ -43,8 +43,10 @@ from forecasting_engine.ingest.upload import (
     frame_csv_bytes,
     keep_source,
 )
+from forecasting_engine.portfolio import optimize
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.store import lineage
+from model_settings import DEFAULT_HORIZON, DEFAULT_TEST_WINDOW, EMBARGO_DAYS, TRAIN_WINDOW
 
 #: The two uploaders' own working copies — refreshed on every new upload,
 #: regardless of any commit below.
@@ -796,6 +798,27 @@ def _render_coverage(report: ValidationReport, merged: pd.DataFrame) -> None:
     dates = merged["Date"].dropna()
     if not dates.empty:
         st.caption(f"Covering {_fmt(dates.min())} to {_fmt(dates.max())}")
+        _warn_of_an_unpublished_premium(dates)
+
+
+def _warn_of_an_unpublished_premium(dates: pd.Series) -> None:
+    """The optimiser's long-run premium starts from a figure published in April 2005,
+    so a portfolio rebalanced before May 2005 would use it before anyone had it."""
+    rebalances = optimize.rebalance_dates_on(
+        pd.DatetimeIndex(pd.to_datetime(dates)).unique().sort_values(),
+        horizon=DEFAULT_HORIZON,
+        train_window=TRAIN_WINDOW,
+        test_window=DEFAULT_TEST_WINDOW,
+        embargo=EMBARGO_DAYS,
+    )
+    if len(rebalances) and rebalances[0] < optimize.PREMIUM_PRIOR_PUBLISHED:
+        st.warning(
+            f"This data starts early enough for the portfolio's first rebalance to fall "
+            f"about {_fmt(rebalances[0])}, before May 2005. The long-run premium the "
+            "optimiser starts from was published in April 2005, so rebalances before "
+            "then use a figure nobody had yet.",
+            icon=":material/history_toggle_off:",
+        )
 
 
 def _render_completeness(report: ValidationReport, label) -> bool:

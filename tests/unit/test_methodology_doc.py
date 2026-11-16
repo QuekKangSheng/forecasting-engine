@@ -5,6 +5,7 @@ import re
 from datetime import timedelta
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 DOC = Path(__file__).resolve().parents[2] / "docs" / "methodology.md"
@@ -92,6 +93,9 @@ DOCUMENTED = {
     ("forecasting_engine.portfolio.optimize", "DEFAULT_RISK_LEVEL"),
     ("forecasting_engine.portfolio.optimize", "DEFAULT_WEIGHT_BOUNDS"),
     ("forecasting_engine.portfolio.optimize", "MIN_TRUST_HISTORY"),
+    ("forecasting_engine.portfolio.optimize", "PREMIUM_PRIOR_ANNUAL"),
+    ("forecasting_engine.portfolio.optimize", "PREMIUM_PRIOR_YEARS"),
+    ("forecasting_engine.portfolio.optimize", "PREMIUM_PRIOR_PUBLISHED"),
     ("forecasting_engine.risk.monte_carlo", "SAMPLING_METHODS"),
     ("forecasting_engine.risk.monte_carlo", "DEFAULT_PATHS"),
     ("forecasting_engine.risk.monte_carlo", "MIN_PATHS"),
@@ -122,7 +126,7 @@ def test_the_table_lists_exactly_the_documented_constants():
 
 @pytest.mark.parametrize(("module", "name"), sorted(DOCUMENTED))
 def test_each_documented_value_matches_the_code(module, name):
-    documented = eval(_table()[(module, name)], {"timedelta": timedelta})  # noqa: S307 - our own doc
+    documented = eval(_table()[(module, name)], {"timedelta": timedelta, "pd": pd})  # noqa: S307 - our own doc
     actual = getattr(importlib.import_module(module), name)
     assert actual == documented, (
         f"{module}.{name} is {actual!r} but docs/methodology.md says {documented!r}"

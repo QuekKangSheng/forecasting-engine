@@ -505,9 +505,8 @@ if resolved:
         f"{solved_from.bounds[1]:.0%}), covariance and forecast trust: "
         f"{resolved.weights[TargetRole.EQUITY]:.0%} {equity_name}, "
         f"{resolved.weights[TargetRole.BOND]:.0%} {bond_name}. It is simulated under the "
-        "shocked forecasts on the same paths as the held weights. With no shock it would "
-        f"give {resolved.unshocked.equity:.0%} {equity_name}, the rebalance's target before "
-        "the no-trade band, which can differ from the weights held."
+        "shocked forecasts on the same paths as the held weights. With no shock it gives "
+        f"{resolved.unshocked.equity:.0%} {equity_name}, the rebalance's target."
         + why_still
         + " This is a what-if: the weights on the Portfolio Optimizer page don't change.",
         help=glossary.term("Re-optimise under shock"),

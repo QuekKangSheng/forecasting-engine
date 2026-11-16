@@ -1,5 +1,5 @@
-"""FYP-162: holding an index only when its forecast is positive, against holding it
-throughout — checked on small forecasts and returns whose answers are known."""
+"""FYP-162: holding an index only when its signal is positive, against holding it
+throughout — checked on small signals and returns whose answers are known."""
 
 import math
 
@@ -191,7 +191,37 @@ def test_a_window_is_replayed_as_if_it_were_the_whole_period():
     assert result.start == start and result.end == forecast.index[17]
     assert result.days == 15
     assert result.buy_and_hold.tolist() == [0.07, 0.12, 0.17]
-    assert result.strategy_cumulative.iloc[0] == pytest.approx(0.07)
+    assert result.strategy_cumulative.iloc[0] == 0.0
+    assert result.strategy_cumulative.iloc[1] == pytest.approx(0.07)
+
+
+# --- dated by the end of each holding period (finding 10) -----------------------
+
+
+def test_each_steps_return_is_dated_by_the_end_of_its_holding_period():
+    dates = pd.bdate_range("2024-01-01", periods=20)
+    signal = pd.Series(1.0, index=dates)
+    realised = pd.Series(0.01, index=dates)
+
+    result = directional_pnl(signal, realised, horizon=5)
+
+    assert list(result.held_until) == [
+        dates[5],
+        dates[10],
+        dates[15],
+        dates[15] + pd.offsets.BDay(5),
+    ]
+    growth = result.strategy_cumulative
+    assert list(growth.index) == [dates[0], *result.held_until]
+    assert growth.iloc[0] == 0.0
+    assert growth[dates[10]] == pytest.approx(1.01**2 - 1)
+
+
+def test_a_holding_period_ends_on_the_runs_own_next_dates_not_the_weekday_calendar():
+    dates = pd.DatetimeIndex(["2024-01-02", "2024-01-03", "2024-01-05", "2024-01-08"])
+    result = directional_pnl(pd.Series(1.0, index=dates), pd.Series(0.01, index=dates), horizon=1)
+
+    assert list(result.held_until)[:3] == list(dates[1:])
 
 
 def test_a_window_with_no_realised_return_says_so():

@@ -1229,7 +1229,7 @@ def _show_directional(
     target_name: str,
     current: active_model.ActiveModelRecord | None,
 ) -> None:
-    """FYP-162: holding the index only when the forecast says it will rise, against
+    """FYP-162: holding the index only when the signal is above zero, against
     holding it throughout, over the run's whole out-of-sample period, or over a
     window chosen on the slider.
 
@@ -1259,8 +1259,15 @@ def _show_directional(
         st.session_state[picker_key] = options[_directional_default(current, options, runs)]
     name = st.selectbox("Forecasts from", options, key=picker_key)
     result = runs[name].result
+    if result.baseline is None:
+        st.info(
+            "This result was saved before signals were kept. Run the model again to see it.",
+            icon=":material/info:",
+        )
+        return
+    signal = result.forecast - result.baseline
     try:
-        whole = directional_pnl(result.forecast, result.realised, horizon=horizon)
+        whole = directional_pnl(signal, result.realised, horizon=horizon)
     except DirectionalDataError as exc:
         st.info(str(exc), icon=":material/info:")
         return
@@ -1283,7 +1290,7 @@ def _show_directional(
     if window is not None:
         try:
             pnl = directional_pnl(
-                result.forecast, result.realised, horizon=horizon, start=window[0], end=window[1]
+                signal, result.realised, horizon=horizon, start=window[0], end=window[1]
             )
         except DirectionalDataError as exc:
             st.info(str(exc), icon=":material/info:")
@@ -1299,7 +1306,9 @@ def _show_directional(
     )
     st.caption(
         f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: {span}, {pnl.calls} "
-        f"calls ({steps}). Gross of transaction costs; cash earns nothing. Narrow the "
+        f"calls ({steps}). Each call holds the index when the model's signal (its forecast "
+        "less its own average forecast) is above zero. Each return is plotted at the end "
+        "of its holding period. Gross of transaction costs; cash earns nothing. Narrow the "
         "window with the slider: every figure and the chart are recomputed for it, starting "
         "from zero on its first day."
     )
@@ -1335,7 +1344,7 @@ def _show_directional(
     )
     if pnl.no_forecast:
         st.caption(
-            f"{pnl.no_forecast} of {pnl.calls} calls had no forecast (a signal was "
+            f"{pnl.no_forecast} of {pnl.calls} calls had no forecast (an input was "
             "missing that day), so the strategy stayed in cash and the hit rate leaves them out."
         )
     others = [h for h in HORIZONS if h != horizon]
