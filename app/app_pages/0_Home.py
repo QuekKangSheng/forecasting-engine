@@ -50,9 +50,7 @@ ALSO = {
     "portfolio": ("models", "Open Models"),
     None: ("scenarios", "Open Scenarios"),
 }
-TITLE = "Every forecast is tested on data it never saw."
-SUMMARY = "Only the ones that hold up move the split between the S&P 500 and US bonds."
-#: The maker's name, set large at the foot of the page.
+#: The maker's name, typed out as the page's heading.
 MAKER = "Finlytics"
 
 bloomberg_extraction_panel.restore_last_commit()
@@ -195,20 +193,45 @@ def _tape() -> str:
     return hero.tape(items, span)
 
 
+def _plain(step_text: str) -> str:
+    """A next step as a sentence of plain text: no bold, a capital first letter."""
+    text = step_text.replace("**", "")
+    return text[:1].upper() + text[1:]
+
+
+def _lead(step: tuple[str, str] | None) -> str:
+    """The opening's words. Once every step has run, the latest weights are the
+    heading, with how they have done under them; until then, the next step is."""
+    typed = hero.typed(_status_line(step))
+    if step is not None or not _portfolio_current():
+        if step is None:  # every step done but the result is not this session's
+            step = ("open the **Portfolio Optimizer** to see the latest weights.", "portfolio")
+        return hero.lead(MAKER, "Next step", _plain(step[0]), "", typed, long=True)
+    level = "" if summary.risk_level is None else f" · risk level {summary.risk_level} of 5"
+    split = ui.split_bar(
+        [
+            ("Equity", summary.equity_weight, tokens.SERIES_EQUITY),
+            ("Bond", summary.bond_weight, tokens.SERIES_BOND),
+        ],
+        labelled=False,
+    )
+    return hero.lead(
+        MAKER,
+        f"Latest weights · {summary.as_of:%d %b %Y}{level}",
+        f"{summary.equity_weight:.0%} equity, {summary.bond_weight:.0%} bonds.",
+        split + ui.strip(_figures(), inline=True),
+        typed,
+    )
+
+
 def _opening(step: tuple[str, str] | None) -> None:
     """The first screen: what the app is for and what it is working from, beside the
     equity index as the committed data has it, then every committed series."""
     where = None if step is None else step[1]
     words, picture = st.columns([5, 7], gap="medium", vertical_alignment="bottom")
     with words:
-        # The stylesheet travels with the first thing seen, as on every other page. No
-        # kicker and no data line: the status bar above says both.
-        st.markdown(
-            ui.stylesheet()
-            + hero.CSS
-            + hero.copy("", "", TITLE, SUMMARY, hero.typed(_status_line(step))),
-            unsafe_allow_html=True,
-        )
+        # The stylesheet travels with the first thing seen, as on every other page.
+        st.markdown(ui.stylesheet() + hero.CSS + _lead(step), unsafe_allow_html=True)
         # Side by side at their own widths, the second dropping under the first where
         # the column is too narrow for both.
         with st.container(key="fe-hero-go", horizontal=True):
@@ -346,51 +369,30 @@ def _portfolio_card() -> None:
     ui.page_link("portfolio", "Open Portfolio Optimizer")
 
 
-def _headline() -> None:
-    """The latest portfolio result, first, for anyone who opens the app to see it."""
-    if not _portfolio_current():
-        return
-    cells = [
-        (
-            f"Latest weights, {summary.as_of:%d %b %Y}",
-            f"{summary.equity_weight:.0%} / {summary.bond_weight:.0%}",
-            # The split as a bar, in the colours the two indices have on every chart.
-            ui.split_bar(
-                [
-                    ("Equity", summary.equity_weight, tokens.SERIES_EQUITY),
-                    ("Bond", summary.bond_weight, tokens.SERIES_BOND),
-                ]
-            ),
-        ),
-    ]
-    if summary.risk_level is not None:
-        cells.append(("Risk level", f"{summary.risk_level} of 5", ""))
+def _figures() -> list[tuple[str, str, str]]:
+    """How the latest weights have done: Sharpe after costs against 50/50, and whether
+    the forecasts added value. The weights and risk level are the heading above."""
     gap = summary.net_sharpe - summary.baseline_net_sharpe
-    cells.append(
+    cells = [
         (
             "Sharpe after costs",
             f"{summary.net_sharpe:.2f}",
             ui.delta(gap, f"{abs(gap):.2f}") + f" vs {summary.baseline_net_sharpe:.2f} for 50/50",
         )
-    )
+    ]
     if summary.forecast_value_label is not None:
         cells.append(
             (
-                "Forecast value after costs",
+                "Forecast value",
                 ui.lozenge(html.escape(summary.forecast_value_label), summary.forecast_value_tone),
                 f"t = {summary.forecast_value_t}",
             )
         )
-    st.markdown(ui.strip(cells), unsafe_allow_html=True)
+    return cells
 
 
 step = _next_step()
 _opening(step)
-_headline()
-if step is not None:
-    # The link that does it is the first of the two in the opening, just above. Up to
-    # date needs no banner: the typed line says so.
-    st.info(f"**Next step:** {step[0]}", icon=":material/arrow_forward:")
 # The three stages in pipeline order, numbered as the sidebar numbers them, folded:
 # the opening and the status bar already say where things stand. Open whenever a
 # step is left, so what needs doing (a stale model, a stale run) is never hidden.
@@ -403,4 +405,3 @@ with st.expander("Pipeline detail", expanded=step is not None):
         _models_card()
     with portfolio_col, st.container(border=True):
         _portfolio_card()
-st.markdown(hero.wordmark(MAKER), unsafe_allow_html=True)

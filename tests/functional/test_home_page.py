@@ -1,5 +1,7 @@
 """The Home page's pipeline status, driven through the real page script (FYP-218)."""
 
+import html
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -128,15 +130,24 @@ def _captions(app: AppTest) -> str:
     return " ".join(c.value for c in app.caption)
 
 
+def _heading(app: AppTest) -> str:
+    """What the opening says of where things stand, under the name, as text."""
+    opening = next(m.value for m in app.markdown if 'aria-level="1"' in m.value)
+    return html.unescape(re.search(r'class="fe-hero-state[^"]*">(.*?)</div>', opening).group(1))
+
+
 def _next_step(app: AppTest) -> str:
-    return next(i.value for i in app.info if i.value.startswith("**Next step:**"))
+    """The next step, which is the heading while one is left."""
+    opening = next(m.value for m in app.markdown if 'aria-level="1"' in m.value)
+    assert 'class="fe-hero-label">Next step<' in opening
+    return _heading(app)
 
 
 def test_with_nothing_committed_the_next_step_is_the_data_page():
     app = _page()
 
     assert not app.exception
-    assert "**Data** page" in _next_step(app)
+    assert "Data page" in _next_step(app)
     assert [s.value for s in app.subheader] == ["Data", "Models", "Portfolio Optimizer"]
     assert "Nothing committed yet." in _captions(app)
     assert "Not run yet." in _captions(app)
@@ -154,7 +165,7 @@ def test_with_data_only_the_data_card_is_filled_and_the_next_step_is_to_run_mode
     markdown = _markdown(app)
     assert "Equity target" in markdown and "Bond target" in markdown
     assert markdown.count("✓") == 2  # both targets; no active models yet
-    assert "run the equity models on the **Models** page" in _next_step(app)
+    assert _next_step(app) == "Run the equity models on the Models page."
 
 
 def test_models_that_ran_are_listed_with_their_gate_signal_rank_ic_and_t():
@@ -167,7 +178,7 @@ def test_models_that_ran_are_listed_with_their_gate_signal_rank_ic_and_t():
     assert "Signal Rank IC 0.040 · t 4.00" in markdown
     assert "Signal Rank IC 0.010 · t 1.00" in markdown
     assert "1 of 2 signals passed screening in the latest fold" in _captions(app)
-    assert "set an active equity model on the **Models** page" in _next_step(app)
+    assert _next_step(app) == "Set an active equity model on the Models page."
 
 
 def test_a_target_named_with_html_in_its_column_shows_the_name_as_text():
@@ -217,7 +228,7 @@ def test_a_stale_active_model_and_portfolio_run_are_flagged_amber():
     warnings = [w.value for w in app.warning]
     assert any("fitted on different data" in w for w in warnings)
     assert any("last run used different data" in w for w in warnings)
-    assert "re-run the equity models" in _next_step(app)
+    assert _next_step(app).startswith("Re-run the equity models")
     assert "Net Sharpe 0.85 against 0.83 for 50/50." in _captions(app)
 
 
@@ -247,12 +258,13 @@ def test_an_up_to_date_pipeline_says_there_is_nothing_left_to_do():
 
     assert not app.exception
     assert not app.warning
-    assert not [i for i in app.info if i.value.startswith("**Next step:**")]
+    assert _heading(app) == "60% equity, 40% bonds."
+    assert 'class="fe-hero-label">Next step<' not in _markdown(app)
     assert not app.success  # no banner: the typed line says it
     assert "2 of 2 models active · up to date</span>" in _markdown(app)
     # The latest result leads the page, ahead of the pipeline cards.
     strip = next(m.value for m in app.markdown if '<div class="fe-strip' in m.value)
-    assert "60% / 40%" in strip and "0.83 for 50/50" in strip
+    assert "0.83 for 50/50" in strip
     assert "Latest weights (01 Mar 2024): 60% equity, 40% bond." in _captions(app)
 
 
@@ -287,7 +299,7 @@ def test_a_portfolio_run_on_an_active_model_since_replaced_is_flagged_amber():
     assert not app.exception
     warnings = [w.value for w in app.warning]
     assert any("last run used different active models" in w for w in warnings)
-    assert "open the **Portfolio Optimizer**" in _next_step(app)
+    assert _next_step(app).startswith("Open the Portfolio Optimizer")
     # Its weights no longer lead the page as the latest result.
     assert not [m for m in app.markdown if '<div class="fe-strip' in m.value]
 
@@ -344,7 +356,7 @@ def test_after_the_data_is_cleared_the_last_allocation_is_not_shown_as_current()
 
     assert not app.exception
     assert not [m for m in app.markdown if '<div class="fe-strip' in m.value]
-    assert "**Data** page" in _next_step(app)
+    assert "Data page" in _next_step(app)
 
 
 def test_a_model_fitted_on_another_target_column_is_flagged_on_home():
@@ -356,7 +368,7 @@ def test_a_model_fitted_on_another_target_column_is_flagged_on_home():
 
     assert not app.exception
     assert any("fitted on different data" in w.value for w in app.warning)
-    assert "re-run the equity models" in _next_step(app)
+    assert _next_step(app).startswith("Re-run the equity models")
 
 def _long_committed(days: int = 220) -> pd.DataFrame:
     """Enough months for the field to draw, the index rising a little each day."""
@@ -372,11 +384,13 @@ def _long_committed(days: int = 220) -> pd.DataFrame:
     )
 
 
-def test_the_page_opens_on_one_heading_that_says_what_the_app_does():
-    markdown = _markdown(_page(_committed()))
+def test_the_page_opens_on_the_name_then_the_step_left_while_one_is():
+    app = _page(_committed())
 
-    assert markdown.count('aria-level="1"') == 1
-    assert 'aria-level="1">Every forecast is tested on data it never saw.</div>' in markdown
+    assert _markdown(app).count('aria-level="1"') == 1
+    assert 'aria-level="1" aria-label="Finlytics"' in _markdown(app)
+    assert _heading(app) == "Run the equity models on the Models page."
+    assert not app.info  # said once, as the heading
 
 
 def test_the_opening_says_what_the_app_is_working_from():

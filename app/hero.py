@@ -2,15 +2,14 @@
 
 Each piece is a function that returns HTML for ``st.markdown``:
 
-- ``copy``: the words beside the field, with ``pill`` (what the app is connected
-  to) and ``typed`` (one line of status, typed out once in the monospace face).
+- ``lead``: the maker's name as the page's heading, typed out a letter at a time
+  behind a caret, then where things stand (the latest weights, or the next step).
+- ``typed``: one line of status, typed out once in the monospace face.
 - ``tape``: the latest value of every committed series and its change over one
   horizon, moving slowly like a ticker and stopping under the pointer.
-- ``wordmark``: the maker's name, large, at the foot of the page.
 
-``CSS`` styles these and the field. All motion is on ``transform``, ``opacity`` and
-``clip-path``, runs once (the tape, the wordmark and the field's two rings excepted)
-and is switched off for a viewer who asked for less motion.
+``CSS`` styles these and the field. Motion runs once (the tape, the caret and the
+field's two rings excepted) and is switched off for a viewer who asked for less.
 """
 
 from __future__ import annotations
@@ -22,11 +21,6 @@ from dataclasses import dataclass
 import pandas as pd
 
 import tokens
-
-#: The width of an average letter of the wordmark on Home, in ems, at the wordmark's
-#: weight and spacing: measured in a browser for that name, so that it runs exactly
-#: from one edge of the page to the other. Another name needs its own figure.
-WORDMARK_ADVANCE: float = 0.39
 
 #: Days of history in each tape sparkline, and the points it is drawn from.
 SPARK_DAYS: int = 120
@@ -81,14 +75,6 @@ def ticks(
 # ── The words ────────────────────────────────────────────────────────────────
 
 
-def pill(text: str, tone: str = "neutral") -> str:
-    """A bordered line with a dot in ``tone``'s colour: what the app is connected to."""
-    return (
-        f'<div class="fe-hero-pill"><i style="background:var(--fe-{tone}-fg)"></i>'
-        f"{html.escape(text)}</div>"
-    )
-
-
 def typed(text: str) -> str:
     """``text`` typed out once, a character at a time, with a block cursor that stays.
 
@@ -104,13 +90,35 @@ def typed(text: str) -> str:
     )
 
 
-def copy(pill_html: str, kicker: str, title: str, summary: str, typed_html: str) -> str:
-    """The hero's words: the connection line, the kicker, the statement, the summary
-    and the typed status line."""
+def lead(
+    name: str,
+    label: str,
+    statement: str,
+    below: str,
+    typed_html: str,
+    *,
+    long: bool = False,
+) -> str:
+    """The opening's words: ``name`` as the page's heading, typed out a letter at a
+    time behind a caret; under it a small label, the statement of where things
+    stand, what goes under that (HTML its caller has escaped) and the typed status
+    line. ``long`` sets a statement of a whole sentence a size down.
+
+    The heading is read once, as ``name``: its letters, there only to be typed, are
+    hidden from a screen reader."""
+    letters = "".join(
+        f'<span style="--i:{i}">{html.escape(letter)}</span>' for i, letter in enumerate(name)
+    )
+    size = " fe-hero-state-long" if long else ""
     return (
-        f'<div class="fe-hero-copy">{pill_html}{kicker}'
-        f'<div class="fe-hero-title" role="heading" aria-level="1">{html.escape(title)}</div>'
-        f'<div class="fe-hero-summary">{html.escape(summary)}</div>{typed_html}</div>'
+        f'<div class="fe-hero-copy">'
+        f'<div class="fe-hero-name" role="heading" aria-level="1" '
+        f'aria-label="{html.escape(name, quote=True)}">'
+        f'<span class="fe-hero-letters" aria-hidden="true">{letters}</span>'
+        f'<span class="fe-hero-caret" aria-hidden="true"></span></div>'
+        f'<div class="fe-hero-label">{html.escape(label)}</div>'
+        f'<div class="fe-hero-state{size}">{html.escape(statement)}</div>'
+        f'<div class="fe-hero-below">{below}</div>{typed_html}</div>'
     )
 
 
@@ -167,22 +175,6 @@ def tape(items: Sequence[Tick], span: int) -> str:
     )
 
 
-# ── The wordmark ─────────────────────────────────────────────────────────────
-
-
-def wordmark(name: str, advance: float = WORDMARK_ADVANCE) -> str:
-    """``name`` set as wide as the page, each letter dimming in turn. Decoration, so
-    it is hidden from a screen reader. ``advance`` is the width of its average
-    letter in ems, which sizes it to the page's width."""
-    letters = "".join(
-        f'<span style="--i:{i}">{html.escape(letter)}</span>' for i, letter in enumerate(name)
-    )
-    return (
-        f'<div class="fe-wordmark" aria-hidden="true" style="--n:{len(name)};--a:{advance}">'
-        f"<p>{letters}</p></div>"
-    )
-
-
 CSS = f"""
 <style>
   :root {{ --fe-rise: {tokens.RISE}; --fe-fall: {tokens.FALL}; }}
@@ -194,37 +186,64 @@ CSS = f"""
     padding: 3.4rem 0 0.4rem;
     animation: fe-arrive 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }}
-  .fe-hero-pill {{
-    display: inline-flex;
-    align-items: center;
-    gap: 0.55rem;
-    padding: 5px 11px 5px 9px;
-    margin-bottom: 1.5rem;
-    border: 1px solid var(--fe-border-strong);
-    border-radius: 2px;
-    background: rgba(7, 9, 12, 0.5);
+  .fe-hero-label {{
+    margin: 0 0 0.9rem;
     font-family: var(--fe-mono);
     font-size: 11px;
-    letter-spacing: 0.04em;
-    color: var(--fe-text-2);
-  }}
-  .fe-hero-pill i {{ width: 6px; height: 6px; border-radius: 50%; flex: none; }}
-  .fe-hero-title {{
-    font-family: var(--fe-sans);
-    font-size: clamp(2.1rem, 1.2rem + 2.2vw, 3.3rem);
     font-weight: 500;
-    line-height: 1.03;
-    letter-spacing: -0.036em;
-    color: var(--fe-text);
-    max-width: 16ch;
-    text-wrap: balance;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fe-muted);
   }}
-  .fe-hero-summary {{
+  /* The name, typed: each letter has no size until its turn comes, so the caret
+     after them moves along as they arrive. Nine one-off steps, then still. */
+  .fe-hero-name {{
+    margin: 0 0 1.7rem;
+    font-family: var(--fe-sans);
+    font-size: clamp(3.4rem, 1.4rem + 4.8vw, 6.6rem);
+    font-weight: 600;
+    line-height: 0.95;
+    letter-spacing: -0.045em;
+    white-space: nowrap;
+    color: var(--fe-text);
+  }}
+  .fe-hero-letters span {{
+    font-size: 0;
+    animation: fe-key 1ms steps(1) forwards;
+    animation-delay: calc(var(--i) * 115ms + 250ms);
+  }}
+  @keyframes fe-key {{ to {{ font-size: 1em; }} }}
+  .fe-hero-caret {{
+    display: inline-block;
+    width: 0.07em;
+    height: 0.74em;
+    margin-left: 0.07em;
+    background: var(--fe-accent);
+    animation: fe-blink 1.05s steps(1) infinite;
+  }}
+  .fe-hero-state {{
+    font-family: var(--fe-sans);
+    font-size: clamp(1.45rem, 1rem + 1vw, 2rem);
+    font-weight: 500;
+    line-height: 1.18;
+    letter-spacing: -0.022em;
+    color: var(--fe-text);
+    max-width: 24ch;
+  }}
+  .fe-hero-state-long {{
+    font-size: clamp(1.15rem, 0.95rem + 0.5vw, 1.4rem);
+    line-height: 1.35;
     color: var(--fe-text-2);
-    font-size: 15.5px;
-    line-height: 1.6;
-    margin: 1.2rem 0 1.4rem;
-    max-width: 52ch;
+    max-width: 34ch;
+  }}
+  /* Under the weights: the split as a bar, then the two figures that say how it
+     has done. The strip's own rule on its left is not wanted here. */
+  .fe-hero-below {{ margin: 1.1rem 0 1.3rem; max-width: 36rem; }}
+  .fe-hero-below:empty {{ margin: 0.9rem 0 0; }}
+  .fe-hero-below .fe-split {{ margin-bottom: 1.1rem; }}
+  .fe-hero-below .fe-strip-inline .fe-strip-cell:first-child {{
+    border-left: none;
+    padding-left: 0;
   }}
 
   /* The typed line. The text is uncovered a character at a time by a clip, and the
@@ -246,7 +265,7 @@ CSS = f"""
     display: inline-block;
     clip-path: inset(0 100% 0 0);
     animation-name: fe-type;
-    animation-delay: 520ms;
+    animation-delay: 1350ms;
     animation-fill-mode: forwards;
   }}
   .fe-typed-caret {{
@@ -257,7 +276,7 @@ CSS = f"""
     height: 1.15em;
     background: var(--fe-accent);
     animation-name: fe-caret, fe-blink;
-    animation-delay: 520ms, 0ms;
+    animation-delay: 1350ms, 0ms;
     animation-fill-mode: forwards, none;
     animation-duration: inherit, 1.05s;
     animation-timing-function: inherit, steps(1);
@@ -407,41 +426,6 @@ CSS = f"""
   .fe-tick-flat {{ color: var(--fe-muted); }}
   .fe-tick-spark {{ width: 56px; height: 16px; flex: none; }}
 
-  /* ---- The wordmark ------------------------------------------------------------------
-     Sized from the width it is given, so it runs edge to edge whatever the window. */
-  [data-testid="stElementContainer"]:has(.fe-wordmark) {{
-    margin: 2.5rem calc(-1 * var(--fe-gutter)) -5rem;
-    width: calc(100% + 2 * var(--fe-gutter));
-    max-width: none;
-  }}
-  .fe-wordmark {{
-    container-type: inline-size;
-    overflow: hidden;
-    border-top: 1px solid var(--fe-border);
-    padding: 0 var(--fe-gutter);
-    user-select: none;
-  }}
-  .fe-wordmark p {{
-    margin: 0 0 0.05em;
-    font-family: var(--fe-sans);
-    font-size: calc(100cqw / (var(--n) * var(--a)));
-    font-weight: 600;
-    line-height: 0.92;
-    letter-spacing: -0.045em;
-    white-space: nowrap;
-    color: var(--fe-text);
-  }}
-  /* A watermark, not a heading: quiet, each letter catching the light in turn. */
-  .fe-wordmark span {{
-    opacity: 0.1;
-    animation: fe-letter 7s ease-in-out infinite both;
-    animation-delay: calc(var(--i) * 170ms + 600ms);
-  }}
-  @keyframes fe-letter {{
-    0%, 34%, 100% {{ opacity: 0.1; }}
-    12% {{ opacity: 0.42; }}
-  }}
-
   /* Where the words' column is too narrow to hold the status on one line it is set
      as ordinary text, wrapping, with nothing typed. */
   @media (max-width: 1180px) {{
@@ -457,7 +441,7 @@ CSS = f"""
       flex: 1 1 100% !important;
       width: 100% !important;
     }}
-    .fe-hero-title {{ max-width: 22ch; }}
+    .fe-hero-state {{ max-width: 30ch; }}
   }}
   @media (max-width: 900px) {{
     .fe-hero-copy {{ padding-top: 1.6rem; }}
@@ -465,9 +449,10 @@ CSS = f"""
   }}
 
   @media (prefers-reduced-motion: reduce) {{
-    .fe-hero-copy, .fe-candle, .fe-field-floor, .fe-field-late, .fe-wordmark span {{
+    .fe-hero-copy, .fe-candle, .fe-field-floor, .fe-field-late, .fe-hero-caret {{
       animation: none;
     }}
+    .fe-hero-letters span {{ animation: none; font-size: 1em; }}
     .fe-field-arc {{ animation: none; stroke-dashoffset: 0; }}
     .fe-field-ring {{ animation: none; opacity: 0.5; }}
     .fe-field-ring-2 {{ display: none; }}

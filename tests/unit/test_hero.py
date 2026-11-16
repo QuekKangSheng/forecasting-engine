@@ -1,4 +1,4 @@
-"""The Home page's opening: its words, its typed line, the tape and the wordmark."""
+"""The Home page's opening: the typed name and its words, the status line, the tape."""
 
 import numpy as np
 import pandas as pd
@@ -96,27 +96,32 @@ def test_the_typed_lines_text_is_escaped():
     assert "<i>" not in hero.typed("<i>x</i>")
 
 
-def test_the_openings_statement_is_the_pages_one_heading():
-    copy = hero.copy(hero.pill("Data committed", "success"), "", "A <b> title", "Summary", "")
+def test_the_name_is_the_heading_typed_a_letter_at_a_time_and_read_once():
+    lead = hero.lead("Finlytics", "Next step", "Run models.", "", "")
 
-    assert 'role="heading" aria-level="1">A &lt;b&gt; title</div>' in copy
-    assert "var(--fe-success-fg)" in copy
+    assert 'role="heading" aria-level="1" aria-label="Finlytics"' in lead
+    letters = lead.split('class="fe-hero-letters" aria-hidden="true">')[1].split("</span><span")
+    assert lead.count('<span style="--i:') == 9 and "--i:8" in lead and letters
 
 
-def test_the_wordmark_is_a_letter_a_span_and_hidden_from_a_screen_reader():
-    mark = hero.wordmark("Finlytics")
+def test_the_statement_under_the_name_is_escaped():
+    lead = hero.lead("<i>N</i>", "Next <b>", "Run <b> models", "", "")
 
-    assert mark.count("<span") == 9
-    assert 'aria-hidden="true"' in mark and "--n:9" in mark
+    assert '<div class="fe-hero-state">Run &lt;b&gt; models</div>' in lead
+    assert 'class="fe-hero-label">Next &lt;b&gt;</div>' in lead
+    assert "<i>" not in lead
+
+
+def test_a_statement_of_a_whole_sentence_is_set_a_size_down():
+    assert "fe-hero-state-long" in hero.lead("F", "Next step", "A sentence.", "", "", long=True)
+    assert "fe-hero-state-long" not in hero.lead("F", "Latest weights", "60% equity.", "", "")
 
 
 def test_every_piece_is_one_line_so_markdown_cannot_break_it_up():
     pieces = [
         hero.typed("status"),
-        hero.pill("Data committed"),
         hero.tape([_tick(1.0)], span=20),
-        hero.wordmark("Finlytics"),
-        hero.copy("", "", "Title", "Summary", ""),
+        hero.lead("Finlytics", "Label", "Statement", "<b>below</b>", ""),
     ]
 
     assert all("\n" not in piece for piece in pieces)
@@ -125,6 +130,6 @@ def test_every_piece_is_one_line_so_markdown_cannot_break_it_up():
 def test_a_viewer_who_asked_for_less_motion_gets_none():
     reduced = hero.CSS.split("@media (prefers-reduced-motion: reduce)")[1]
 
-    for moving in (".fe-candle", ".fe-tape-track", ".fe-typed-text", ".fe-wordmark span"):
+    for moving in (".fe-candle", ".fe-tape-track", ".fe-typed-text", ".fe-hero-letters span"):
         assert moving in reduced
     assert "animation: none" in reduced
