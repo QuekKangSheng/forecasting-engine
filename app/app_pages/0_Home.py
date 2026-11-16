@@ -13,13 +13,16 @@ import html
 import streamlit as st
 
 import bloomberg_extraction_panel
+import hero
+import market_field
 import model_runs
+import model_settings
 import portfolio_summary
 import tokens
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
-from forecasting_engine.ingest.align import select_signals
+from forecasting_engine.ingest.align import Transform, select_signals, transform_for
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import (
     MODEL_ORDER,
@@ -39,13 +42,22 @@ GO_TO = {
     "models": "Go to Models",
     "portfolio": "Go to Portfolio Optimizer",
 }
-
-ui.page_header(
-    "Forecasting Engine",
-    "Tests whether forecasts of S&P 500 and US bond returns hold up on data they never saw, "
-    "and only then uses them to split a portfolio between the two.",
-    kicker="00 / Status",
+#: The second link in the opening: the page before the one the first leads to, or
+#: the analysis that follows the last.
+ALSO = {
+    "data": ("models", "Open Models"),
+    "models": ("data", "Open Data"),
+    "portfolio": ("models", "Open Models"),
+    None: ("scenarios", "Open Scenarios"),
+}
+TITLE = "Every forecast is tested on data it never saw."
+SUMMARY = (
+    "Only the ones that hold up move the portfolio. The Forecasting Engine scores forecasts "
+    "of S&P 500 and US bond returns on periods they were not fitted on, then splits a "
+    "portfolio between the two."
 )
+#: The maker's name, set large at the foot of the page.
+MAKER = "Finlytics"
 
 bloomberg_extraction_panel.restore_last_commit()
 merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)
@@ -141,6 +153,94 @@ def _next_step() -> tuple[str, str] | None:
     return None
 
 
+def _signals() -> list[str]:
+    numeric = [c for c in merged.columns if c != DATE_COLUMN and merged[c].dtype.kind in "fi"]
+    return select_signals(numeric, list(targets.values()), sources)
+
+
+def _status_line() -> str:
+    """What the app is working from, in one line short enough to sit on one: the
+    data and how many models are set on it. The allocation is in the figures below."""
+    if merged is None:
+        return "waiting for data: upload exports on the Data page"
+    fresh = sum(1 for role in ROLES if actives[role] and not _active_stale(role))
+    return (
+        f"{len(merged[DATE_COLUMN].dropna()):,} days · {len(_signals())} signals · "
+        f"{fresh} of {len(ROLES)} models active"
+    )
+
+
+def _pill() -> str:
+    if merged is None:
+        return hero.pill("No data committed", "warning")
+    dates = merged[DATE_COLUMN].dropna()
+    if dates.empty:
+        return hero.pill("Data committed, with no dated rows", "warning")
+    return hero.pill(
+        f"Data committed · {dates.min():%d %b %Y} to {dates.max():%d %b %Y}", "success"
+    )
+
+
+def _field() -> str:
+    """The equity index's last months as the committed data has them, or an empty
+    floor before there is an equity target to draw."""
+    column = targets.get(TargetRole.EQUITY)
+    if merged is None or column not in merged.columns:
+        return market_field.empty_field()
+    prices = merged.set_index(DATE_COLUMN)[column]
+    return market_field.field(market_field.monthly_candles(prices), label(column))
+
+
+def _tape() -> str:
+    """Both targets, then every signal, each with its change over one horizon."""
+    if merged is None:
+        return ""
+    columns = [targets[role] for role in ROLES if targets.get(role) in merged.columns]
+    columns += [c for c in _signals() if c not in columns]
+    span = model_settings.DEFAULT_HORIZON
+    items = hero.ticks(
+        merged.set_index(DATE_COLUMN),
+        columns,
+        [label(c) for c in columns],
+        [transform_for(sources.get(c)) is Transform.LOG_RETURN for c in columns],
+        span,
+    )
+    return hero.tape(items, span)
+
+
+def _opening(step: tuple[str, str] | None) -> None:
+    """The first screen: what the app is for and what it is working from, beside the
+    equity index as the committed data has it, then every committed series."""
+    where = None if step is None else step[1]
+    words, picture = st.columns([5, 7], gap="medium", vertical_alignment="bottom")
+    with words:
+        # The stylesheet travels with the first thing seen, as on every other page.
+        st.markdown(
+            ui.stylesheet()
+            + hero.CSS
+            + hero.copy(
+                _pill(),
+                ui.kicker_line("00 / Status"),
+                TITLE,
+                SUMMARY,
+                hero.typed(_status_line()),
+            ),
+            unsafe_allow_html=True,
+        )
+        # Side by side at their own widths, the second dropping under the first where
+        # the column is too narrow for both.
+        with st.container(key="fe-hero-go", horizontal=True):
+            ui.page_link(where or "portfolio", GO_TO.get(where, "Open Portfolio Optimizer"))
+            ui.page_link(*ALSO[where])
+    with picture:
+        st.markdown(_field(), unsafe_allow_html=True)
+    strip = _tape()
+    if strip:
+        st.markdown(strip, unsafe_allow_html=True)
+    else:
+        ui.rule()
+
+
 def _tick(ok: bool) -> str:
     return ui.lozenge("✓", "success") if ok else ui.lozenge("✗", "danger")
 
@@ -154,8 +254,7 @@ def _data_card() -> None:
         st.caption("Nothing committed yet.")
         return
     dates = merged[DATE_COLUMN].dropna()
-    numeric = [c for c in merged.columns if c != DATE_COLUMN and merged[c].dtype.kind in "fi"]
-    signals = select_signals(numeric, list(targets.values()), sources)
+    signals = _signals()
     rows = [
         ui.status_row("Committed", ui.lozenge("Yes", "success")),
         ui.status_row("Equity target", _tick(TargetRole.EQUITY in targets)),
@@ -303,17 +402,17 @@ def _headline() -> None:
     st.markdown(ui.strip(cells), unsafe_allow_html=True)
 
 
-_headline()
 step = _next_step()
+_opening(step)
+_headline()
 if step is None:
     st.success(
         "**Up to date:** every step has run on the committed data.",
         icon=":material/check_circle:",
     )
 else:
-    what, where = step
-    st.info(f"**Next step:** {what}", icon=":material/arrow_forward:")
-    ui.page_link(where, GO_TO[where])
+    # The link that does it is the first of the two in the opening, just above.
+    st.info(f"**Next step:** {step[0]}", icon=":material/arrow_forward:")
 # The three stages in pipeline order, numbered as the sidebar numbers them. Models
 # gets the most room: it lists every model's result for both indices.
 data_col, models_col, portfolio_col = st.columns([5, 7, 5])
@@ -323,3 +422,4 @@ with models_col, st.container(border=True):
     _models_card()
 with portfolio_col, st.container(border=True):
     _portfolio_card()
+st.markdown(hero.wordmark(MAKER), unsafe_allow_html=True)

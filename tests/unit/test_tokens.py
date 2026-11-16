@@ -94,3 +94,13 @@ def test_every_series_colour_stands_out_from_the_page_and_from_the_others():
     assert len(set(series)) == len(series)
     for colour in series:
         assert _contrast(colour, tokens.BG) >= 3, colour
+
+
+def test_a_rise_and_a_fall_are_the_themes_own_green_and_red():
+    assert (THEME["greenColor"], THEME["redColor"]) == (tokens.RISE, tokens.FALL)
+
+
+@pytest.mark.parametrize("colour", [tokens.RISE, tokens.FALL])
+def test_a_candle_reads_against_the_page(colour):
+    assert _contrast(colour, tokens.BG) >= 3
+

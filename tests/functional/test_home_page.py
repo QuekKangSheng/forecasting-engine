@@ -356,3 +356,94 @@ def test_a_model_fitted_on_another_target_column_is_flagged_on_home():
     assert not app.exception
     assert any("fitted on different data" in w.value for w in app.warning)
     assert "re-run the equity models" in _next_step(app)
+
+def _long_committed(days: int = 220) -> pd.DataFrame:
+    """Enough months for the field to draw, the index rising a little each day."""
+    rng = np.random.default_rng(1)
+    return pd.DataFrame(
+        {
+            "Date": pd.bdate_range("2024-01-02", periods=days),
+            SPX: 4000 + np.arange(days, dtype=float),
+            AGG: 2200 + np.cumsum(rng.normal(size=days)),
+            "VIX_Index_PX_LAST": 15 + rng.normal(size=days),
+            "LUACOAS_Index_PX_LAST": 1.2 + rng.normal(scale=0.1, size=days),
+        }
+    )
+
+
+def test_the_page_opens_on_one_heading_that_says_what_the_app_does():
+    markdown = _markdown(_page(_committed()))
+
+    assert markdown.count('aria-level="1"') == 1
+    assert 'aria-level="1">Every forecast is tested on data it never saw.</div>' in markdown
+
+
+def test_the_opening_says_what_the_app_is_working_from():
+    markdown = _markdown(_page(_committed()))
+
+    assert "Data committed · 02 Jan 2024 to 25 Mar 2024" in markdown
+    assert ">60 days · 2 signals · 0 of 2 models active</span>" in markdown
+
+
+def test_with_nothing_committed_the_opening_says_so_and_draws_nothing():
+    markdown = _markdown(_page())
+
+    assert "No data committed" in markdown
+    assert ">waiting for data: upload exports on the Data page</span>" in markdown
+    assert 'class="fe-candle"' not in markdown and '<div class="fe-tape"' not in markdown
+
+
+def test_the_equity_index_is_drawn_a_candle_a_month():
+    markdown = _markdown(_page(_long_committed()))
+
+    months = pd.bdate_range("2024-01-02", periods=220).to_period("M").nunique()
+    assert markdown.count('class="fe-candle"') == months
+    assert "S&amp;P 500, one candle a month from January 2024" in markdown
+
+
+def test_too_short_a_history_is_said_to_be_rather_than_drawn():
+    markdown = _markdown(_page(_committed()))  # sixty days: three months
+
+    assert 'class="fe-candle"' not in markdown
+    assert "Fewer than 6 months of S&amp;P 500" in markdown
+
+
+def test_the_tape_shows_both_targets_then_each_signal_with_its_change_over_a_horizon():
+    markdown = _markdown(_page(_long_committed()))
+
+    tape = markdown[markdown.index('<div class="fe-tape"') :]
+    run = tape[: tape.index('<span class="fe-tape-run" aria-hidden="true">')]
+    names = ["S&amp;P 500", "US Aggregate Bond", "US IG credit spread", "VIX"]
+    places = [run.index(f"<b>{name}</b>") for name in names]
+    assert places == sorted(places)
+    assert "change over 20 trading days" in tape
+    # The index rose a point a day from 4,199 to 4,219 over the last twenty.
+    assert "▲ 0.5%" in run
+
+
+def test_a_model_fitted_on_other_data_is_not_counted_as_active():
+    committed = _committed()
+    active_model.set_active_model(
+        EQUITY,
+        ML,
+        _result(0.04),
+        high_risk=False,
+        horizon=20,
+        train_window=504,
+        test_window=20,
+        dataset_fingerprint="some other dataset",
+    )
+    active_model.set_active_model(
+        BOND,
+        ML,
+        _result(0.04),
+        high_risk=False,
+        horizon=20,
+        train_window=504,
+        test_window=20,
+        dataset_fingerprint=str(dataset_fingerprint(committed)),
+    )
+
+    markdown = _markdown(_page(committed))
+
+    assert "1 of 2 models active</span>" in markdown
