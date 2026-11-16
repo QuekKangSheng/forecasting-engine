@@ -1,19 +1,21 @@
-"""The Home page's opening, around the market field (``market_field``).
+"""The Home page's opening, beside the market chart (``market_chart``).
 
 Each piece is a function that returns HTML for ``st.markdown``:
 
-- ``lead``: the maker's name as the page's heading, typed out a letter at a time
-  behind a caret, then where things stand (the latest weights, or the next step).
+- ``lead``: the maker's name as the page's heading, flickering on letter by letter
+  like a screen powering up, then where things stand (the latest weights, or the
+  next step).
 - ``typed``: one line of status, typed out once in the monospace face.
 - ``tape``: the latest value of every committed series and its change over one
   horizon, moving slowly like a ticker and stopping under the pointer.
 
-``CSS`` styles these and the field. Motion runs once (the tape, the caret and the
-field's two rings excepted) and is switched off for a viewer who asked for less.
+``CSS`` styles these and the chart's header line. Motion runs once (the tape
+excepted) and is switched off for a viewer who asked for less.
 """
 
 from __future__ import annotations
 
+import hashlib
 import html
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -99,27 +101,70 @@ def lead(
     *,
     long: bool = False,
 ) -> str:
-    """The opening's words: ``name`` as the page's heading, typed out a letter at a
-    time behind a caret; under it a small label, the statement of where things
-    stand, what goes under that (HTML its caller has escaped) and the typed status
-    line. ``long`` sets a statement of a whole sentence a size down.
+    """The opening's words: ``name`` as the page's heading, flickering on (``flicker``);
+    under it a small label, the statement of where things stand, what goes under that
+    (HTML its caller has escaped) and the typed status line. ``long`` sets a
+    statement of a whole sentence a size down.
 
-    The heading is read once, as ``name``: its letters, there only to be typed, are
-    hidden from a screen reader."""
-    letters = "".join(
-        f'<span style="--i:{i}">{html.escape(letter)}</span>' for i, letter in enumerate(name)
-    )
+    The heading is read once, as ``name``: its letters, there to flicker, are hidden
+    from a screen reader."""
+    keyframes, letters = flicker(name)
     size = " fe-hero-state-long" if long else ""
     return (
+        f"<style>{keyframes}</style>"
         f'<div class="fe-hero-copy">'
         f'<div class="fe-hero-name" role="heading" aria-level="1" '
         f'aria-label="{html.escape(name, quote=True)}">'
-        f'<span class="fe-hero-letters" aria-hidden="true">{letters}</span>'
-        f'<span class="fe-hero-caret" aria-hidden="true"></span></div>'
+        f'<span class="fe-hero-letters" aria-hidden="true">{letters}</span></div>'
         f'<div class="fe-hero-label">{html.escape(label)}</div>'
         f'<div class="fe-hero-state{size}">{html.escape(statement)}</div>'
         f'<div class="fe-hero-below">{below}</div>{typed_html}</div>'
     )
+
+
+def _unit(key: str) -> float:
+    """A number in [0, 1) fixed by ``key``: the same on every load and machine."""
+    return int.from_bytes(hashlib.sha256(key.encode()).digest()[:4], "big") / 2**32
+
+
+def flicker(name: str) -> tuple[str, str]:
+    """Each letter of ``name`` as a span, and the keyframes that switch it on.
+
+    As the onerecord wordmark does it (github.com/ethantyh03/onerecord,
+    ``landing-hero.tsx``): every letter blinks on and off a couple of times at its
+    own irregular moments, like a screen powering on, then settles solid, within
+    0.9 to 1.3 s. Opacity only, in hard steps, so the word's width never changes; no
+    loop, no colour, no glow. The moments are drawn from a hash of the letter's
+    place, so the word flickers the same way every time."""
+    frames, spans = [], []
+    for i, letter in enumerate(name):
+
+        def r(k: int, i: int = i) -> float:
+            return _unit(f"flicker-{i}-{k}")
+
+        duration = 900 + 400 * r(0)
+        on1 = 0.05 + 0.3 * r(1)
+        off1 = on1 + 0.05 + 0.1 * r(2)
+        on2 = off1 + 0.04 + 0.1 * r(3)
+        twice = r(4) > 0.35
+        off2 = on2 + 0.08 + 0.12 * r(5)
+        on3 = off2 + 0.03 + 0.08 * r(6)
+        # Stretched so each letter settles late in its own time (0.86-0.96 of it).
+        scale = (0.86 + 0.1 * r(7)) / (on3 if twice else on2)
+        steps = [(0, 0.0), (1, on1), (0.08, off1), (1, on2)]
+        if twice:
+            steps += [(0.3, off2), (1, on3)]
+        body = "".join(
+            f"{offset * scale * 100:.2f}%{{opacity:{opacity};"
+            "animation-timing-function:steps(1,end)}"
+            for opacity, offset in steps
+        )
+        frames.append(f"@keyframes fe-flicker-{i}{{{body}100%{{opacity:1}}}}")
+        spans.append(
+            f'<span style="animation:fe-flicker-{i} {duration:.0f}ms linear both">'
+            f"{html.escape(letter)}</span>"
+        )
+    return "".join(frames), "".join(spans)
 
 
 # ── The tape ─────────────────────────────────────────────────────────────────
@@ -195,8 +240,7 @@ CSS = f"""
     text-transform: uppercase;
     color: var(--fe-muted);
   }}
-  /* The name, typed: each letter has no size until its turn comes, so the caret
-     after them moves along as they arrive. Nine one-off steps, then still. */
+  /* The name. Each letter's flicker is its own keyframes, written with the heading. */
   .fe-hero-name {{
     margin: 0 0 1.7rem;
     font-family: var(--fe-sans);
@@ -206,20 +250,6 @@ CSS = f"""
     letter-spacing: -0.045em;
     white-space: nowrap;
     color: var(--fe-text);
-  }}
-  .fe-hero-letters span {{
-    font-size: 0;
-    animation: fe-key 1ms steps(1) forwards;
-    animation-delay: calc(var(--i) * 115ms + 250ms);
-  }}
-  @keyframes fe-key {{ to {{ font-size: 1em; }} }}
-  .fe-hero-caret {{
-    display: inline-block;
-    width: 0.07em;
-    height: 0.74em;
-    margin-left: 0.07em;
-    background: var(--fe-accent);
-    animation: fe-blink 1.05s steps(1) infinite;
   }}
   .fe-hero-state {{
     font-family: var(--fe-sans);
@@ -315,53 +345,45 @@ CSS = f"""
     border-color: #fff;
   }}
 
-  /* ---- The field --------------------------------------------------------------------- */
-  .fe-field {{
-    display: block;
-    width: 100%;
-    height: auto;
-    margin: 0.4rem 0 -0.4rem;
-    overflow: hidden;
-  }}
-  .fe-field-label text, text.fe-field-label {{
+  /* ---- The market chart's header ------------------------------------------------------
+     The index, its latest price and the span's move, then where the figures are from:
+     a green dot when live, amber when drawn from the committed data. */
+  .fe-market-head {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.35rem 0.9rem;
+    margin: 0 0 0.2rem;
     font-family: var(--fe-mono);
-    letter-spacing: 0.08em;
+    font-size: 11.5px;
+  }}
+  .fe-market-name {{
+    font-size: 10.5px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    stroke: none;
+    color: var(--fe-text-2);
   }}
-  .fe-field text.fe-field-figure {{
+  .fe-market-last {{
     font-family: var(--fe-sans);
+    font-size: 22px;
     letter-spacing: -0.02em;
+    color: var(--fe-text);
     font-variant-numeric: tabular-nums;
-    text-transform: none;
   }}
-  .fe-candle {{
-    transform-box: fill-box;
-    transform-origin: 50% 100%;
-    animation: fe-rise 640ms cubic-bezier(0.16, 1, 0.3, 1) both;
-    animation-delay: calc(var(--i) * 15ms + 180ms);
+  .fe-market-where {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem 0.45rem;
+    margin-top: -0.2rem;
+    font-family: var(--fe-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    color: var(--fe-muted);
   }}
-  .fe-field-floor {{ animation: fe-appear 900ms ease-out both; }}
-  .fe-field-arc {{
-    stroke-dasharray: 1;
-    stroke-dashoffset: 1;
-    animation: fe-draw 900ms cubic-bezier(0.65, 0, 0.35, 1) forwards;
-    animation-delay: calc(var(--i) * 220ms + 1250ms);
-  }}
-  .fe-field-late {{ animation: fe-appear 500ms ease-out 1500ms both; }}
-  .fe-field-ring {{
-    transform-box: fill-box;
-    transform-origin: center;
-    animation: fe-ping 3.2s cubic-bezier(0.16, 1, 0.3, 1) 1400ms infinite both;
-  }}
-  .fe-field-ring-2 {{ animation-delay: 3000ms; }}
-  @keyframes fe-rise {{ from {{ transform: scaleY(0); }} to {{ transform: none; }} }}
-  @keyframes fe-appear {{ from {{ opacity: 0; }} to {{ opacity: 1; }} }}
-  @keyframes fe-draw {{ to {{ stroke-dashoffset: 0; }} }}
-  @keyframes fe-ping {{
-    0% {{ transform: scale(0.3); opacity: 0.9; }}
-    70%, 100% {{ transform: scale(2.6); opacity: 0; }}
-  }}
+  .fe-market-where i {{ width: 6px; height: 6px; border-radius: 50%; }}
+  .fe-market-hint {{ margin-left: auto; opacity: 0.8; }}
 
   /* ---- The tape ----------------------------------------------------------------------
      From the sidebar's edge to the window's, like the rules. */
@@ -449,13 +471,8 @@ CSS = f"""
   }}
 
   @media (prefers-reduced-motion: reduce) {{
-    .fe-hero-copy, .fe-candle, .fe-field-floor, .fe-field-late, .fe-hero-caret {{
-      animation: none;
-    }}
-    .fe-hero-letters span {{ animation: none; font-size: 1em; }}
-    .fe-field-arc {{ animation: none; stroke-dashoffset: 0; }}
-    .fe-field-ring {{ animation: none; opacity: 0.5; }}
-    .fe-field-ring-2 {{ display: none; }}
+    .fe-hero-copy {{ animation: none; }}
+    .fe-hero-letters span {{ animation: none !important; }}
     .fe-typed-text {{ animation: none; clip-path: none; }}
     .fe-typed-caret {{ animation: none; transform: translateX(calc(var(--n) * 1ch)); }}
     .fe-tape-window {{ overflow-x: auto; }}

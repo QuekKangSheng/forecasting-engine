@@ -1,12 +1,14 @@
 """The Home page's pipeline status, driven through the real page script (FYP-218)."""
 
 import html
+import json
 import re
 from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -16,6 +18,8 @@ import portfolio_summary
 from forecasting_engine.extraction import validation
 from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest import index_feed
+from forecasting_engine.ingest.index_feed import Candles, IndexFeedError
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult, ScreeningSummary
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
@@ -33,6 +37,48 @@ NAIVE, DERIVED, ML = "Naive (training mean)", "Polynomial (derived)", "Machine L
 def isolated_active_model_db(monkeypatch, tmp_path):
     """The active-model store reads DuckDB at a default, cwd-relative path."""
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def no_live_feed(monkeypatch):
+    """No test asks the network: the live feed does not answer unless a test says so."""
+
+    def offline(span, **kwargs):
+        raise IndexFeedError("the live feed did not answer (offline in tests)")
+
+    monkeypatch.setattr(index_feed, "fetch", offline)
+
+
+def _live_feed(monkeypatch) -> list[str]:
+    """The live feed answering with three monthly candles; the spans asked for."""
+    asked = []
+
+    def answer(span, **kwargs):
+        asked.append(span)
+        frame = pd.DataFrame(
+            {
+                "open": [7500.0, 7690.0, 7650.0],
+                "high": [7820.0, 7790.0, 7700.0],
+                "low": [7500.0, 7510.0, 7350.0],
+                "close": [7686.0, 7650.0, 7418.2],
+            },
+            index=pd.date_range("2026-08-01", periods=3, freq="MS"),
+        )
+        return Candles(frame, "M", "Yahoo Finance", True, 7418.2, pd.Timestamp("2026-11-16 16:00"))
+
+    monkeypatch.setattr(index_feed, "fetch", answer)
+    return asked
+
+
+def _charts(app: AppTest) -> list[dict]:
+    return [json.loads(chart.proto.spec) for chart in app.get("vega_lite_chart")]
+
+
+def _candle_rows(app: AppTest) -> pd.DataFrame:
+    """The market chart's candles, as sent to the browser beside its specification."""
+    (chart,) = app.get("vega_lite_chart")
+    (table,) = [d for d in chart.proto.datasets if d.name.startswith("candles")]
+    return pa.ipc.open_stream(table.data.data).read_all().to_pandas()
 
 
 @pytest.fixture(autouse=True)
@@ -399,27 +445,46 @@ def test_the_opening_says_what_the_app_is_working_from():
     assert ">60 days · 2 signals · 0 of 2 models active</span>" in markdown
 
 
-def test_with_nothing_committed_the_opening_says_so_and_draws_nothing():
-    markdown = _markdown(_page())
+def test_with_nothing_committed_and_no_feed_the_opening_says_so_and_draws_nothing():
+    app = _page()
 
-    assert "No data committed" in markdown
-    assert ">waiting for data: upload exports on the Data page</span>" in markdown
-    assert 'class="fe-candle"' not in markdown and '<div class="fe-tape"' not in markdown
+    assert ">waiting for data: upload exports on the Data page</span>" in _markdown(app)
+    assert '<div class="fe-tape"' not in _markdown(app)
+    assert not _charts(app)
+    assert "no S&P 500 is committed to draw" in _captions(app)
 
 
-def test_the_equity_index_is_drawn_a_candle_a_month():
-    markdown = _markdown(_page(_long_committed()))
+def test_the_s_and_p_is_drawn_live_from_the_feed_over_five_years_by_default(monkeypatch):
+    asked = _live_feed(monkeypatch)
+    app = _page(_committed())
 
+    assert not app.exception
+    assert asked == ["5Y"]
+    assert "candles_hit" in json.dumps(_charts(app))
+    assert _candle_rows(app)["close"].tolist() == [7686.0, 7650.0, 7418.2]
+    assert "Live · Yahoo Finance · 16 Nov 2026 16:00 New York" in _markdown(app)
+    assert ">7,418.20<" in _markdown(app)
+
+
+def test_picking_a_span_asks_the_feed_for_it(monkeypatch):
+    asked = _live_feed(monkeypatch)
+    app = _page(_committed())
+
+    (span,) = [c for c in app.segmented_control if c.label == "Span"]
+    assert list(span.options) == ["3M", "1Y", "5Y", "10Y"]
+    span.set_value("1Y").run()
+
+    assert not app.exception
+    assert asked[-1] == "1Y"
+
+
+def test_without_the_feed_the_committed_s_and_p_is_drawn_and_said_to_be():
+    app = _page(_long_committed())
+
+    assert not app.exception
     months = pd.bdate_range("2024-01-02", periods=220).to_period("M").nunique()
-    assert markdown.count('class="fe-candle"') == months
-    assert "S&amp;P 500, one candle a month from January 2024" in markdown
-
-
-def test_too_short_a_history_is_said_to_be_rather_than_drawn():
-    markdown = _markdown(_page(_committed()))  # sixty days: three months
-
-    assert 'class="fe-candle"' not in markdown
-    assert "Fewer than 6 months of S&amp;P 500" in markdown
+    assert len(_candle_rows(app)) == months
+    assert "From the committed data · to" in _markdown(app)
 
 
 def test_the_tape_shows_both_targets_then_each_signal_with_its_change_over_a_horizon():

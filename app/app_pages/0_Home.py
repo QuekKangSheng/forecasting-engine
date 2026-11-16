@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import html
 
+import pandas as pd
 import streamlit as st
 
 import bloomberg_extraction_panel
+import charts
 import hero
-import market_field
+import market_chart
 import model_runs
 import model_settings
 import portfolio_summary
@@ -22,6 +24,7 @@ import tokens
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest import index_feed
 from forecasting_engine.ingest.align import Transform, select_signals, transform_for
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import (
@@ -166,14 +169,47 @@ def _status_line(step: tuple[str, str] | None) -> str:
     )
 
 
-def _field() -> str:
-    """The equity index's last months as the committed data has them, or an empty
-    floor before there is an equity target to draw."""
-    column = targets.get(TargetRole.EQUITY)
-    if merged is None or column not in merged.columns:
-        return market_field.empty_field()
-    prices = merged.set_index(DATE_COLUMN)[column]
-    return market_field.field(market_field.monthly_candles(prices), label(column))
+def _committed_closes() -> tuple[pd.Series, str] | None:
+    """The committed data's S&P 500, to draw when the live feed does not answer: its
+    price field if there is one, the figure the feed quotes, else the equity target."""
+    if merged is None:
+        return None
+    price = next(
+        (
+            column
+            for column, source in sources.items()
+            if source.security == "SPX Index" and source.field == "PX_LAST"
+        ),
+        None,
+    )
+    column = price if price in merged.columns else targets.get(TargetRole.EQUITY)
+    if column not in merged.columns:
+        return None
+    return merged.set_index(DATE_COLUMN)[column], label(column)
+
+
+def _market() -> None:
+    """The S&P 500 beside the words, over the span picked: live where the feed answers,
+    else from the committed data, and said which."""
+    span = st.segmented_control(
+        "Span",
+        list(index_feed.SPANS),
+        default=market_chart.DEFAULT_SPAN,
+        key="fe-span",
+        label_visibility="collapsed",
+    ) or market_chart.DEFAULT_SPAN
+    candles, _ = market_chart.live(span)
+    name = f"S&P 500 · {index_feed.SYMBOL}"
+    if candles is None:
+        committed = _committed_closes()
+        if committed is None:
+            st.caption("The live feed did not answer, and no S&P 500 is committed to draw.")
+            return
+        closes, name = committed
+        candles = index_feed.from_closes(closes, span)
+    st.markdown(market_chart.header(candles, name), unsafe_allow_html=True)
+    charts.draw(market_chart.candle_chart(candles))
+    st.markdown(market_chart.source(candles), unsafe_allow_html=True)
 
 
 def _tape() -> str:
@@ -238,7 +274,7 @@ def _opening(step: tuple[str, str] | None) -> None:
             ui.page_link(where or "portfolio", GO_TO.get(where, "Open Portfolio Optimizer"))
             ui.page_link(*ALSO[where])
     with picture:
-        st.markdown(_field(), unsafe_allow_html=True)
+        _market()
     strip = _tape()
     if strip:
         st.markdown(strip, unsafe_allow_html=True)
