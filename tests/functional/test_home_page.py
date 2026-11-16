@@ -248,7 +248,8 @@ def test_an_up_to_date_pipeline_says_there_is_nothing_left_to_do():
     assert not app.exception
     assert not app.warning
     assert not [i for i in app.info if i.value.startswith("**Next step:**")]
-    assert "every step has run on the committed data" in app.success[0].value
+    assert not app.success  # no banner: the typed line says it
+    assert "2 of 2 models active · up to date</span>" in _markdown(app)
     # The latest result leads the page, ahead of the pipeline cards.
     strip = next(m.value for m in app.markdown if '<div class="fe-strip' in m.value)
     assert "60% / 40%" in strip and "0.83 for 50/50" in strip
@@ -381,7 +382,6 @@ def test_the_page_opens_on_one_heading_that_says_what_the_app_does():
 def test_the_opening_says_what_the_app_is_working_from():
     markdown = _markdown(_page(_committed()))
 
-    assert "Data committed · 02 Jan 2024 to 25 Mar 2024" in markdown
     assert ">60 days · 2 signals · 0 of 2 models active</span>" in markdown
 
 

@@ -191,7 +191,7 @@ CSS = f"""
      Words on the left, the field on the right, meeting at the bottom so the candles
      stand on the same line the words end on. */
   .fe-hero-copy {{
-    padding: 2.6rem 0 0.4rem;
+    padding: 3.4rem 0 0.4rem;
     animation: fe-arrive 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
   }}
   .fe-hero-pill {{
@@ -431,14 +431,15 @@ CSS = f"""
     white-space: nowrap;
     color: var(--fe-text);
   }}
+  /* A watermark, not a heading: quiet, each letter catching the light in turn. */
   .fe-wordmark span {{
-    opacity: 0.86;
+    opacity: 0.1;
     animation: fe-letter 7s ease-in-out infinite both;
     animation-delay: calc(var(--i) * 170ms + 600ms);
   }}
   @keyframes fe-letter {{
-    0%, 34%, 100% {{ opacity: 0.86; }}
-    12% {{ opacity: 0.26; }}
+    0%, 34%, 100% {{ opacity: 0.1; }}
+    12% {{ opacity: 0.42; }}
   }}
 
   /* Where the words' column is too narrow to hold the status on one line it is set

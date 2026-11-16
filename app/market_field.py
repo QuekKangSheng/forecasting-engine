@@ -364,23 +364,21 @@ def _latest(layout: _Layout, name: str) -> str:
 
 
 def _key(months: int, falls: int) -> str:
-    """What the marks are, in the field's bottom-left corner."""
+    """What the marks are, on one line in the field's bottom-left corner."""
+    y = _VIEW_H - 13
     arcs = (
-        f'<path d="M150 {_VIEW_H - 16} q11 -12 22 0" fill="none" '
-        f'stroke="{tokens.ACCENT_BRIGHT}"/>'
-        f'<text x="178" y="{_VIEW_H - 13}">largest falls, month-end to month-end</text>'
+        f'<path d="M244 {y - 3} q9 -10 18 0" fill="none" stroke="{tokens.ACCENT_BRIGHT}"/>'
+        f'<text x="268" y="{y}">largest falls</text>'
         if falls
         else ""
     )
     return (
         f'<g class="fe-field-label" font-size="9.5" fill="{tokens.MUTED}">'
-        f'<text x="6" y="{_VIEW_H - 29}">One candle a month, from daily closes · '
-        f"last {months} months</text>"
-        f'<rect x="6" y="{_VIEW_H - 22}" width="6" height="10" fill="{tokens.RISE}" '
-        f'fill-opacity="0.2" stroke="{tokens.RISE}"/>'
-        f'<text x="18" y="{_VIEW_H - 13}">closed up</text>'
-        f'<rect x="78" y="{_VIEW_H - 22}" width="6" height="10" fill="{tokens.FALL}" '
-        f'stroke="{tokens.FALL}"/><text x="90" y="{_VIEW_H - 13}">down</text>{arcs}</g>'
+        f'<text x="6" y="{y}">{months} monthly candles</text>'
+        f'<rect x="130" y="{y - 9}" width="6" height="10" fill="{tokens.RISE}" '
+        f'fill-opacity="0.2" stroke="{tokens.RISE}"/><text x="141" y="{y}">up</text>'
+        f'<rect x="170" y="{y - 9}" width="6" height="10" fill="{tokens.FALL}" '
+        f'stroke="{tokens.FALL}"/><text x="181" y="{y}">down</text>{arcs}</g>'
     )
 
 

@@ -51,11 +51,7 @@ ALSO = {
     None: ("scenarios", "Open Scenarios"),
 }
 TITLE = "Every forecast is tested on data it never saw."
-SUMMARY = (
-    "Only the ones that hold up move the portfolio. The Forecasting Engine scores forecasts "
-    "of S&P 500 and US bond returns on periods they were not fitted on, then splits a "
-    "portfolio between the two."
-)
+SUMMARY = "Only the ones that hold up move the split between the S&P 500 and US bonds."
 #: The maker's name, set large at the foot of the page.
 MAKER = "Finlytics"
 
@@ -158,26 +154,17 @@ def _signals() -> list[str]:
     return select_signals(numeric, list(targets.values()), sources)
 
 
-def _status_line() -> str:
+def _status_line(step: tuple[str, str] | None) -> str:
     """What the app is working from, in one line short enough to sit on one: the
-    data and how many models are set on it. The allocation is in the figures below."""
+    data, how many models are set on it, and, once every step has run, that it is up
+    to date. The allocation is in the figures below; a step left is said under them."""
     if merged is None:
         return "waiting for data: upload exports on the Data page"
     fresh = sum(1 for role in ROLES if actives[role] and not _active_stale(role))
+    done = " · up to date" if step is None else ""
     return (
         f"{len(merged[DATE_COLUMN].dropna()):,} days · {len(_signals())} signals · "
-        f"{fresh} of {len(ROLES)} models active"
-    )
-
-
-def _pill() -> str:
-    if merged is None:
-        return hero.pill("No data committed", "warning")
-    dates = merged[DATE_COLUMN].dropna()
-    if dates.empty:
-        return hero.pill("Data committed, with no dated rows", "warning")
-    return hero.pill(
-        f"Data committed · {dates.min():%d %b %Y} to {dates.max():%d %b %Y}", "success"
+        f"{fresh} of {len(ROLES)} models active{done}"
     )
 
 
@@ -214,17 +201,12 @@ def _opening(step: tuple[str, str] | None) -> None:
     where = None if step is None else step[1]
     words, picture = st.columns([5, 7], gap="medium", vertical_alignment="bottom")
     with words:
-        # The stylesheet travels with the first thing seen, as on every other page.
+        # The stylesheet travels with the first thing seen, as on every other page. No
+        # kicker and no data line: the status bar above says both.
         st.markdown(
             ui.stylesheet()
             + hero.CSS
-            + hero.copy(
-                _pill(),
-                ui.kicker_line("00 / Status"),
-                TITLE,
-                SUMMARY,
-                hero.typed(_status_line()),
-            ),
+            + hero.copy("", "", TITLE, SUMMARY, hero.typed(_status_line(step))),
             unsafe_allow_html=True,
         )
         # Side by side at their own widths, the second dropping under the first where
@@ -405,21 +387,20 @@ def _headline() -> None:
 step = _next_step()
 _opening(step)
 _headline()
-if step is None:
-    st.success(
-        "**Up to date:** every step has run on the committed data.",
-        icon=":material/check_circle:",
-    )
-else:
-    # The link that does it is the first of the two in the opening, just above.
+if step is not None:
+    # The link that does it is the first of the two in the opening, just above. Up to
+    # date needs no banner: the typed line says so.
     st.info(f"**Next step:** {step[0]}", icon=":material/arrow_forward:")
-# The three stages in pipeline order, numbered as the sidebar numbers them. Models
-# gets the most room: it lists every model's result for both indices.
-data_col, models_col, portfolio_col = st.columns([5, 7, 5])
-with data_col, st.container(border=True):
-    _data_card()
-with models_col, st.container(border=True):
-    _models_card()
-with portfolio_col, st.container(border=True):
-    _portfolio_card()
+# The three stages in pipeline order, numbered as the sidebar numbers them, folded:
+# the opening and the status bar already say where things stand. Open whenever a
+# step is left, so what needs doing (a stale model, a stale run) is never hidden.
+# Models gets the most room: it lists every model's result for both indices.
+with st.expander("Pipeline detail", expanded=step is not None):
+    data_col, models_col, portfolio_col = st.columns([5, 7, 5])
+    with data_col, st.container(border=True):
+        _data_card()
+    with models_col, st.container(border=True):
+        _models_card()
+    with portfolio_col, st.container(border=True):
+        _portfolio_card()
 st.markdown(hero.wordmark(MAKER), unsafe_allow_html=True)
