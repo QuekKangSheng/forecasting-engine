@@ -546,3 +546,170 @@ def line_chart(
             None if wide.empty else wide["date"].iloc[-1],
         ),
     }
+
+
+#: Each panel's height in the weights-and-volatility chart, and the gap between them:
+#: two panels in a little more than the room the two charts took side by side.
+PANEL_HEIGHT = 200
+PANEL_GAP = 34
+
+
+def weights_and_volatility_chart(
+    renamed: pd.DataFrame,
+    volatility: pd.DataFrame,
+    *,
+    limits: tuple[float, float] | None = None,
+    until: pd.Timestamp | None = None,
+) -> dict[str, Any]:
+    """The weights per rebalance above each line's rolling volatility, on one time axis.
+
+    They used to stand side by side, each on its own axis covering slightly different
+    years, so matching a move in the weights to the volatility around it meant reading
+    across two charts. Stacked on a shared axis, a date sits directly above itself, and
+    a hover anywhere draws that day through both panels and shows its weights and
+    volatility together.
+
+    It is one layered chart, not two stacked ones: Vega-Lite fits only a single or
+    layered chart to its container's width, and a stacked pair ran past the right
+    edge. The weights' layers and the volatility's each keep their own vertical scale,
+    placed in the top and bottom band of the one plot. The layers are
+    ``weights_chart``'s and ``line_chart``'s, less their own hovers, which are
+    replaced by one that marks both: a day's weights are the allocation held that
+    day, the last rebalance's."""
+    top = weights_chart(renamed, limits=limits, until=until)
+    bottom = line_chart(volatility, "Rolling volatility", height=PANEL_HEIGHT)
+    weight_names = [str(c) for c in renamed.columns]
+    vol_names = [str(c) for c in volatility.columns]
+    first = weight_names[0]
+    total = 2 * PANEL_HEIGHT + PANEL_GAP
+    # Pixel bands, top of the plot first: Vega measures y downwards.
+    top_band = [PANEL_HEIGHT, 0]
+    bottom_band = [total, PANEL_HEIGHT + PANEL_GAP]
+
+    # One table of hover days for both panels: the volatility chart's days, each with
+    # the weights held that day. Weight columns are prefixed, since the indices share
+    # their names with the volatility lines.
+    days = bottom["datasets"]["hover"].copy()
+    held = top["datasets"]["weights"].set_index("date")[weight_names].sort_index()
+    on_day = held.reindex(held.index.union(days["date"])).ffill().reindex(days["date"])
+    for name in weight_names:
+        days[f"Weight: {name}"] = on_day[name].to_numpy()
+
+    def in_band(layer: dict[str, Any], band: list[int], title: str) -> dict[str, Any]:
+        """``layer`` with its vertical scale placed in ``band`` and its axis titled."""
+        encoding = dict(layer["encoding"])
+        if "y" in encoding:
+            y = dict(encoding["y"])
+            y["scale"] = {**y.get("scale", {}), "range": band}
+            y["axis"] = {**y.get("axis", {}), "title": title, "orient": "left"}
+            encoding["y"] = y
+        return {**layer, "encoding": encoding}
+
+    hovering = {"filter": {"param": "nearest", "empty": False}}
+    weight_layers = [
+        in_band(layer, top_band, "Weight")
+        for layer in top["layer"]
+        if layer.get("name") != "rebalances"
+    ]
+    weight_y = next(
+        layer["encoding"]["y"] for layer in weight_layers if layer["data"]["name"] == "weights"
+    )
+    weight_layers.append(
+        {
+            "data": {"name": "hover"},
+            "transform": [hovering],
+            "mark": {
+                "type": "point",
+                "filled": True,
+                "size": 56,
+                "opacity": 1,
+                "color": series_colour(first),
+                "stroke": tokens.BG,
+                "strokeWidth": 2,
+            },
+            "encoding": {"x": _years(), "y": {**weight_y, "field": f"Weight: {first}"}},
+        }
+    )
+    vol_layers = [
+        in_band(layer, bottom_band, "Volatility")
+        for layer in bottom["layer"]
+        if layer.get("name") != "days" and layer["mark"]["type"] != "rule"
+    ]
+    crosshair = {
+        "data": {"name": "hover"},
+        "transform": [hovering],
+        "mark": {"type": "rule", "color": tokens.MUTED, "strokeWidth": 1},
+        "encoding": {"x": _years()},
+    }
+    targets = {
+        "data": {"name": "hover"},
+        "name": "days",
+        "mark": {"type": "point", "opacity": 0},
+        "encoding": {
+            "x": _years(),
+            "tooltip": [
+                {"field": "date", "type": "temporal", "title": "Date", "format": "%d %b %Y"},
+                *(
+                    {
+                        "field": f"Weight: {name}",
+                        "type": "quantitative",
+                        "title": f"{short_name(name)} weight",
+                        "format": ".0%",
+                    }
+                    for name in weight_names
+                ),
+                *(
+                    {
+                        "field": name,
+                        "type": "quantitative",
+                        "title": f"{short_name(name)} volatility",
+                        "format": ".2%",
+                    }
+                    for name in vol_names
+                ),
+            ],
+        },
+    }
+    return {
+        "config": _CONFIG,
+        "height": total,
+        # Fit the width only. Fitting the height too squeezed the plot to make room for
+        # the year labels, and the panels, placed in fixed bands, ran into them.
+        "autosize": {"type": "fit-x", "contains": "padding"},
+        "layer": [
+            {"layer": weight_layers},
+            {"layer": vol_layers},
+            crosshair,
+            targets,
+        ],
+        "resolve": {"scale": {"y": "independent"}, "axis": {"y": "independent"}},
+        "params": [
+            {
+                "name": "nearest",
+                "select": {
+                    "type": "point",
+                    "nearest": True,
+                    "on": "pointerover",
+                    "clear": "pointerout",
+                    "fields": ["date"],
+                },
+                "views": ["days"],
+            }
+        ],
+        "usermeta": _CANVAS,
+        "datasets": {
+            **top["datasets"],
+            "drawn": bottom["datasets"]["drawn"],
+            "hover": days,
+        },
+        "key": _labelled(top["key"], "Weight") + _labelled(bottom["key"], "Volatility"),
+    }
+
+
+def _labelled(key: str, label: str) -> str:
+    """A chart key with a short label leading its row, so two keys over one chart say
+    which panel each belongs to."""
+    opening = '<div class="fe-readout">'
+    return key.replace(
+        opening, f'{opening}<span class="fe-readout-label">{html.escape(label)}</span>', 1
+    )

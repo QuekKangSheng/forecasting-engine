@@ -670,7 +670,11 @@ $TONES
     font-size: 11.5px !important;
     padding: 8px 10px !important;
   }
-  #vg-tooltip-element.vg-tooltip td.key { color: var(--fe-muted) !important; }
+  /* Labels in full: Vega cuts a label at 150px, which left "US Aggregate Bond wei…". */
+  #vg-tooltip-element.vg-tooltip td.key {
+    color: var(--fe-muted) !important;
+    max-width: none !important;
+  }
   #vg-tooltip-element.vg-tooltip td.value { color: var(--fe-text) !important; }
 
   /* ---- Work under way ------------------------------------------------------------------
@@ -801,6 +805,15 @@ $TONES
     color: var(--fe-text);
     font-weight: 500;
     font-variant-numeric: tabular-nums;
+  }
+  /* Which panel a key belongs to, where one chart has two (weights over volatility). */
+  .fe-readout-label {
+    min-width: 84px;
+    font-family: var(--fe-mono);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fe-muted);
   }
   .fe-readout-asof {
     margin-left: auto;

@@ -318,31 +318,13 @@ how_set = [
 st.caption(how_set[0])
 
 
-# The weights beside how volatile each index has been, so a move towards bonds can
-# be read against the volatility that prompted it. Filled once the backtest is run.
-weights_col, volatility_col = st.columns(2, gap="large")
-with weights_col:
-    st.markdown(
-        ui.eyebrow(
-            "Weights per rebalance",
-            "Each rebalance's allocation, re-derived from that date's signals and risk.",
-        ),
-        unsafe_allow_html=True,
-    )
-    renamed = schedule.rename(columns={EQUITY: equity_name, BOND: bond_name})
-    charts.draw(
-        charts.weights_chart(
-            renamed,
-            limits=(lower, upper),
-            # The last allocation is held to the last day both indices have a price.
-            until=min(series.index[-1] for series in prices.values()),
-        )
-    )
-    with ui.note("How to read this", "weights"):
-        st.caption(
-            f"The line is {equity_name}'s weight and the rest is {bond_name}; each step is "
-            f"a rebalance. Dashed lines mark the {lower:.0%} and {upper:.0%} limits."
-        )
+# The weights above how volatile each index has been, on one time axis, so a move
+# towards bonds can be read against the volatility around it. The volatility comes
+# from the backtest, so the place is held here and filled once it has run.
+renamed = schedule.rename(columns={EQUITY: equity_name, BOND: bond_name})
+# The last allocation is held to the last day both indices have a price.
+held_until = min(series.index[-1] for series in prices.values())
+allocation_chart_slot = st.container()
 
 
 # --- FYP-19: the optimised allocation against the equal-weight benchmark -----------
@@ -476,32 +458,43 @@ costs = backtest.costs_bps
 # --- FYP-254 / FYP-255: how risk has moved over the backtest ------------------------
 
 index_names = {EQUITY: equity_name, BOND: bond_name}
-with volatility_col:
+with allocation_chart_slot:
     st.markdown(
-        ui.eyebrow("Rolling volatility", glossary.term("Rolling volatility")),
+        ui.eyebrow(
+            "Weights per rebalance · Rolling volatility",
+            "Each rebalance's allocation, re-derived from that date's signals and risk, "
+            "above how volatile each index and the portfolio have been. "
+            + glossary.term("Rolling volatility"),
+        ),
         unsafe_allow_html=True,
     )
     volatility = rolling_volatility_paths(
         backtest, basis, index_names, window=ROLLING_VOL_WINDOW
     )
     if len(volatility) < 2:  # a line needs two points
+        charts.draw(charts.weights_chart(renamed, limits=(lower, upper), until=held_until))
         st.info(
             f"Rolling volatility needs more than {ROLLING_VOL_WINDOW} trading days of "
             f"returns, and this backtest has {len(backtest.optimised.gross)}, so there is "
-            "no chart yet.",
+            "no volatility chart yet.",
             icon=":material/info:",
         )
     else:
         charts.draw(
-            charts.line_chart(volatility, "Rolling volatility", height=charts.WEIGHTS_HEIGHT)
-        )
-        with ui.note("Method", "volatility"):
-            st.caption(
-                f"Annualised standard deviation of the previous {ROLLING_VOL_WINDOW} trading "
-                "days' returns, at each day. Each index is held alone, with no trading "
-                f"costs; the optimised portfolio is {basis_label.lower()}, the same basis as "
-                "the table below."
+            charts.weights_and_volatility_chart(
+                renamed, volatility, limits=(lower, upper), until=held_until
             )
+        )
+    with ui.note("How to read this", "weights"):
+        st.caption(
+            f"Top: the line is {equity_name}'s weight and the rest is {bond_name}; each step "
+            f"is a rebalance. Dashed lines mark the {lower:.0%} and {upper:.0%} limits. "
+            "Bottom: annualised standard deviation of the previous "
+            f"{ROLLING_VOL_WINDOW} trading days' returns, at each day. Each index is held "
+            f"alone, with no trading costs; the optimised portfolio is "
+            f"{basis_label.lower()}, the same basis as the table below. Hover either panel "
+            "to see one day in both."
+        )
 
 ui.section(
     "Performance against the equal-weight benchmark",
