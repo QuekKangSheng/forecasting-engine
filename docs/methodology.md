@@ -1026,7 +1026,9 @@ in it (findings 2, 3, 5 and 6 of the 12 Nov optimiser audit):
   | 5 | at 137 of 904 | −1.10 to −1.38 |
   | 20 | at 3 of 226 | +0.01 to +0.05 |
 
-  None is significant, and at h = 5 the sign is against the forecasts. Costs are
+  None is significant, and at h = 5 the sign is against the forecasts. With the
+  team's Sprint 4 pair (machine learning for bond) the forecasts do no better, and
+  at h = 5 they cost significantly at levels 1 and 2 (§20). Costs are
   not the reason: they are at most 0.06 points a year. The optimiser is sound as a
   risk-level allocator; on this data the forecasts it tilts on have not earned
   their place.
@@ -1210,6 +1212,65 @@ simulation, beside the mean simulated return, with the sampling method and the
 number of paths (under Advanced settings) as its only settings. A result is shown
 only while its inputs (dataset, active models, latest rebalance and weights,
 method, paths) are unchanged.
+
+## 20. Results on the data from 31 Aug 2006
+
+The final rerun after the 16 Nov 2026 changes, at the page's defaults, on the 11
+Bloomberg exports from 31 Aug 2006 to 11–12 Nov 2026 (the files' SHA-256 are in
+the [evidence](evidence/2026-11-16-full-history.md)). The figures in earlier sections that are marked
+"on the Sep 2026 data" are the evidence for the decisions they support, not
+current results.
+
+**Models.** Signal Rank IC and t (§10), and whether each passes the gate (§12):
+
+| Target | Model | h = 1 | h = 5 | h = 10 | h = 20 (default) |
+|---|---|---|---|---|---|
+| Equity | Polynomial (derived) | +0.033, t 2.10, passes | +0.083, t 3.20, passes | +0.104, t 2.84, passes | +0.103, t 1.98, fails on t |
+| Equity | Polynomial – fixed economic inputs | +0.033, t 2.11, passes | +0.068, t 2.10, passes | +0.050, t 1.09 | +0.071, t 1.10 |
+| Equity | Machine learning | +0.028, t 1.71 | +0.068, t 2.34, passes | +0.097, t 2.48, passes | +0.082, t 1.71 |
+| Equity | Fama-French 5 | −0.006, t −0.35 | +0.021, t 1.27 | −0.003, t −0.17 | −0.013, t −0.83 |
+| Bond | Polynomial (derived) | +0.029, t 1.84 | +0.030, t 1.00 | +0.021, t 0.48 | +0.031, t 0.49 |
+| Bond | Polynomial – fixed carry inputs | +0.003, t 0.20 | +0.020, t 0.60 | +0.039, t 0.78 | +0.066, t 0.99 |
+| Bond | Machine learning | +0.019, t 1.30 | +0.013, t 0.54 | −0.017, t −0.46 | +0.045, t 0.88 |
+
+No bond model passes at any horizon, and at the default 20-day horizon no model
+passes for either index. Both research models score near zero on their pre-2016
+hold-out at every horizon (t −0.44 to +0.65; §9.2 has the 20-day figures).
+
+**Portfolio.** The main result uses the team's Sprint 4 default pair, the derived
+polynomial for equity and machine learning for bond. The derived polynomial for
+both is shown beside it. The derived pair was chosen before any result; the
+Sprint 4 pair was made the main result after both had been run
+([evidence](evidence/2026-11-16-full-history.md) says so). The period is
+6 Oct 2008 to Nov 2026, net of costs.
+
+The levels' net Sharpe runs from about 0.75–0.80 at level 1 to 1.03–1.05 at
+level 5, against 0.88 for 50/50, and their t against 50/50 mostly reflects equity
+weight. Neither pair's forecasts add value at any horizon (§17, known
+limitations):
+
+| h | Sprint 4 pair: gate open, t vs no forecasts (levels 1–4) | Derived for both |
+|---|---|---|
+| 1 | never; identical paths | never; identical paths |
+| 5 | 184 of 904; −3.10, −2.84, −1.81, −1.03 | 137 of 904; −1.10 to −1.38 |
+| 10 | never; identical paths | never; identical paths |
+| 20 | 92 of 226; −1.44 to −0.15 | 3 of 226; +0.01 to +0.05 |
+
+At h = 5 the Sprint 4 pair's forecasts cost significantly at levels 1 and 2.
+
+With the trust gate ignored (a diagnostic only: `β̂` used whatever its t), no
+level at any horizon has t above +2 against no forecasts. Many are significantly
+negative, down to −5.00 at h = 1, where the tilts cost 2–3% a year. The gate is
+not hiding forecast value.
+
+**Why the 20-day gate opened 26 times on 1 Nov and 3 times with the derived
+pair.** Mostly the bond model, not the longer history. With machine learning for
+bond, as on 1 Nov, it
+opens at 19 of 99 rebalances on the Sep 2026 upload and 92 of 226 on the data
+from 2006; with the derived polynomial for both, at 2 and 3. Starting the trust
+pairs in 2010 opens it at 21 rebalances for the derived pair, since 2008's slope
+was negative (t −2.03), but the forecasts still add nothing (t −0.69 to +0.46).
+This is descriptive; no rule was changed because of it.
 
 ## Parameters
 
