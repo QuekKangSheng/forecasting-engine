@@ -1387,3 +1387,7 @@ them is [docs/evidence/2026-10-12-verify.py](evidence/2026-10-12-verify.py).
 | Gate: Signal Rank IC above 0.02 and t above 2, for every model but the naive baseline (§12) | FYP-216 | 1A |
 | A cost-aware no-trade band on the optimiser (§17). Removed on 16 Nov 2026 (§17 step 8) | FYP-49 | 3A, 3B |
 | Home shows the pipeline's status; the data quality report stays on the Data page | FYP-218 | — |
+
+The bond derived grid was left as it is after 124 bond runs on 16 Nov 2026 varied the
+columns offered, the fit, the train window, the horizon and machine learning's search
+space, and none beat the page's grid beyond what chance gives ([evidence](evidence/2026-11-16-bond-grids.md)).
