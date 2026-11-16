@@ -12,6 +12,7 @@ import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import Transform, align_and_lag
+from forecasting_engine.models.carry_research import CarryResearchPolynomial
 from forecasting_engine.models.polynomial import DerivedPolynomial
 from forecasting_engine.portfolio.optimize import solve_inputs_at
 from forecasting_engine.reporting.model_metrics import ModelRunResult
@@ -40,6 +41,11 @@ EQUITY, BOND = TargetRole.EQUITY, TargetRole.BOND
 PRICE, VIX, RATE = "SPX", "VIX", "USGG10YR"
 TRANSFORMS = {VIX: Transform.LEVEL, RATE: Transform.DIFFERENCE}
 HORIZON = 5
+
+BOND_PRICE = "AGG"
+#: The bond research model's 7 fixed carry inputs; USGG10YR and VIX already exist
+#: in ``_frame()``, so only the other 5 are added by ``_bond_research_frame()``.
+CARRY_TICKERS = ("USGG10YR", "USGGBE10", "USYC2Y10", "LF98OAS", "LUACOAS", "VIX", "JPMVXYGL")
 
 
 def _frame(n: int = 320, seed: int = 0) -> pd.DataFrame:
@@ -93,6 +99,61 @@ def _saved_function(db_path, *, degree: int = 2) -> tuple[pd.DataFrame, ActiveFu
         db_path=db_path,
     )
     reloaded = get_active_function(EQUITY, db_path=db_path)
+    assert reloaded is not None
+    return frame, reloaded
+
+
+def _bond_research_frame(n: int = 400, seed: int = 11) -> pd.DataFrame:
+    """A bond index whose next-week return rises with VIX's level, like ``_frame()``'s
+    own SPX return does, so the lasso keeps VIX's term; its other 6 fixed carry
+    inputs are plain, unrelated random walks. Includes SPX too, so the one frame
+    can also feed ``_real_solve_inputs``'s equity signal."""
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range("2023-01-02", periods=n)
+    vix = 18 + np.cumsum(rng.normal(0, 0.6, n)).clip(-10, 30)
+    spx = 4000 * np.cumprod(1 + rng.normal(0.0004, 0.003, n))
+    daily = 0.0002 + 0.0004 * (vix - vix.mean()) / vix.std() + rng.normal(0, 0.0008, n)
+    bond = 100 * np.cumprod(1 + daily)
+    frame = pd.DataFrame({PRICE: spx, VIX: vix, BOND_PRICE: bond}, index=idx)
+    for ticker in ("USGG10YR", "USGGBE10", "USYC2Y10", "LF98OAS", "LUACOAS", "JPMVXYGL"):
+        frame[ticker] = 2 + np.cumsum(rng.normal(0, 0.03, n))
+    return frame
+
+
+def _saved_bond_function(db_path) -> tuple[pd.DataFrame, ActiveFunction]:
+    """Fit a real ``CarryResearchPolynomial`` - the bond research model - and store
+    it as the active bond model exactly as the Models page would (``Origin.DERIVED``
+    under the hood, same as the equity research model), round-tripping through the
+    real DuckDB store."""
+    frame = _bond_research_frame()
+    transforms = dict.fromkeys(CARRY_TICKERS, Transform.LEVEL)
+    panel = align_and_lag(
+        frame, list(CARRY_TICKERS), BOND_PRICE, horizon=HORIZON, transforms=transforms
+    )
+    model = CarryResearchPolynomial()
+    model.fit(panel, panel.frame.index[50:350])
+    description = model.describe()
+    inputs = function_inputs(description, Origin.DERIVED, list(CARRY_TICKERS))
+    function = ActiveFunction(Origin.DERIVED, description, {s: Transform.LEVEL for s in inputs})
+
+    set_active_model(
+        BOND,
+        "Polynomial – fixed carry inputs (research)",
+        ModelRunResult(
+            ic=0.03,
+            oos_rank_ic=0.025,
+            rmse=0.008,
+            crash=CrashDiagnostics(recall=0.4, precision=0.4, f1=0.4, n_true_tail_days=8),
+        ),
+        high_risk=False,
+        horizon=HORIZON,
+        train_window=None,
+        test_window=20,
+        dataset_fingerprint="fp-scenario-flow-bond",
+        function=function,
+        db_path=db_path,
+    )
+    reloaded = get_active_function(BOND, db_path=db_path)
     assert reloaded is not None
     return frame, reloaded
 
@@ -239,3 +300,41 @@ def test_an_extrapolating_shock_still_produces_a_usable_portfolio_impact(tmp_pat
 
     assert np.isfinite(impact.shocked.mean_return)
     assert np.isfinite(impact.shocked.volatility)
+
+
+def test_a_shock_to_the_bond_research_models_own_signal_flows_through_to_portfolio_impact(
+    tmp_path,
+):
+    """The bond research model is ``Origin.DERIVED`` under the hood, same as the
+    equity research model, so it should shock and re-evaluate through the same
+    generic scenario machinery the equity tests above already cover - with no
+    train window, since it runs on an expanding window by design (FYP-32, FYP-33,
+    the November 2026 bond research model)."""
+    db = tmp_path / "active.duckdb"
+    frame, function = _saved_bond_function(db)
+    assert function.origin is Origin.DERIVED
+
+    levels, errors = validate([Shock(VIX, ShockKind.ABSOLUTE, "30")], frame, positive=(VIX,))
+    assert errors == {}
+
+    scenario = run_scenario(
+        function, frame, BOND_PRICE, levels, horizon=HORIZON, splitter=_splitter()
+    )
+    assert scenario.shocked != scenario.base
+
+    solve_inputs, prices, _ = _real_solve_inputs(frame)
+    breakdown = solve_inputs.solve()
+    weights = {EQUITY: breakdown.equity, BOND: 1 - breakdown.equity}
+    history = _daily_returns(prices)
+
+    impact = portfolio_impact(
+        history,
+        {EQUITY: 0.0, BOND: scenario.base},
+        {EQUITY: 0.0, BOND: scenario.shocked},
+        weights,
+        horizon=HORIZON,
+        paths=2_000,
+    )
+
+    assert impact.weights.to_dict() == pytest.approx(weights)
+    assert impact.return_change != 0.0

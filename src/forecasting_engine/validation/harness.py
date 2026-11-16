@@ -30,6 +30,7 @@ from forecasting_engine.models.base import Forecaster, ModelDescription
 from forecasting_engine.reporting.model_metrics import (
     ConstantForecasts,
     FoldTerms,
+    Holdout,
     ModelRunResult,
     ScreeningSummary,
 )
@@ -268,6 +269,33 @@ def summarize(
     # is what the model would use if deployed today, not an average across a
     # walk-forward run's whole history.
     return result, folds[-1].description
+
+
+def holdout(
+    panel: FeaturePanel, folds: tuple[FoldResult, ...], before: pd.Timestamp
+) -> Holdout | None:
+    """The Signal Rank IC and t over only the folds whose every label ends before
+    ``before``, read from ``panel.label_end``: no price on or after ``before`` enters
+    any score. ``None`` if no fold qualifies.
+
+    Each kept fold trains only on rows before its own test window, so neither its
+    fit nor its score reads anything from ``before`` on."""
+    if panel.label_end is None:
+        raise ValueError("a hold-out needs the panel's label end dates (align_and_lag's)")
+    ends = {f.fold: panel.label_end.reindex(f.test).max() for f in folds}
+    held = tuple(f for f in folds if pd.notna(ends[f.fold]) and ends[f.fold] < before)
+    if not held:
+        return None
+    result, _ = summarize(held)
+    return Holdout(
+        before=before,
+        windows=len(held),
+        first=held[0].test[0],
+        last_label_end=max(ends[f.fold] for f in held),
+        signal_rank_ic=result.gated_rank_ic,
+        t=result.signal_t,
+        rows_scored=result.rows_scored,
+    )
 
 
 def select_best_candidate(per_candidate: dict[str, tuple[FoldResult, ...]]) -> str:

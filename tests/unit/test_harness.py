@@ -12,6 +12,7 @@ from forecasting_engine.validation.harness import (
     FoldResult,
     evaluate,
     fold_baseline,
+    holdout,
     pooled,
     select_best_candidate,
     signal_forecasts,
@@ -751,3 +752,44 @@ def test_an_ols_fit_with_an_intercept_has_the_training_mean_as_its_own_level():
     assert folds
     for fold in folds:
         assert fold.own_level == pytest.approx(fold.realised_train.mean(), abs=1e-12)
+
+
+# --- the pre-2016 hold-out ----------------------------------------------------------
+
+
+def _priced_panel(horizon: int = 5) -> FeaturePanel:
+    rng = np.random.default_rng(7)
+    idx = pd.bdate_range("2016-03-01", periods=200)
+    price = 100 * np.exp(rng.normal(0, 0.01, 200).cumsum())
+    frame = pd.DataFrame({"signal_a": rng.normal(size=200), "price": price}, index=idx)
+    return align_and_lag(frame, ["signal_a"], "price", horizon=horizon)
+
+
+def test_the_holdout_keeps_only_folds_whose_every_label_ends_before_the_cutoff():
+    panel = _priced_panel()
+    folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=40, test=10, embargo=5))
+    before = pd.Timestamp("2016-08-01")
+    kept = [f for f in folds if panel.label_end.reindex(f.test).max() < before]
+    # A fold whose test dates are all before the cutoff but whose labels reach past it
+    # is left out: its score reads a price from the period the research looked at.
+    straddling = [
+        f for f in folds if f.test[-1] < before <= panel.label_end.reindex(f.test).max()
+    ]
+    assert kept and straddling
+
+    held = holdout(panel, folds, before)
+
+    expected, _ = summarize(tuple(kept))
+    assert held.windows == len(kept)
+    assert held.first == kept[0].test[0]
+    assert held.last_label_end < before
+    assert held.signal_rank_ic == expected.gated_rank_ic
+    assert held.t == expected.signal_t
+    assert held.rows_scored == expected.rows_scored
+
+
+def test_with_no_fold_before_the_cutoff_there_is_no_holdout():
+    panel = _priced_panel()
+    folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=40, test=10, embargo=5))
+
+    assert holdout(panel, folds, pd.Timestamp("2016-03-01")) is None

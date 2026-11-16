@@ -75,8 +75,8 @@ class Reoptimised:
     breakdown: WeightBreakdown
     """How the re-solved equity weight was reached."""
     unshocked: WeightBreakdown
-    """The same solve on the signals as they were: the rebalance's target before any
-    no-trade band, which a zero shock reproduces."""
+    """The same solve on the signals as they were: the rebalance's target, which a
+    zero shock reproduces."""
     signal: pd.Series
     """Each index's shocked signal, the solve's input."""
     metrics: PortfolioMetrics

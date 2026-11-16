@@ -1,17 +1,26 @@
-"""FYP-162: what holding one index only on days its forecast is positive would have
+"""FYP-162: what holding one index only on days its signal is positive would have
 earned, against simply holding it throughout.
 
-A tangible check of whether a forecast's direction is useful. The strategy is fully
-invested on a step whose forecast is above zero and fully in cash otherwise; its
-return comes from the index's realised return alone, so the forecast's size never
-enters. Cash earns nothing and no trading cost is charged: every figure is gross.
+A tangible check of whether a model's signals point the right way. The signal is
+each forecast less its fold's level, the model's own average in-sample forecast
+(``validation.harness.signal_forecasts``), the same figure the Signal Rank IC
+scores and the optimiser tilts on. The raw forecast is not used: its level is
+mostly the training window's mean return, so a model whose level is positive
+would hold the index almost every day whatever its signals said.
 
-Forecasts and realised returns are the run's out-of-sample series, indexed by the
+The strategy is fully invested on a step whose signal is above zero and fully in
+cash otherwise; its return comes from the index's realised return alone, so the
+signal's size never enters. Cash earns nothing and no trading cost is charged:
+every figure is gross.
+
+Signals and realised returns are the run's out-of-sample series, indexed by the
 date the forecast was made, with each realised value the ``horizon``-day forward
 return from that date. Every out-of-sample date the run produced is replayed. At
 ``horizon`` above 1 neighbouring rows' returns overlap, so the dates are stepped
 through ``horizon`` rows at a time: each step's return
 ends where the next one starts, and compounding them never counts a day twice.
+The cumulative returns are dated by when each step's return was earned, the end
+of its holding period, starting from zero on the first step's date.
 """
 
 from __future__ import annotations
@@ -35,17 +44,21 @@ class DirectionalResult:
     days: int
     """Out-of-sample trading days replayed: every one with a realised return."""
     strategy: pd.Series
-    """Per step, the strategy's return: the realised return when invested, else 0."""
+    """Per step, dated when the call was made, the strategy's return: the realised
+    return when invested, else 0."""
     buy_and_hold: pd.Series
     """Per step, the index's realised return."""
     invested: pd.Series
-    """Per step, whether the strategy held the index (the forecast was above zero)."""
+    """Per step, whether the strategy held the index (the signal was above zero)."""
     hit_rate: float
-    """Share of steps with a forecast whose direction matched the realised return's.
+    """Share of steps with a signal whose direction matched the realised return's.
     NaN if no step had both."""
     no_forecast: int
-    """Steps the model made no forecast for (a signal was missing). They are held
+    """Steps the model made no forecast for (an input was missing). They are held
     in cash and left out of the hit rate."""
+    held_until: pd.Series
+    """Per step, dated when the call was made, the date its ``horizon``-day return
+    ends."""
 
     @property
     def calls(self) -> int:
@@ -58,11 +71,17 @@ class DirectionalResult:
 
     @property
     def strategy_cumulative(self) -> pd.Series:
-        return cumulative(self.strategy)
+        """Compounded growth, dated by the end of each step's holding period, from
+        zero on the first step's date."""
+        return self._dated_by_end(cumulative(self.strategy))
 
     @property
     def buy_and_hold_cumulative(self) -> pd.Series:
-        return cumulative(self.buy_and_hold)
+        return self._dated_by_end(cumulative(self.buy_and_hold))
+
+    def _dated_by_end(self, growth: pd.Series) -> pd.Series:
+        dated = pd.Series(growth.to_numpy(), index=pd.DatetimeIndex(self.held_until.to_numpy()))
+        return pd.concat([pd.Series([0.0], index=pd.DatetimeIndex([self.start])), dated])
 
     @property
     def start(self) -> pd.Timestamp:
@@ -74,14 +93,14 @@ class DirectionalResult:
 
 
 def directional_pnl(
-    forecast: pd.Series,
+    signal: pd.Series,
     realised: pd.Series,
     *,
     horizon: int,
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
 ) -> DirectionalResult:
-    """The long/cash strategy and buy-and-hold over ``forecast``'s out-of-sample
+    """The long/cash strategy and buy-and-hold over ``signal``'s out-of-sample
     dates, stepped every ``horizon`` days from the first.
 
     Every date is replayed unless ``start`` and ``end`` pick a window of them
@@ -89,13 +108,17 @@ def directional_pnl(
     window reads as if it were the whole period.
 
     Only dates with a realised return count: the last ``horizon`` dates of a run
-    have none yet. A date with a realised return but no forecast is held in cash.
+    have none yet. A date with a realised return but no signal is held in cash.
+
+    Each step's return ends ``horizon`` of ``signal``'s dates later. Where the
+    signal's dates run out first, it ends ``horizon`` business days later.
     """
     if horizon < 1:
         raise DirectionalDataError(f"The horizon must be at least 1 day, got {horizon}.")
     frame = pd.DataFrame(
-        {"forecast": forecast, "realised": realised.reindex(forecast.index)}
+        {"signal": signal, "realised": realised.reindex(signal.index)}
     ).sort_index()
+    dates = frame.index
     frame = frame[frame["realised"].notna()]
     if start is not None or end is not None:
         frame = frame.loc[start:end]
@@ -106,12 +129,18 @@ def directional_pnl(
         )
 
     steps = frame.iloc[::horizon]
-    invested = steps["forecast"] > 0
+    invested = steps["signal"] > 0
     strategy = steps["realised"].where(invested, 0.0)
 
-    has_forecast = steps["forecast"].notna()
-    judged = steps[has_forecast]
-    hits = (judged["forecast"] > 0) == (judged["realised"] > 0)
+    has_signal = steps["signal"].notna()
+    judged = steps[has_signal]
+    hits = (judged["signal"] > 0) == (judged["realised"] > 0)
+
+    ends = dates.get_indexer(steps.index) + horizon
+    held_until = [
+        dates[end] if end < len(dates) else day + pd.offsets.BDay(horizon)
+        for day, end in zip(steps.index, ends, strict=True)
+    ]
 
     return DirectionalResult(
         horizon=horizon,
@@ -120,7 +149,8 @@ def directional_pnl(
         buy_and_hold=steps["realised"].astype(float),
         invested=invested,
         hit_rate=float(hits.mean()) if len(judged) else float("nan"),
-        no_forecast=int((~has_forecast).sum()),
+        no_forecast=int((~has_signal).sum()),
+        held_until=pd.Series(held_until, index=steps.index),
     )
 
 

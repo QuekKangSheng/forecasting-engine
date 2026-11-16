@@ -34,6 +34,7 @@ from forecasting_engine.models.boosted import Tune, TuningLog
 from forecasting_engine.models.famafrench import FACTOR_COLUMNS, FactorCoverage
 from forecasting_engine.reporting.model_metrics import (
     FoldTerms,
+    Holdout,
     ModelRunResult,
     ScreeningSummary,
 )
@@ -1502,14 +1503,24 @@ def _oos(values, start="2024-06-03") -> pd.Series:
     return pd.Series(values, index=pd.bdate_range(start, periods=len(values)), dtype=float)
 
 
-def _with_forecast(forecast: pd.Series, realised: pd.Series, **kwargs) -> ModelRunResult:
-    return replace(_result(**kwargs), forecast=forecast, realised=realised)
+def _with_forecast(
+    forecast: pd.Series, realised: pd.Series, baseline: pd.Series | None = None, **kwargs
+) -> ModelRunResult:
+    baseline = pd.Series(0.0, index=forecast.index) if baseline is None else baseline
+    return replace(_result(**kwargs), forecast=forecast, realised=realised, baseline=baseline)
+
+
+LEVEL = 0.02
 
 
 def _directional_page(**kwargs) -> AppTest:
-    forecast = _oos([0.01, -0.01] * 50)
+    """Every raw forecast is above zero, but the signal, the forecast less the
+    model's level, alternates and is right every time."""
+    forecast = _oos([LEVEL + 0.01, LEVEL - 0.01] * 50)
     realised = _oos([0.02, -0.03] * 50)
-    return _page({EQUITY: {POLY: _polynomial_run(_with_forecast(forecast, realised, **kwargs))}})
+    baseline = _oos([LEVEL] * 100)
+    run = _with_forecast(forecast, realised, baseline, **kwargs)
+    return _page({EQUITY: {POLY: _polynomial_run(run)}})
 
 
 def _metric(app: AppTest, label: str) -> str:
@@ -1521,8 +1532,9 @@ def test_the_directional_check_shows_strategy_buy_and_hold_hit_rate_and_days_inv
 
     assert not app.exception
     assert "Would the forecast's direction have paid?" in _markdown(app)
-    # Calls alternate rise/fall and the forecast is right every time: in on each of
-    # the 10 rises (+2%), out on each of the 10 falls (-3%).
+    # Calls alternate rise/fall and the signal is right every time: in on each of
+    # the 10 rises (+2%), out on each of the 10 falls (-3%). The raw forecast, always
+    # above zero, would have been buy and hold.
     assert _metric(app, "Hit rate") == "100%"
     assert _metric(app, "Days invested") == "50%"
     assert _metric(app, "Long/cash strategy") == f"{1.02**10 - 1:+.2%}"
@@ -1590,6 +1602,24 @@ def test_the_directional_check_defaults_to_the_active_model():
     assert picker.value == "Machine Learning"
 
 
+def test_the_directional_check_says_it_reads_the_signal_and_dates_returns_by_their_end():
+    captions = _captions(_directional_page())
+
+    assert "when the model's signal (its forecast less its own average forecast)" in captions
+    assert "Each return is plotted at the end of its holding period" in captions
+
+
+def test_a_result_saved_without_its_levels_asks_for_a_rerun():
+    forecast, realised = _oos([0.01] * 30), _oos([0.01] * 30)
+    run = replace(_result(), forecast=forecast, realised=realised)
+
+    app = _page({EQUITY: {POLY: _polynomial_run(run)}})
+
+    assert not app.exception
+    assert any("saved before signals were kept" in i.value for i in app.info)
+    assert not [m for m in app.metric if m.label == "Long/cash strategy"]
+
+
 def test_a_run_without_saved_forecasts_shows_no_directional_check():
     app = _page({EQUITY: {POLY: _polynomial_run()}})
 
@@ -1602,6 +1632,10 @@ def test_a_run_without_saved_forecasts_shows_no_directional_check():
 RESEARCH = "Polynomial – fixed economic inputs"
 RESEARCH_CAPTION = (
     "Scores are optimistic: inputs chosen by looking at results over Aug 2016 – Sep 2024."
+)
+BOND_RESEARCH_CAPTION = (
+    "Scores are optimistic: inputs chosen by looking at results on the Sep 2026 upload "
+    "(Aug 2016 – Sep 2026)."
 )
 #: The research model's four inputs, by the ticker it finds each one by.
 RESEARCH_INPUTS = {
@@ -1764,7 +1798,7 @@ def test_the_bond_research_model_runs_beside_the_derived_polynomial_on_the_same_
     assert runs[BOND_RESEARCH].result.forecast.index[0] == runs[POLY].result.forecast.index[0]
     assert runs[BOND_RESEARCH].result.forecast.index[-1] == runs[POLY].result.forecast.index[-1]
     assert f"**{BOND_RESEARCH}**: gate" in _markdown(app)
-    assert f"{BOND_RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+    assert f"{BOND_RESEARCH}: {BOND_RESEARCH_CAPTION}" in _captions(app)
     assert any(label.startswith(f"{BOND_RESEARCH} · ") for label in _expander_labels(app))
     assert set(runs[BOND_RESEARCH].shap.terms) <= set(CARRY_INPUTS)
 
@@ -1778,7 +1812,7 @@ def test_the_bond_research_model_is_gated_and_captioned_under_its_row():
         _markdown(app)
     )
     assert "Gate met" in _table(app).split(BOND_RESEARCH, 1)[1].split("</tr>", 1)[0]
-    assert f"{BOND_RESEARCH}: {RESEARCH_CAPTION}" in _captions(app)
+    assert f"{BOND_RESEARCH}: {BOND_RESEARCH_CAPTION}" in _captions(app)
 
 
 def test_the_bond_research_model_can_be_set_active_with_its_signal_and_no_train_window():
@@ -1798,3 +1832,36 @@ def test_the_bond_research_model_can_be_set_active_with_its_signal_and_no_train_
     assert record.train_window is None
     signal = active_model.get_active_model_signal(BOND)
     pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)
+
+
+# --- the research models' pre-2016 hold-out ---------------------------------------------
+
+
+def test_a_research_row_without_a_holdout_window_says_so():
+    app = _page({EQUITY: {POLY: _polynomial_run(), RESEARCH: _polynomial_run(_result())}})
+
+    assert (
+        f"{RESEARCH}, pre-2016 hold-out: no test window in this data ends before 1 Aug 2016."
+    ) in _captions(app)
+
+
+def test_a_research_row_shows_its_pre_2016_holdout_score():
+    held = Holdout(
+        before=pd.Timestamp("2016-08-01"),
+        windows=96,
+        first=pd.Timestamp("2008-09-02"),
+        last_label_end=pd.Timestamp("2016-07-29"),
+        signal_rank_ic=0.0412,
+        t=1.37,
+        rows_scored=1920,
+    )
+    result = replace(_result(), holdout=held)
+    app = _page(
+        {BOND: {POLY: _polynomial_run(), BOND_RESEARCH: _polynomial_run(result)}}, bond=True
+    )
+
+    assert (
+        f"{BOND_RESEARCH}, pre-2016 hold-out: Signal Rank IC +0.041, t 1.37, over the 96 "
+        "test windows from Sep 2008 whose every label ends before 1 Aug 2016: out of sample "
+        "for its research's choices."
+    ) in _captions(app)

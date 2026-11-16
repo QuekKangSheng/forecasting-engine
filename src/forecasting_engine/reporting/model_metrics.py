@@ -116,6 +116,23 @@ class ConstantForecasts:
 
 
 @dataclass(frozen=True)
+class Holdout:
+    """A model's Signal Rank IC and t over only the test windows whose every label
+    ends before ``before``: those out of sample for choices made by looking at data
+    from ``before`` on."""
+
+    before: pd.Timestamp
+    windows: int
+    first: pd.Timestamp
+    """The first test date scored."""
+    last_label_end: pd.Timestamp
+    """The date of the last price any scored label reads."""
+    signal_rank_ic: float
+    t: float
+    rows_scored: int
+
+
+@dataclass(frozen=True)
 class ModelRunResult:
     """One model family's completed run."""
 
@@ -160,6 +177,10 @@ class ModelRunResult:
     forecast (``validation.harness.fold_baseline``), which for a least-squares fit
     with an intercept is the fold's training-mean target. ``forecast`` less this is
     the signal's contribution, which the portfolio optimiser tilts on."""
+    holdout: Holdout | None = None
+    """For a research model, its score on the test windows out of sample for its
+    research's choices (``validation.harness.holdout``); ``None`` for any other model,
+    or where the data holds no such window."""
 
     @property
     def gated_rank_ic(self) -> float:

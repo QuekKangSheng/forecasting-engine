@@ -34,7 +34,7 @@ Per fold, on the training rows only:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
@@ -51,7 +51,7 @@ from forecasting_engine.models.shrinkage import (  # noqa: F401  (overlap is re-
     overlap,
 )
 from forecasting_engine.reporting.model_metrics import ModelRunResult
-from forecasting_engine.validation.harness import evaluate, summarize
+from forecasting_engine.validation.harness import evaluate, holdout, summarize
 from forecasting_engine.validation.splitters import (  # noqa: F401  (re-exported)
     PurgedWalkForward,
     expanding,
@@ -63,6 +63,11 @@ ECONOMIC_INPUTS: Mapping[TargetRole, Mapping[str, int]] = {
 """Per target, each input's ticker and economic sign (+1: a higher value means a higher
 expected return). Read as levels. No bond set beat chance in the research, so the
 method is equity-only."""
+
+HOLDOUT_BEFORE: pd.Timestamp = pd.Timestamp("2016-08-01")
+"""Both research models' inputs were chosen by looking at results from Aug 2016 on,
+so test windows whose every label ends before this date are out of sample for those
+choices: their pre-2016 hold-out (``validation.harness.holdout``)."""
 
 LEVEL_ROWS: int = 252
 """The forecast's level is the mean of this many earliest training labels."""
@@ -217,7 +222,8 @@ def run_sign_ruled_polynomial(
 
     Its inputs are read as levels whatever the page's transform map says (the 2s10s
     slope is otherwise differenced), and every fold trains on all earlier rows. One
-    configuration. Returns the panel too, for the equation's columns."""
+    configuration. Its result carries its pre-2016 hold-out. Returns the panel too, for
+    the equation's columns."""
     panel = align_and_lag(
         frame,
         list(signs),
@@ -229,4 +235,4 @@ def run_sign_ruled_polynomial(
     if not folds:
         raise PolynomialConfigError(expanding(splitter).too_short(panel))
     result, description = summarize(folds)
-    return result, description, panel
+    return replace(result, holdout=holdout(panel, folds, HOLDOUT_BEFORE)), description, panel

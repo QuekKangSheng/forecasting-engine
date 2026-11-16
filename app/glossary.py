@@ -56,7 +56,8 @@ TERMS: Mapping[str, str] = {
         "not with how it happened to move in that sample, and the forecast is an "
         "expected return. It trains on every earlier date, as the research did, and "
         "is gated like every other model. Its inputs were chosen by looking at "
-        "results over Aug 2016 – Sep 2024, so treat its score as optimistic."
+        "results on the Sep 2026 upload (Aug 2016 – Sep 2026), so treat its score "
+        "as optimistic."
     ),
     "Max terms": (
         "The most terms the derived equation may keep. The cap works through the "
@@ -226,14 +227,6 @@ TERMS: Mapping[str, str] = {
         "noisy difference between the two signals swinging the portfolio to "
         "one extreme, and it sets the range of mixes the risk levels are spaced across."
     ),
-    "No-trade band": (
-        "Between rebalances the portfolio drifts with the markets. At each "
-        "rebalance it trades only if the new target is far enough from where it "
-        "drifted to to be worth the trading cost: within the band it holds, and "
-        "outside it, it trades only as far as the band's edge. The band grows with "
-        "the cost of moving the equity weight and with the risk level's appetite for "
-        "risk, so it is widest at level 1. Level 5 has none."
-    ),
     "Directional P&L": (
         "What you would have earned by holding this index only when the model "
         "forecast a rise, and sitting in cash otherwise, compared with simply "
@@ -249,7 +242,9 @@ TERMS: Mapping[str, str] = {
     ),
     "Long/cash strategy": (
         "Compounded return of holding the index on every call where the "
-        "forecast was positive and holding cash on every other. Before "
+        "model's signal was above zero and holding cash on every other. The "
+        "signal is the forecast less the model's own average forecast, so a model "
+        "that always forecasts a rise is not simply buy and hold. Before "
         "transaction costs, and cash earns nothing."
     ),
     "Buy and hold": (
@@ -258,9 +253,11 @@ TERMS: Mapping[str, str] = {
         "the forecast's direction to have been worth following."
     ),
     "Hit rate": (
-        "How often the forecast's direction matched what the index actually "
-        "did: a forecast rise followed by a rise, or a forecast fall followed by "
-        "a fall. 50% is a coin toss."
+        "How often the signal's direction matched what the index actually "
+        "did: a signal above zero followed by a rise, or one at or below zero "
+        "followed by a fall. It is not a coin toss's 50%: an index that rises "
+        "most of the time scores well above 50% on a signal that is always "
+        "above zero."
     ),
     "Days invested": (
         "The share of calls on which the strategy held the index. A low share "
@@ -325,7 +322,7 @@ TERMS: Mapping[str, str] = {
     ),
     "Forecast value t-statistic": (
         "The same test, against the same risk level with no forecasts rather than "
-        "against the benchmark. The risk level's equity weight and the no-trade band are "
+        "against the benchmark. The risk level's equity weight is "
         "on both sides, so the forecasts are the only difference. Beyond ±2, what the "
         "forecasts changed is unlikely to be luck."
     ),

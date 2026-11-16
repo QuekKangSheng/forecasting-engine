@@ -357,7 +357,7 @@ def test_the_page_never_shows_the_trust_the_risk_aversion_or_the_premium():
 
 
 def _solved_weight(app) -> float:
-    """The latest rebalance's equity weight before any bound or band, from the
+    """The latest rebalance's equity weight before any bound, from the
     "How this was set" caption."""
     caption = next(c.value for c in app.caption if c.value.startswith("How this was set"))
     return float(re.search(r"giving (-?\d+)%", caption).group(1)) / 100
@@ -730,29 +730,17 @@ def test_a_newly_set_active_model_is_solved_afresh(monkeypatch):
     assert any("Machine Learning" in m.value for m in app.markdown)
 
 
-def test_the_no_trade_band_is_explained_with_the_share_of_rebalances_it_held():
+@pytest.mark.parametrize("level", [1, 3, 5])
+def test_no_level_describes_a_no_trade_band(level):
+    """Every rebalance trades straight to its target, so the page says nothing of a
+    band, held rebalances or a band's edge."""
     app = _happy_page()
+
+    app.select_slider[0].set_value(level).run()
 
     assert not app.exception
     captions = _captions(app)
-    assert "were held by the no-trade band." in captions
-    assert "Held: within the no-trade band." in captions or "no-trade band of ±" in captions
-
-
-def test_the_lowest_risk_level_says_it_has_no_band_rather_than_one_of_zero_width():
-    """Level 5's band is nothing wide. The page used to say the portfolio "traded only
-    to the band's edge" of "a no-trade band of ±0.0%", and that 0 of its rebalances
-    were held by it."""
-    app = _happy_page()
-
-    app.select_slider[0].set_value(5).run()
-
-    assert not app.exception
-    captions = _captions(app)
-    assert "There is no no-trade band at this rebalance" in captions
-    assert "had a no-trade band, so each traded to its target" in captions
-    assert "±0.0%" not in captions and "band's edge" not in captions
-    assert "were held by the no-trade band." not in captions
+    assert "band" not in captions and "Held:" not in captions
 
 
 # --- FYP-20 / FYP-52: is the outperformance statistically significant? --------------
@@ -816,7 +804,7 @@ def test_a_second_t_statistic_tests_the_forecasts_against_the_no_forecast_level(
     captions = _captions(app)
     assert "optimised minus the same level with no forecasts" in captions
     assert "also reflects level 3's equity weight" in captions
-    assert "no-trade band on both sides" in captions
+    assert "has that weight on both sides" in captions
 
 
 @pytest.mark.parametrize("floor", [0.2, 0.1])
@@ -893,6 +881,16 @@ def test_running_the_simulation_shows_var_cvar_and_drawdown_at_both_levels():
     assert "100,000 paths of the next 3 trading days" in captions
     assert "by resampling whole days" in captions
     assert "the one-day Monte Carlo rows above are the first day of these same paths" in captions
+
+
+def test_the_simulations_forecasts_and_the_weights_signals_are_named_apart():
+    app = _run_simulation(_happy_page())
+
+    captions = _captions(app)
+    how_set = next(c.value for c in app.caption if c.value.startswith("How this was set"))
+    assert re.search(r"S&P 500 signal [+-]\d", how_set)
+    assert re.search(r"S&P 500 forecast [+-]\d", captions)
+    assert "not on the signals the weights were set from" in captions
 
 
 def test_the_path_count_is_adjustable_under_advanced_settings():
