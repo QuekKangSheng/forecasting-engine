@@ -58,11 +58,11 @@ With β̂ used whatever its t, from 252 pairs on, the forecasts tilt at most reb
 | h | Sprint 4 pair: t vs no forecasts, levels 1–4 | derived for both | costs a year, levels 1–4 |
 |---|---|---|---|
 | 1 | **−4.37**, **−3.83**, **−3.00**, −1.62 | **−5.00**, **−4.50**, **−3.55**, −1.98 | 1.9–3.0% |
-| 5 | **−3.54**, **−2.64**, −1.19, +0.04 | **−2.00**, −1.04, +0.06, +0.46 | 0.19–0.50% |
+| 5 | **−3.54**, **−2.64**, −1.19, +0.04 | −2.00, −1.04, +0.06, +0.46 | 0.19–0.50% |
 | 10 | **−2.37**, −1.61, −1.00, −0.67 | −0.20, −1.01, −1.01, −1.00 | 0.01–0.10% |
 | 20 | **−3.10**, −1.86, −0.01, +1.56 | **−2.58**, −1.56, −0.12, +0.76 | 0.10–0.16% |
 
-Bold marks t beyond ±2. None did significantly better without the gate (t above 2); the best is the Sprint 4 pair at level 4, h = 20, with t +1.56.
+Bold marks t beyond ±2. The derived pair's −2.00 at h = 5, level 1 is −1.998 unrounded, so it is not bold. None did significantly better without the gate (t above 2); the best is the Sprint 4 pair at level 4, h = 20, with t +1.56.
 
 - **At h = 1** the ungated tilts trade 48 to 76 times the portfolio a year, which costs 2–3% a year.
 - **At h = 20** costs are small (0.10–0.16%) and the result is still negative at levels 1–2.
