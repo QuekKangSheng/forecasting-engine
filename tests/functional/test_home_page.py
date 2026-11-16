@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pyarrow as pa
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -43,7 +42,7 @@ def isolated_active_model_db(monkeypatch, tmp_path):
 def no_live_feed(monkeypatch):
     """No test asks the network: the live feed does not answer unless a test says so."""
 
-    def offline(span, **kwargs):
+    def offline(interval, **kwargs):
         raise IndexFeedError("the live feed did not answer (offline in tests)")
 
     monkeypatch.setattr(index_feed, "fetch", offline)
@@ -53,8 +52,8 @@ def _live_feed(monkeypatch) -> list[str]:
     """The live feed answering with three monthly candles; the spans asked for."""
     asked = []
 
-    def answer(span, **kwargs):
-        asked.append(span)
+    def answer(interval, **kwargs):
+        asked.append(interval)
         frame = pd.DataFrame(
             {
                 "open": [7500.0, 7690.0, 7650.0],
@@ -70,15 +69,15 @@ def _live_feed(monkeypatch) -> list[str]:
     return asked
 
 
-def _charts(app: AppTest) -> list[dict]:
-    return [json.loads(chart.proto.spec) for chart in app.get("vega_lite_chart")]
+def _frames(app: AppTest) -> list[str]:
+    """Each frame the page drew, as its page."""
+    return [frame.proto.srcdoc for frame in app.get("iframe")]
 
 
-def _candle_rows(app: AppTest) -> pd.DataFrame:
-    """The market chart's candles, as sent to the browser beside its specification."""
-    (chart,) = app.get("vega_lite_chart")
-    (table,) = [d for d in chart.proto.datasets if d.name.startswith("candles")]
-    return pa.ipc.open_stream(table.data.data).read_all().to_pandas()
+def _chart_data(app: AppTest) -> dict:
+    """The market chart's spans, as the frame holds them."""
+    (page,) = _frames(app)
+    return json.loads(re.search(r"const DATA = (.*?);\n", page).group(1))
 
 
 @pytest.fixture(autouse=True)
@@ -450,41 +449,41 @@ def test_with_nothing_committed_and_no_feed_the_opening_says_so_and_draws_nothin
 
     assert ">waiting for data: upload exports on the Data page</span>" in _markdown(app)
     assert '<div class="fe-tape"' not in _markdown(app)
-    assert not _charts(app)
+    assert not _frames(app)
     assert "no S&P 500 is committed to draw" in _captions(app)
 
 
-def test_the_s_and_p_is_drawn_live_from_the_feed_over_five_years_by_default(monkeypatch):
+def test_the_s_and_p_is_drawn_live_with_every_candle_size_fetched_at_once(monkeypatch):
     asked = _live_feed(monkeypatch)
     app = _page(_committed())
 
     assert not app.exception
-    assert asked == ["5Y"]
-    assert "candles_hit" in json.dumps(_charts(app))
-    assert _candle_rows(app)["close"].tolist() == [7686.0, 7650.0, 7418.2]
-    assert "Live · Yahoo Finance · 16 Nov 2026 16:00 New York" in _markdown(app)
-    assert ">7,418.20<" in _markdown(app)
+    assert sorted(asked) == ["1D", "1M", "1W", "3M"]
+    data = _chart_data(app)
+    assert sorted(data) == ["1D", "1M", "1W", "3M"]
+    assert [row[4] for row in data["1D"]["rows"]] == [7686.0, 7650.0, 7418.2]
+    assert data["1D"]["where"] == "Live · Yahoo Finance · 16 Nov 2026 16:00 New York"
+    assert 'data-span="1D" aria-pressed="true"' in _frames(app)[0]
 
 
-def test_picking_a_span_asks_the_feed_for_it(monkeypatch):
+def test_the_feed_is_asked_once_however_often_the_page_reruns(monkeypatch):
     asked = _live_feed(monkeypatch)
     app = _page(_committed())
+    app.run()
 
-    (span,) = [c for c in app.segmented_control if c.label == "Span"]
-    assert list(span.options) == ["3M", "1Y", "5Y", "10Y"]
-    span.set_value("1Y").run()
-
-    assert not app.exception
-    assert asked[-1] == "1Y"
+    assert len(asked) == len(index_feed.INTERVALS)
 
 
 def test_without_the_feed_the_committed_s_and_p_is_drawn_and_said_to_be():
     app = _page(_long_committed())
 
     assert not app.exception
+    data = _chart_data(app)
     months = pd.bdate_range("2024-01-02", periods=220).to_period("M").nunique()
-    assert len(_candle_rows(app)) == months
-    assert "From the committed data · to" in _markdown(app)
+    assert len(data["1M"]["rows"]) == months
+    assert len(data["1D"]["rows"]) == 220
+    assert data["1M"]["where"].startswith("From the committed data · to")
+    assert not data["1M"]["live"]
 
 
 def test_the_tape_shows_both_targets_then_each_signal_with_its_change_over_a_horizon():

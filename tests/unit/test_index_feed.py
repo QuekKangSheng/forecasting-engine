@@ -53,7 +53,8 @@ def test_a_days_candle_is_read_in_new_york_time():
     candles = index_feed.parse_chart(payload, "1d")
 
     assert list(candles.frame.index) == [pd.Timestamp("2026-11-13"), pd.Timestamp("2026-11-16")]
-    assert candles.frame.loc["2026-11-16"].tolist() == [7390.0, 7430.0, 7370.0, 7418.2]
+    prices = candles.frame.loc["2026-11-16", ["open", "high", "low", "close"]]
+    assert prices.tolist() == [7390.0, 7430.0, 7370.0, 7418.2]
     assert candles.live and candles.source == "Yahoo Finance"
     assert (candles.last, candles.as_of) == (7418.2, pd.Timestamp("2026-11-16 16:00"))
 
@@ -113,34 +114,64 @@ def _opener(body: bytes | Exception, seen: list):
     return opener
 
 
-def test_fetch_asks_for_the_spans_range_and_interval_and_reads_the_answer():
+def test_fetch_asks_for_the_candles_history_by_its_dates_and_reads_the_answer():
     seen = []
     body = json.dumps(
         _payload([_at("2026-11-02 09:30")], [7700.0], [7760.0], [7350.0], [7418.2])
     ).encode()
+    now = _at("2026-11-16 16:00")
 
-    candles = index_feed.fetch("5Y", opener=_opener(body, seen))
+    candles = index_feed.fetch("1M", opener=_opener(body, seen), now=now)
 
     url, agent, timeout = seen[0]
-    assert "chart/%5EGSPC?range=5y&interval=1mo" in url
+    # Every month there is: from 1970, not "max", which the service turns into quarters.
+    assert f"chart/%5EGSPC?period1=0&period2={now}&interval=1mo" in url
     assert agent and timeout <= 10
     assert candles.period == "M" and candles.frame["close"].iloc[-1] == 7418.2
+
+
+def test_daily_candles_reach_back_ten_years():
+    seen = []
+    body = json.dumps(
+        _payload([_at("2026-11-16 09:30")], [7400.0], [7450.0], [7380.0], [7418.2])
+    ).encode()
+    now = _at("2026-11-16 16:00")
+
+    index_feed.fetch("1D", opener=_opener(body, seen), now=now)
+
+    assert f"period1={now - 3_653 * 86_400}&period2={now}&interval=1d" in seen[0][0]
+
+
+def test_volume_is_read_where_the_service_sends_it():
+    payload = _payload(
+        [_at("2026-11-13 09:30"), _at("2026-11-16 09:30")],
+        [7400.0, 7390.0],
+        [7450.0, 7430.0],
+        [7380.0, 7370.0],
+        [7410.0, 7418.2],
+    )
+    payload["chart"]["result"][0]["indicators"]["quote"][0]["volume"] = [4.1e9, None]
+
+    candles = index_feed.parse_chart(payload, "1d")
+
+    assert candles.frame["volume"].iloc[0] == 4.1e9
+    assert pd.isna(candles.frame["volume"].iloc[1])
 
 
 @pytest.mark.parametrize("failure", [URLError("offline"), TimeoutError("slow"), OSError("reset")])
 def test_a_feed_that_does_not_answer_is_a_feed_error(failure):
     with pytest.raises(IndexFeedError, match="did not answer"):
-        index_feed.fetch("3M", opener=_opener(failure, []))
+        index_feed.fetch("1D", opener=_opener(failure, []))
 
 
 def test_an_answer_that_is_not_json_is_a_feed_error():
     with pytest.raises(IndexFeedError):
-        index_feed.fetch("3M", opener=_opener(b"<html>verify you are human</html>", []))
+        index_feed.fetch("1D", opener=_opener(b"<html>verify you are human</html>", []))
 
 
-def test_an_unknown_span_is_refused_before_anything_is_asked():
+def test_an_unknown_candle_size_is_refused_before_anything_is_asked():
     seen = []
-    with pytest.raises(ValueError, match="unknown span"):
+    with pytest.raises(ValueError, match="unknown interval"):
         index_feed.fetch("2W", opener=_opener(b"{}", seen))
     assert not seen
 
@@ -149,7 +180,7 @@ def test_candles_from_closes_open_at_the_last_close_before_them():
     days = pd.bdate_range("2024-01-01", "2024-03-29")
     closes = pd.Series(range(100, 100 + len(days)), index=days, dtype=float)
 
-    candles = index_feed.from_closes(closes, "5Y")
+    candles = index_feed.from_closes(closes, "1M")
 
     january, february = candles.frame.iloc[0], candles.frame.iloc[1]
     assert january["open"] == 100  # nothing before it: its own first close
@@ -159,10 +190,12 @@ def test_candles_from_closes_open_at_the_last_close_before_them():
     assert (candles.last, candles.as_of) == (closes.iloc[-1], days[-1])
 
 
-def test_candles_from_closes_cover_only_the_span():
+def test_candles_from_closes_cover_every_close_at_the_candles_size():
     days = pd.bdate_range("2020-01-01", periods=600)
     closes = pd.Series(1.0, index=days)
 
-    candles = index_feed.from_closes(closes, "3M")
+    daily, quarterly = index_feed.from_closes(closes, "1D"), index_feed.from_closes(closes, "3M")
 
-    assert candles.period == "D" and len(candles.frame) == 63
+    assert daily.period == "D" and len(daily.frame) == 600
+    assert quarterly.period == "Q" and len(quarterly.frame) == days.to_period("Q").nunique()
+    assert quarterly.frame["volume"].isna().all()

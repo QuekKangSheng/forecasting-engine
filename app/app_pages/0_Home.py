@@ -12,9 +12,9 @@ import html
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 import bloomberg_extraction_panel
-import charts
 import hero
 import market_chart
 import model_runs
@@ -189,27 +189,26 @@ def _committed_closes() -> tuple[pd.Series, str] | None:
 
 
 def _market() -> None:
-    """The S&P 500 beside the words, over the span picked: live where the feed answers,
-    else from the committed data, and said which."""
-    span = st.segmented_control(
-        "Span",
-        list(index_feed.SPANS),
-        default=market_chart.DEFAULT_SPAN,
-        key="fe-span",
-        label_visibility="collapsed",
-    ) or market_chart.DEFAULT_SPAN
-    candles, _ = market_chart.live(span)
+    """The S&P 500 beside the words, as a trading chart: live where the feed answers, a
+    candle size at a time from the committed data where it does not, and said which."""
+    bundles, _ = market_chart.live()
+    bundles = dict(bundles)
     name = f"S&P 500 · {index_feed.SYMBOL}"
-    if candles is None:
-        committed = _committed_closes()
-        if committed is None:
-            st.caption("The live feed did not answer, and no S&P 500 is committed to draw.")
-            return
-        closes, name = committed
-        candles = index_feed.from_closes(closes, span)
-    st.markdown(market_chart.header(candles, name), unsafe_allow_html=True)
-    charts.draw(market_chart.candle_chart(candles))
-    st.markdown(market_chart.source(candles), unsafe_allow_html=True)
+    missing = [interval for interval in index_feed.INTERVALS if interval not in bundles]
+    committed = _committed_closes() if missing else None
+    if committed is not None:
+        closes, committed_name = committed
+        for interval in missing:
+            try:
+                bundles[interval] = index_feed.from_closes(closes, interval)
+            except ValueError:  # no closes in the committed column
+                break
+        if not any(candles.live for candles in bundles.values()):
+            name = committed_name
+    if not bundles:
+        st.caption("The live feed did not answer, and no S&P 500 is committed to draw.")
+        return
+    components.html(market_chart.chart_html(bundles, name), height=market_chart.HEIGHT)
 
 
 def _tape() -> str:

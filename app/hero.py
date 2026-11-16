@@ -9,8 +9,8 @@ Each piece is a function that returns HTML for ``st.markdown``:
 - ``tape``: the latest value of every committed series and its change over one
   horizon, moving slowly like a ticker and stopping under the pointer.
 
-``CSS`` styles these and the chart's header line. Motion runs once (the tape
-excepted) and is switched off for a viewer who asked for less.
+``CSS`` styles these. Motion runs once (the tape excepted) and is switched off for
+a viewer who asked for less.
 """
 
 from __future__ import annotations
@@ -344,46 +344,6 @@ CSS = f"""
     background: #fff;
     border-color: #fff;
   }}
-
-  /* ---- The market chart's header ------------------------------------------------------
-     The index, its latest price and the span's move, then where the figures are from:
-     a green dot when live, amber when drawn from the committed data. */
-  .fe-market-head {{
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.35rem 0.9rem;
-    margin: 0 0 0.2rem;
-    font-family: var(--fe-mono);
-    font-size: 11.5px;
-  }}
-  .fe-market-name {{
-    font-size: 10.5px;
-    font-weight: 500;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--fe-text-2);
-  }}
-  .fe-market-last {{
-    font-family: var(--fe-sans);
-    font-size: 22px;
-    letter-spacing: -0.02em;
-    color: var(--fe-text);
-    font-variant-numeric: tabular-nums;
-  }}
-  .fe-market-where {{
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.3rem 0.45rem;
-    margin-top: -0.2rem;
-    font-family: var(--fe-mono);
-    font-size: 10.5px;
-    letter-spacing: 0.04em;
-    color: var(--fe-muted);
-  }}
-  .fe-market-where i {{ width: 6px; height: 6px; border-radius: 50%; }}
-  .fe-market-hint {{ margin-left: auto; opacity: 0.8; }}
 
   /* ---- The tape ----------------------------------------------------------------------
      From the sidebar's edge to the window's, like the rules. */

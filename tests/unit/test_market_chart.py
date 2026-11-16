@@ -1,13 +1,16 @@
-"""The market chart on Home: candles as a Vega-Lite chart, and the line above it."""
+"""The market chart on Home: every candle size fetched at once, and the page that draws it."""
+
+import json
+import re
 
 import pandas as pd
 
 import market_chart
-import tokens
-from forecasting_engine.ingest.index_feed import Candles
+from forecasting_engine.ingest import index_feed
+from forecasting_engine.ingest.index_feed import Candles, IndexFeedError
 
 
-def _candles(live: bool = True, period: str = "M") -> Candles:
+def _candles(live: bool = True, period: str = "M", volume=(4.1e9, None, 3.9e9)) -> Candles:
     starts = pd.date_range("2026-08-01", periods=3, freq="MS")
     frame = pd.DataFrame(
         {
@@ -15,6 +18,7 @@ def _candles(live: bool = True, period: str = "M") -> Candles:
             "high": [7820.0, 7790.0, 7700.0],
             "low": [7500.0, 7510.0, 7350.0],
             "close": [7686.0, 7650.0, 7418.2],
+            "volume": [float("nan") if v is None else v for v in volume],
         },
         index=starts,
     )
@@ -22,75 +26,112 @@ def _candles(live: bool = True, period: str = "M") -> Candles:
     return Candles(frame, period, source, live, 7418.2, pd.Timestamp("2026-11-16 16:00"))
 
 
-def test_each_candle_has_its_figures_its_move_and_whether_it_closed_up():
-    table = market_chart.candles_table(_candles())
-
-    assert table["up"].tolist() == [True, False, False]
-    assert round(table["move"].iloc[0], 4) == round(7686 / 7500 - 1, 4)
-    assert table["when"].tolist() == ["Aug 2026", "Sep 2026", "Oct 2026"]
-    # The body fills part of its month, centred, leaving a gap to the next.
-    assert (table["start"] < table["mid"]).all() and (table["mid"] < table["end"]).all()
-    assert (table["end"] < table["start"].shift(-1)).iloc[:-1].all()
+def _data(page: str) -> dict:
+    return json.loads(re.search(r"const DATA = (.*?);\n", page).group(1))
 
 
-def test_a_quarter_and_a_week_are_named_as_such():
-    quarters = market_chart.candles_table(_candles(period="Q"))
-    weeks = market_chart.candles_table(_candles(period="W"))
+def test_every_candle_size_is_asked_of_the_feed_and_one_it_refused_is_left_out(monkeypatch):
+    asked = []
 
-    assert quarters["when"].iloc[0] == "Q3 2026"
-    assert weeks["when"].iloc[0].startswith("w/c 01 Aug 2026")
+    def fetch(interval, **kwargs):
+        asked.append(interval)
+        if interval == "1D":
+            raise IndexFeedError("the live feed did not answer (timed out)")
+        return _candles()
+
+    monkeypatch.setattr(index_feed, "fetch", fetch)
+
+    answered, reason = market_chart.live()
+
+    assert sorted(asked) == sorted(index_feed.INTERVALS)
+    assert sorted(answered) == ["1M", "1W", "3M"]
+    assert reason == "the live feed did not answer (timed out)"
 
 
-def test_the_chart_shows_every_candles_figures_on_hover_and_zooms_in_the_browser():
-    spec = market_chart.candle_chart(_candles())
+def test_each_candle_goes_to_the_page_as_a_compact_row_with_its_volume():
+    first, second, _ = market_chart.rows(_candles())
 
-    assert len(spec["datasets"]["candles"]) == 3
-    hit = next(layer for layer in spec["layer"] if layer.get("name") == "candles_hit")
-    titles = [field["title"] for field in hit["encoding"]["tooltip"]]
-    assert titles == ["Period", "Open", "High", "Low", "Close", "Move"]
-    zoom = next(p for p in spec["params"] if p["name"] == "zoom")
-    assert zoom["bind"] == "scales" and zoom["select"]["encodings"] == ["x"]
+    assert first == ["2026-08-01", 7500.0, 7820.0, 7500.0, 7686.0, 4100000000]
+    assert second[-1] is None  # no volume known
+
+
+def test_each_size_carries_its_history_its_first_view_and_where_it_is_from():
+    data = market_chart.payload({"1M": _candles(), "1W": _candles(live=False, period="W")})
+
+    assert len(data["1M"]["rows"]) == 3
+    assert data["1M"]["visible"] == market_chart.VISIBLE["1M"]
+    assert data["1M"]["where"] == "Live · Yahoo Finance · 16 Nov 2026 16:00 New York"
+    assert data["1W"]["where"] == "From the committed data · to 16 Nov 2026"
+    assert (data["1W"]["period"], data["1W"]["unit"], data["1W"]["live"]) == ("W", "week", False)
+
+
+def test_the_page_holds_every_size_so_changing_it_needs_no_rerun():
+    page = market_chart.chart_html({"1D": _candles(period="D"), "1W": _candles()}, "S&P 500")
+
+    assert sorted(_data(page)) == ["1D", "1W"]
+    assert 'data-span="1D" aria-pressed="true"' in page
+    assert 'data-span="1W" aria-pressed="false"' in page
+    assert market_chart.LIBRARY in page
+
+
+def test_the_first_size_falls_back_when_the_default_is_missing():
+    page = market_chart.chart_html({"1W": _candles()}, "S&P 500")
+
+    assert 'data-span="1W" aria-pressed="true"' in page
+    assert 'let span = "1W";' in page
+
+
+def test_it_opens_on_the_latest_stretch_and_pans_back_through_the_rest():
+    page = market_chart.chart_html({"1M": _candles()}, "S&P 500")
+
+    assert "setVisibleLogicalRange({ from: Math.max(0, bars.length - n)" in page
+    assert "handleScroll: { mouseWheel: true, pressedMouseMove: true" in page
+    assert "handleScale: { mouseWheel: true" in page
+    assert '$("now").addEventListener("click", latest)' in page
+
+
+def test_the_move_above_is_over_what_is_in_view_and_follows_the_view():
+    page = market_chart.chart_html({"1M": _candles()}, "S&P 500")
+
+    assert "subscribeVisibleLogicalRangeChange(inView)" in page
+    assert "% in view" in page
+
+
+def test_volume_stands_under_the_candles():
+    page = market_chart.chart_html({"1M": _candles()}, "S&P 500")
+
+    assert 'addHistogramSeries({ priceScaleId: "volume"' in page
+    assert "scaleMargins: { top: 0.8, bottom: 0 }" in page
 
 
 def test_a_candle_that_closed_up_is_outlined_and_one_that_closed_down_filled():
-    spec = market_chart.candle_chart(_candles())
-    body = next(layer for layer in spec["layer"] if layer["mark"]["type"] == "bar")
+    page = market_chart.chart_html({"1M": _candles()}, "S&P 500")
 
-    fill = body["encoding"]["fill"]
-    assert fill["condition"]["value"] == tokens.BG and fill["value"] == tokens.FALL
-    assert body["encoding"]["stroke"]["condition"]["value"] == tokens.RISE
+    assert 'upColor: "rgba(0,0,0,0)", downColor: C.fall' in page
+    assert "borderUpColor: C.rise" in page
 
 
-def test_the_header_gives_the_latest_price_and_the_spans_move():
-    header = market_chart.header(_candles(), "S&P 500 · ^GSPC")
+def test_a_hover_shows_the_candles_figures_in_a_box_beside_the_pointer():
+    page = market_chart.chart_html({"1M": _candles()}, "S&P 500")
 
-    assert ">7,418.20<" in header
-    assert "▼ 1.1%" in header  # 7,500.00 at the span's first open to 7,418.20
-    assert "<b>" not in market_chart.header(_candles(), "S&P 500 <b>")
-
-
-def test_the_line_under_the_chart_says_the_feed_is_live_and_when():
-    line = market_chart.source(_candles())
-
-    assert "Live · Yahoo Finance · 16 Nov 2026 16:00 New York" in line
+    assert '<div class="tip" id="tip" role="tooltip"></div>' in page
+    for label in ('"Open"', '"High"', '"Low"', '"Close"', '"Open → close"', '"Volume"'):
+        assert f"row({label}" in page
+    assert "row(`vs last ${d.unit}`" in page
+    assert "showTip(param, d);" in page
 
 
-def test_the_line_under_the_chart_says_when_the_committed_data_is_drawn_instead():
-    line = market_chart.source(_candles(live=False))
+def test_nothing_in_the_data_or_the_name_can_break_out_of_the_page():
+    page = market_chart.chart_html({"1M": _candles()}, "</script><script>alert(1)</script>")
 
-    assert "From the committed data · to 16 Nov 2026" in line
-
-
-def test_the_wheel_alone_scrolls_the_page_and_shift_with_it_zooms():
-    spec = market_chart.candle_chart(_candles())
-    zoom = next(p for p in spec["params"] if p["name"] == "zoom")
-
-    assert zoom["select"]["zoom"] == "wheel![event.shiftKey]"
+    assert "<script>alert(1)" not in page
+    assert market_chart._script_safe({"x": "</script>"}) == r'{"x":"<\/script>"}'
 
 
-def test_the_time_axis_is_written_for_the_candles_period():
-    monthly = market_chart.candle_chart(_candles())["encoding"]["x"]["axis"]
-    daily = market_chart.candle_chart(_candles(period="D"))["encoding"]["x"]["axis"]
+def test_the_chart_rests_in_3d_and_lies_flat_under_the_pointer():
+    page = market_chart.chart_html({"1M": _candles()}, "S&P 500")
 
-    assert (monthly["tickCount"], monthly["format"]) == ("year", "%Y")
-    assert (daily["tickCount"], daily["format"]) == ("week", "%d %b")
+    assert ".tilted .plane { transform: rotateX(" in page
+    flat = ".tilted .stage:hover .plane, .tilted .stage:focus-within .plane { transform: none;"
+    assert flat in page
+    assert 'id="depth" aria-pressed="true"' in page
