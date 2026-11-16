@@ -1266,6 +1266,17 @@ def _show_directional(
         )
         return
     signal = result.forecast - result.baseline
+    # A model whose forecast is always its own average (Naive) has no signal: the
+    # strategy would sit in cash throughout and the hit rate would only count the
+    # steps the index fell, so neither says anything about the model.
+    known = signal.dropna()
+    if not known.empty and (known.abs() < 1e-12).all():
+        st.info(
+            f"{name} has no signal to test: its forecast is its own average forecast on "
+            "every day, so there is no direction to hold or skip the index on.",
+            icon=":material/info:",
+        )
+        return
     try:
         whole = directional_pnl(signal, result.realised, horizon=horizon)
     except DirectionalDataError as exc:
@@ -1308,7 +1319,8 @@ def _show_directional(
         f"{target_name}, {pnl.start:%d/%m/%Y} to {pnl.end:%d/%m/%Y}: {span}, {pnl.calls} "
         f"calls ({steps}). Each call holds the index when the model's signal (its forecast "
         "less its own average forecast) is above zero. Each return is plotted at the end "
-        "of its holding period. Gross of transaction costs; cash earns nothing. Narrow the "
+        "of its holding period. Gross of transaction costs; cash earns nothing, so the "
+        "strategy's line is flat wherever it sat in cash. Narrow the "
         "window with the slider: every figure and the chart are recomputed for it, starting "
         "from zero on its first day."
     )
