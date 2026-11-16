@@ -9,7 +9,9 @@ built the comparison view and promotion gates against.
 from __future__ import annotations
 
 import ast
+import math
 import operator
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -34,6 +36,18 @@ from forecasting_engine.validation.splitters import PurgedWalkForward
 
 MAX_DEGREE: int = 5
 """FYP-43's third acceptance criterion: a degree above this is rejected."""
+
+MAX_FORMULA_NODES: int = 200
+"""Most numbers, signals and operations a user function may have: about 25
+terms such as ``0.1 * x ** 2 * y``. A function also nests no deeper than this,
+which keeps every recursive walk of it (evaluating, rewriting, typesetting) well
+inside Python's recursion limit; 1,200 terms once broke the page."""
+
+MAX_FORMULA_LENGTH: int = 10_000
+"""Longest user function read, in characters, so that a huge paste is refused
+before it is parsed. Far above what ``MAX_FORMULA_NODES`` allows to be typed, so
+that a fitted function with each placeholder written out as its column name, as
+it is stored and read back, still fits."""
 
 CLIP_SD: float = 4.0
 """A derived polynomial's raw inputs are clipped to this many training-window
@@ -75,23 +89,83 @@ def _parse(formula: str) -> ast.Expression:
     """Parse ``formula`` as a Python expression, then eagerly validate its
     structure against the allow-list below — before any column name is known,
     so a disallowed construct (a function call, attribute access, anything
-    outside arithmetic) is rejected at construction, not deferred to predict()."""
-    try:
-        tree = ast.parse(formula, mode="eval")
-    except SyntaxError as exc:
-        raise PolynomialConfigError(f"{formula!r} is not a valid expression: {exc.msg}.") from exc
+    outside arithmetic) is rejected at construction, not deferred to predict().
+
+    Its size, degree and numbers are checked here too, before any of it is worked
+    out: a function that takes hours to evaluate or expand holds the one model
+    worker, and every queued Run waits behind it. These caps are for a new
+    function; one saved before them is read back with ``_read``."""
+    if len(formula) > MAX_FORMULA_LENGTH:
+        raise PolynomialConfigError(
+            f"the function is {len(formula):,} characters long; the most allowed is "
+            f"{MAX_FORMULA_LENGTH:,}."
+        )
+    tree = _syntax(formula)
+    size = sum(isinstance(node, ast.expr) for node in ast.walk(tree))
+    if size > MAX_FORMULA_NODES:
+        raise PolynomialConfigError(
+            f"the function has {size} numbers, signals and operations; the most allowed is "
+            f"{MAX_FORMULA_NODES}. Write it with fewer terms."
+        )
     _validate_structure(tree)
+    degree = _degree(tree)
+    if degree > MAX_DEGREE:
+        raise PolynomialConfigError(
+            f"the function's degree is {degree}, above the highest allowed, {MAX_DEGREE}. "
+            "Its degree is the most signals multiplied together in one term, counting "
+            "powers: x ** 2 * y is 3, and dividing counts as multiplying."
+        )
+    _constant(tree)
     return tree
 
 
-def _validate_structure(node: ast.AST) -> None:
+def _read(formula: str) -> ast.Expression:
+    """A saved function, parsed to be evaluated again: the allow-list alone,
+    without ``_parse``'s size, degree and number caps. Those stop a new function
+    being queued; a function saved before them has run already.
+
+    So an exponent may be any whole number of 0 or more, as it could be then.
+    Raising a signal's value, a float, to a large power is quick: at worst it
+    overflows. A plain number raised to one is worked out exactly and can take
+    hours, so ``_constant`` refuses one beyond a float before working it out."""
+    tree = _syntax(formula)
+    _validate_structure(tree, max_exponent=None)
+    return tree
+
+
+def _syntax(formula: str) -> ast.Expression:
+    """``formula`` parsed as a Python expression, its syntax errors in plain words."""
+    try:
+        return ast.parse(formula, mode="eval")
+    except SyntaxError as exc:
+        # Python won't read a whole number of more than a few thousand digits, and
+        # says so in terms of its own settings; for a formula it is a number too large.
+        if "integer string conversion" in str(exc.msg):
+            raise _too_large() from exc
+        raise PolynomialConfigError(f"{formula!r} is not a valid expression: {exc.msg}.") from exc
+    except (MemoryError, RecursionError) as exc:  # how the parser refuses deep nesting
+        raise _nested_too_deeply() from exc
+
+
+def _too_large() -> PolynomialConfigError:
+    return PolynomialConfigError(
+        "a number in the function is too large to work with; use a smaller one."
+    )
+
+
+def _nested_too_deeply() -> PolynomialConfigError:
+    return PolynomialConfigError("the function is nested too deeply to read.")
+
+
+def _validate_structure(node: ast.AST, max_exponent: int | None = MAX_DEGREE) -> None:
     """Structural allow-list check, no column values needed: rejects anything
-    that isn't a number, a name, or `+ - * /` and integer `**`. Name existence
-    is checked separately in ``_safe_eval``, once the panel's actual signal
-    columns are known.
+    that isn't a number, a name, or `+ - * /` and `**` by a whole number up to
+    ``max_exponent`` (any, where it is None, as for a saved function). Name
+    existence is checked separately in ``_safe_eval``, once the panel's actual
+    signal columns are known.
     """
     if isinstance(node, ast.Expression):
-        _validate_structure(node.body)
+        _validate_structure(node.body, max_exponent)
     elif isinstance(node, ast.Constant):
         if isinstance(node.value, bool) or not isinstance(node.value, int | float):
             raise PolynomialConfigError(f"only numeric constants are allowed, got {node.value!r}.")
@@ -100,26 +174,110 @@ def _validate_structure(node: ast.AST) -> None:
     elif isinstance(node, ast.BinOp):
         if type(node.op) not in _ALLOWED_BINOPS:
             raise PolynomialConfigError(f"operator {type(node.op).__name__} is not supported.")
-        if isinstance(node.op, ast.Pow) and not _is_nonnegative_integer_constant(node.right):
-            raise PolynomialConfigError("an exponent must be a non-negative whole number.")
-        _validate_structure(node.left)
-        _validate_structure(node.right)
+        if isinstance(node.op, ast.Pow) and not _is_allowed_exponent(node.right, max_exponent):
+            allowed = "of 0 or more" if max_exponent is None else f"from 0 to {max_exponent}"
+            raise PolynomialConfigError(
+                f"an exponent must be a whole number {allowed}, written as a number, such as "
+                "x ** 2."
+            )
+        _validate_structure(node.left, max_exponent)
+        _validate_structure(node.right, max_exponent)
     elif isinstance(node, ast.UnaryOp):
         if type(node.op) not in _ALLOWED_UNARYOPS:
             raise PolynomialConfigError(f"operator {type(node.op).__name__} is not supported.")
-        _validate_structure(node.operand)
+        _validate_structure(node.operand, max_exponent)
     else:
         raise PolynomialConfigError(f"{type(node).__name__} is not a supported expression.")
 
 
-def _is_nonnegative_integer_constant(node: ast.AST) -> bool:
-    return (
+def _is_allowed_exponent(node: ast.AST, max_exponent: int | None) -> bool:
+    """A whole number from 0 to ``max_exponent``, or of 0 or more where it is
+    None, written as a number. For a new function the cap is ``MAX_DEGREE``: a
+    larger power of a signal can't pass the degree cap. A whole number is never
+    converted to a float here, as one too large for a float can't be."""
+    if not (
         isinstance(node, ast.Constant)
         and isinstance(node.value, int | float)
         and not isinstance(node.value, bool)
-        and float(node.value).is_integer()
-        and node.value >= 0
-    )
+    ):
+        return False
+    value = node.value
+    if value < 0 or (max_exponent is not None and value > max_exponent):
+        return False
+    return isinstance(value, int) or value.is_integer()
+
+
+def _degree(node: ast.AST) -> int:
+    """The function's degree, read from an already-validated structure: a signal
+    is 1 and a number 0; a sum takes its larger side's, a product or a quotient
+    adds its sides', and a power multiplies its base's by the exponent."""
+    if isinstance(node, ast.Expression):
+        return _degree(node.body)
+    if isinstance(node, ast.Name):
+        return 1
+    if isinstance(node, ast.UnaryOp):
+        return _degree(node.operand)
+    if isinstance(node, ast.BinOp):
+        if isinstance(node.op, ast.Pow):
+            return _degree(node.left) * int(node.right.value)
+        left, right = _degree(node.left), _degree(node.right)
+        return max(left, right) if isinstance(node.op, ast.Add | ast.Sub) else left + right
+    return 0
+
+
+def _constant(node: ast.AST) -> int | float | None:
+    """``node``'s value where it reads no signal, else None, worked out one
+    operation at a time exactly as ``_safe_eval`` will. A number too large for a
+    float is refused as soon as it appears, before a larger one can be built
+    from it, and so is a division by zero. A power is refused before it is worked
+    out if it would be too large: a saved function's exponent can be any whole
+    number, and ``10 ** 1000000000`` alone takes hours."""
+    if isinstance(node, ast.Expression):
+        return _constant(node.body)
+    if isinstance(node, ast.Name):
+        return None
+    if isinstance(node, ast.Constant):
+        value = node.value
+    elif isinstance(node, ast.UnaryOp):
+        operand = _constant(node.operand)
+        if operand is None:
+            return None
+        value = _ALLOWED_UNARYOPS[type(node.op)](operand)
+    else:
+        left, right = _constant(node.left), _constant(node.right)
+        if isinstance(node.op, ast.Div) and right == 0:
+            raise PolynomialConfigError("the function divides by zero.")
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Pow) and _power_beyond_a_float(left, right):
+            raise _too_large()
+        try:
+            value = _ALLOWED_BINOPS[type(node.op)](left, right)
+        except OverflowError:
+            value = math.inf
+    if not _fits_a_float(value):
+        raise _too_large()
+    return value
+
+
+def _fits_a_float(value: int | float) -> bool:
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # a whole number beyond the largest float
+        return False
+
+
+_LARGEST_FLOAT_DIGITS: float = math.log10(sys.float_info.max)
+"""About 308.25: the largest float has 309 digits before its decimal point."""
+
+
+def _power_beyond_a_float(base: int | float, exponent: int | float) -> bool:
+    """Whether ``base ** exponent`` is too large for a float, told from its digits,
+    ``exponent × log10 |base|``, without working it out. ``base`` fits a float,
+    and comparing a whole number with a float is exact however large it is."""
+    if abs(base) <= 1:  # its powers are no larger than itself
+        return False
+    return exponent > _LARGEST_FLOAT_DIGITS / math.log10(abs(base))
 
 
 def _safe_eval(node: ast.AST, env: Mapping[str, pd.Series]):
@@ -207,18 +365,76 @@ class UserPolynomial:
         )
 
     def _shape(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> pd.Series:
-        """``f``, the formula's own value on ``idx``."""
-        env = {name: panel.frame.loc[idx, name] for name in panel.signals}
+        """``f``, the formula's own value on ``idx``.
+
+        Refused where every signal it reads is present but ``f`` isn't finite:
+        dividing by a signal on a day it is zero makes ``f`` infinite there, and
+        one such training row would leave every forecast of its fold NaN."""
+        env = self._env(panel, idx)
+        result = _safe_eval(self._tree, env)
+        if isinstance(result, int | float):
+            return pd.Series(float(result), index=idx)
+        shape = result.reindex(idx).astype(float)
+        if not np.isfinite(shape[self._inputs_present(env)]).all():
+            raise PolynomialConfigError(self._not_finite(panel))
+        return shape
+
+    def _env(self, panel: FeaturePanel, idx: pd.DatetimeIndex) -> dict[str, pd.Series]:
+        """Every signal column on ``idx``, and each placeholder as the column it
+        stands for."""
+        columns = {name: panel.frame.loc[idx, name] for name in panel.signals}
+        env = dict(columns)
         for placeholder, column in self.bindings.items():
             if column not in panel.signals:
                 raise PolynomialConfigError(
                     f"{placeholder} stands for {column!r}, which is not a signal column."
                 )
-            env[placeholder] = env[column]
-        result = _safe_eval(self._tree, env)
-        if isinstance(result, int | float):
-            return pd.Series(float(result), index=idx)
-        return result.reindex(idx).astype(float)
+            # Read from the columns, not from ``env``: a placeholder named after a
+            # column re-points that name, and a placeholder bound to that column
+            # must still read the column, whichever of the two is bound first.
+            env[placeholder] = columns[column]
+        return env
+
+    def _inputs_present(self, env: Mapping[str, pd.Series]) -> pd.Series:
+        """Whether every name the formula reads has a value, row by row."""
+        names = {node.id for node in ast.walk(self._tree) if isinstance(node, ast.Name)}
+        return pd.concat([env[name] for name in names], axis=1).notna().all(axis=1)
+
+    def _not_finite(self, panel: FeaturePanel) -> str:
+        """Why ``f`` isn't finite on some days whose inputs are all present,
+        counted over the whole panel: the division by something that is zero on
+        those days, written as the user wrote it, when one explains it."""
+        env = self._env(panel, panel.frame.index)
+        shape = _safe_eval(self._tree, env)
+        bad = self._inputs_present(env) & ~np.isfinite(shape)
+        for node in ast.walk(self._tree):
+            if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)):
+                continue
+            divisor = _safe_eval(node.right, env)
+            # A divisor that is a plain number was checked to be non-zero in _parse.
+            if isinstance(divisor, pd.Series):
+                zero = divisor.index[bad & (divisor == 0)]
+                if len(zero):
+                    return (
+                        f"the function divides by {self._named(node.right)}, which is zero "
+                        f"on {_days(zero)}, so it can't be worked out there. Divide by "
+                        "something that is never zero."
+                    )
+        return (
+            f"the function's value is infinite or undefined on {_days(shape.index[bad])}. "
+            "Look for a division by a signal or a very large number."
+        )
+
+    def _named(self, node: ast.AST) -> str:
+        """``node`` as the user wrote it; a placeholder with the column it stands for."""
+        if isinstance(node, ast.Name) and self.bindings.get(node.id, node.id) != node.id:
+            return f"{node.id} ({self.bindings[node.id]})"
+        return ast.unparse(node)
+
+
+def _days(dates: pd.DatetimeIndex) -> str:
+    """``3 days (the first is 05 Feb 2016)``."""
+    return f"{len(dates)} day{'' if len(dates) == 1 else 's'} (the first is {dates[0]:%d %b %Y})"
 
 
 class _Rebind(ast.NodeTransformer):
@@ -231,18 +447,37 @@ class _Rebind(ast.NodeTransformer):
 
 def evaluate_formula(formula: str, values: Mapping[str, float]) -> float:
     """``formula`` at one point, each name it uses read from ``values``: what
-    ``UserPolynomial`` computes as ``f`` on one row. NaN where it divides by zero,
-    as a row of the fitted series would be."""
+    ``UserPolynomial`` computes as ``f`` on one row. NaN where it can't be worked
+    out on these values: it divides by zero, or its value is too large for a float.
+    A fitted row there is refused, so a caller must not pass NaN off as a forecast.
+
+    ``formula`` is a saved function, so it is read with the allow-list alone
+    (``_read``), and an exponent may be any whole number. Evaluating it still
+    can't hang. Each value is read as a float, even a whole number, so a power of
+    a signal is quick, overflowing at worst. Its plain-number parts are worked out
+    first, one step at a time (``_constant``), each step refused if too large for
+    a float, a power before it is worked out: no step builds a number of more
+    than about 620 digits."""
     try:
-        return float(_safe_eval(_parse(formula), values))
-    except ZeroDivisionError:
+        tree = _read(formula)
+        _constant(tree)
+        floats = {name: float(number) for name, number in values.items()}
+        value = float(_safe_eval(tree, floats))
+    except (ZeroDivisionError, OverflowError):  # how a float says there is no value
         return float("nan")
+    except RecursionError as exc:  # no size cap applies to a saved function
+        raise _nested_too_deeply() from exc
+    return value if math.isfinite(value) else float("nan")
 
 
 def placeholders(formula: str) -> tuple[str, ...]:
-    """The names ``formula`` uses, in the order they first appear."""
+    """The names ``formula`` uses, in the order they first appear.
+
+    Only its syntax is checked, as nothing in it is evaluated here: a new
+    function is checked by constructing ``UserPolynomial``, and a saved one has
+    run already, whatever caps were added since."""
     names = sorted(
-        (node for node in ast.walk(_parse(formula)) if isinstance(node, ast.Name)),
+        (node for node in ast.walk(_syntax(formula)) if isinstance(node, ast.Name)),
         key=lambda node: node.col_offset,
     )
     return tuple(dict.fromkeys(node.id for node in names))

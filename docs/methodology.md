@@ -246,7 +246,21 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   fold forecasts its training mean. No screening. The page shows the latest
   fold's `a + b × (formula)` and the signal table beside the box (column,
   security, field, transform, 1-day lag, latest value after both). One
-  configuration.
+  configuration. Each placeholder reads the column it stands for, even one named
+  after another column. The function is refused under the box, before it can run,
+  if an exponent isn't a whole number from 0 to `MAX_DEGREE`, its degree is above
+  `MAX_DEGREE` (the most signals multiplied together in one term, powers
+  included; dividing counts as multiplying, so `x / y` has degree 2), it has more
+  than `MAX_FORMULA_NODES` numbers, signals and operations or more than
+  `MAX_FORMULA_LENGTH` characters, a number in it is too large for a float, or it
+  divides by zero. A run stops, naming the division, if `f` is infinite or
+  undefined on a day every signal it reads is present: dividing by a rate's change
+  on a day the rate didn't move, say. A function saved before these limits is
+  still shown, as entered, and set active, and a scenario still evaluates it,
+  whatever whole power, 0 or more, it raises a signal to. It is refused only if it
+  raises a plain number to a power too large for a float, such as
+  `10 ** 1000000000`, which is told from the number's digits before it is worked
+  out (§18).
 - **Derived polynomial** (`models/polynomial.run_derived_polynomial`). The grid is
   a Lasso fit (`CANDIDATE_REGULARIZERS`, an L1 share of 1 in `_REGULARIZERS`) at
   every degree in `CANDIDATE_DEGREES`, `models/polynomial.DerivedPolynomial`, plus
@@ -1077,7 +1091,12 @@ stored function is evaluated again on shocked inputs.
 5. **Evaluation** (`evaluate`). Each input is clipped and standardised with the
    stored bounds and statistics, then the terms applied: for every stored model
    this reproduces its own `predict` on the same row. The base case is the same
-   function on the unshocked inputs, so a zero shock reproduces it.
+   function on the unshocked inputs, so a zero shock reproduces it. Where a user
+   function's value on the inputs is infinite or undefined (it divides by a signal
+   that is zero there, or raises one to a power too large for its value there),
+   or it was saved before §9's limits and raises a plain number to a power too
+   large for a float, its index's row says so instead of a forecast. A saved
+   function raising a signal to a power above `MAX_DEGREE` is evaluated as usual.
 6. **Extrapolation.** A shocked input outside its range over the latest fold's
    training rows (rebuilt with the active model's own train and test windows) is
    flagged. Where the model clips that input, the flag says so: beyond the bound
@@ -1305,6 +1324,8 @@ Values are Python literals as the code holds them.
 | `MAX_AGE` | `forecasting_engine.ingest.fama_french` | `timedelta(days=30)` |
 | `_TIMEOUT_SECONDS` | `forecasting_engine.ingest.fama_french` | `30` |
 | `MAX_DEGREE` | `forecasting_engine.models.polynomial` | `5` |
+| `MAX_FORMULA_NODES` | `forecasting_engine.models.polynomial` | `200` |
+| `MAX_FORMULA_LENGTH` | `forecasting_engine.models.polynomial` | `10_000` |
 | `CANDIDATE_DEGREES` | `forecasting_engine.models.polynomial` | `(1, 2, 3)` |
 | `SHRINKAGE` | `forecasting_engine.models.polynomial` | `"shrinkage"` |
 | `CLIP_SD` | `forecasting_engine.models.shrinkage` | `4.0` |

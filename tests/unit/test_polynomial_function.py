@@ -337,6 +337,28 @@ def test_an_expanded_user_function_keeps_its_fitted_form_too():
     )
 
 
+@pytest.mark.parametrize(
+    "formula",
+    [f"{VIX} ** 6", f"{VIX} ** 3 * {IG} ** 3", " + ".join([VIX, IG] * 150)],
+    ids=["exponent-6", "degree-6", "300-terms"],
+)
+def test_a_saved_user_function_past_a_cap_is_shown_as_entered(formula):
+    # Saved before the caps a new function must meet: shown as its own text,
+    # never expanded or typeset past them.
+    fn = from_description(
+        ModelDescription("UserPolynomial", (formula,), (0.5,), 0.01),
+        origin=Origin.USER_SUPPLIED,
+        target="SPX_Index_PX_LAST",
+        horizon=5,
+    )
+    entered = formula.replace("_", r"\_")
+
+    assert fn.formula == formula
+    assert to_latex(fn, label_for(VIX, IG)) == (
+        rf"\hat{{y}} = 0.01000 + 0.5000 \cdot (\text{{{entered}}})"
+    )
+
+
 def test_a_derived_equation_in_standardised_signals_reproduces_predict():
     rng = np.random.default_rng(5)
     idx = pd.date_range("2024-01-01", periods=200, freq="D")

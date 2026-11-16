@@ -329,3 +329,77 @@ def test_a_user_functions_inputs_are_the_columns_its_formula_names():
     )
 
     assert function_inputs(description, Origin.USER_SUPPLIED, [VIX, BOND]) == (BOND, VIX)
+
+
+#: User functions as they were saved before the caps on a new one, each of which
+#: a new one would now fail, with their value at VIX 1.5 and the rate 2.
+SAVED_PAST_THE_CAPS = {
+    "degree-6": (f"{VIX} ** 3 * {RATE} ** 3", 27.0),
+    "300-terms": (" + ".join([VIX, RATE] * 150), 525.0),
+    "power-6": (f"{VIX} ** 6 + {RATE}", 1.5**6 + 2.0),
+}
+
+
+@pytest.mark.parametrize(
+    ("formula", "value"), list(SAVED_PAST_THE_CAPS.values()), ids=list(SAVED_PAST_THE_CAPS)
+)
+def test_a_user_function_saved_before_the_caps_still_reads_and_evaluates(formula, value):
+    description = ModelDescription("UserPolynomial", (formula,), (0.5,), 0.01)
+    function = ActiveFunction(Origin.USER_SUPPLIED, description, TRANSFORMS)
+
+    assert function_inputs(description, Origin.USER_SUPPLIED, [VIX, RATE]) == (VIX, RATE)
+    assert evaluate(function, {VIX: 1.5, RATE: 2.0, BOND: 0.0}) == pytest.approx(
+        0.01 + 0.5 * value
+    )
+
+
+def test_a_user_function_saved_with_a_power_above_5_forecasts_a_scenario_from_its_inputs():
+    # x ** 7 * y, saved before the cap on a new function's exponents.
+    transforms = {VIX: Transform.LEVEL, RATE: Transform.LEVEL}
+    description = ModelDescription("UserPolynomial", (f"{VIX} ** 7 * {RATE}",), (0.5,), 0.01)
+    function = ActiveFunction(Origin.USER_SUPPLIED, description, transforms)
+    frame = _frame()
+    vix, rate = frame[VIX].iloc[-1], frame[RATE].iloc[-1]
+
+    result = run_scenario(function, frame, PRICE, {VIX: 25.0}, horizon=HORIZON,
+                          splitter=_splitter())
+
+    assert result.base == pytest.approx(0.01 + 0.5 * vix**7 * rate)
+    assert result.shocked == pytest.approx(0.01 + 0.5 * 25.0**7 * rate)
+
+
+def test_a_saved_user_function_raising_a_number_past_a_float_says_why_it_cant_be_evaluated():
+    description = ModelDescription("UserPolynomial", (f"{VIX} * 10 ** 400",), (0.5,), 0.01)
+    function = ActiveFunction(Origin.USER_SUPPLIED, description, {VIX: Transform.LEVEL})
+
+    assert function_inputs(description, Origin.USER_SUPPLIED, [VIX]) == (VIX,)
+    with pytest.raises(
+        ScenarioError, match="can't be evaluated: a number in the function is too large to work"
+    ):
+        evaluate(function, {VIX: 1.5})
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [pd.Series({VIX: 18.0, RATE: 0.0}), {VIX: 18.0, RATE: 0.0}],
+    ids=["a-row-of-the-panel", "plain-numbers"],
+)
+def test_a_user_function_that_divides_by_zero_on_the_inputs_says_why_instead_of_a_forecast(
+    inputs,
+):
+    # The rate's daily change is zero on a day it didn't move. A run refuses a day
+    # like this; a scenario used to show it as an infinite or blank forecast.
+    description = ModelDescription("UserPolynomial", (f"{VIX} / {RATE}",), (0.5,), 0.01)
+    transforms = {VIX: Transform.LEVEL, RATE: Transform.DIFFERENCE}
+    function = ActiveFunction(Origin.USER_SUPPLIED, description, transforms)
+
+    with pytest.raises(ScenarioError, match="infinite or undefined. Look for a division"):
+        evaluate(function, inputs)
+
+
+def test_a_saved_user_function_nested_too_deeply_to_evaluate_says_why_rather_than_crashing():
+    description = ModelDescription("UserPolynomial", (" + ".join([VIX] * 1200),), (0.5,), 0.01)
+    function = ActiveFunction(Origin.USER_SUPPLIED, description, {VIX: Transform.LEVEL})
+
+    with pytest.raises(ScenarioError, match="can't be evaluated: the function is nested too"):
+        evaluate(function, {VIX: 1.5})
