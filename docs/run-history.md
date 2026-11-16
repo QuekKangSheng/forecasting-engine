@@ -170,9 +170,14 @@ runs sharing it were the same fit asked for again.
 
 ## Queries
 
-Open the database read-only while the app is running, e.g. with the DuckDB CLI:
-`duckdb -readonly data/forecasting.duckdb`. Every query below is run by
-`tests/unit/test_run_history_doc.py`, so they stay valid as the schema changes.
+Stop the app first. While it runs it holds `data/forecasting.duckdb` open, and DuckDB
+then lets no other process open the file, not even read-only; on Windows the file
+can't be copied either. With the app stopped, open the file read-only, e.g. with the
+DuckDB CLI: `duckdb -readonly data/forecasting.duckdb`. Close it again before
+starting the app, which can't open the file while another process has it open.
+
+Every query below is run by `tests/unit/test_run_history_doc.py`, so they stay valid
+as the schema changes.
 
 The latest successful run of each model, per target:
 

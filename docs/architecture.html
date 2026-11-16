@@ -81,6 +81,18 @@
   }
   .meta-row b { color: var(--ink); font-weight: 600; }
 
+  .superseded {
+    max-width: var(--measure);
+    background: var(--clay-wash);
+    border: 1px solid var(--hairline); border-left: 3px solid var(--clay);
+    border-radius: var(--radius); padding: 14px 18px;
+    font-size: 0.95rem;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .superseded p { margin: 0; }
+  .superseded .eyebrow { color: var(--clay); }
+  .superseded ul { margin: 0; padding-left: 1.15em; display: flex; flex-direction: column; gap: 6px; }
+
   .doc {
     display: grid; grid-template-columns: 200px minmax(0, 1fr);
     gap: 56px; padding-top: 44px; align-items: start;
@@ -240,6 +252,46 @@
       <span><b>Drafted</b> — 29 Jul 2026</span>
       <span><b>Delivery</b> — 6 sprints, 24 Aug – 15 Nov 2026</span>
     </div>
+    <aside class="superseded" aria-label="Status of this page">
+      <div class="eyebrow">Note added 16 Nov 2026 · the original design, not the built app</div>
+      <p>
+        This page is the design drafted on 29 Jul 2026, before the build, and is kept as that
+        record. The app as built differs from it in these main ways:
+      </p>
+      <ul>
+        <li><b>Pages.</b> <code>app/Home.py</code> builds the navigation over six pages in
+          <code>app/app_pages/</code>: Home, Data, Models, Portfolio Optimizer, Scenarios and
+          Run history. There is no <code>app/pages/</code> folder.</li>
+        <li><b>Data.</b> The Data page takes Bloomberg's original CSV and XLSX exports and merges
+          them on date (<code>extraction/</code>). The authored CSV contract was retired for an
+          open schema.</li>
+        <li><b>How a Run runs.</b> There is no <code>RunConfig</code> or <code>pipeline.py</code>.
+          The Models page queues a Run for one background worker thread in the Streamlit server
+          (<code>app/model_jobs.py</code>), which fits the ticked models in turn and spreads
+          independent parts of a fit over up to four processes by default
+          (<code>parallel.py</code>). Each result is cached under <code>data/model_runs/</code>,
+          keyed by a hash of the data and settings it depends on.</li>
+        <li><b>Store.</b> One DuckDB file, <code>data/forecasting.duckdb</code>, holds an
+          append-only log of model runs, each with a random run id rather than a config hash,
+          and also the uploads and their lineage, each target's active model and every distinct
+          Portfolio result (<a href="run-history.md">docs/run-history.md</a>).</li>
+        <li><b>Model families.</b> A naive training-mean baseline, the Fama-French five-factor
+          benchmark (equity only), the polynomial (user-supplied, or derived from lasso fits at
+          degrees 1 to 3 and a shrinkage fit), a research model on each target (a polynomial on
+          fixed economic inputs for equity, one on fixed carry inputs for bond), and XGBoost and
+          LightGBM. There is no PySR.</li>
+        <li><b>Validation.</b> No PBO, DSR or CPCV: a model is promoted on its Signal Rank IC and
+          its t-statistic. The windows are 504 training days, 20 test days and a 20-day embargo,
+          not 756, 63 and 5 (the two research models alone train on every earlier day), and the
+          default horizon is 20 days, not 5.</li>
+        <li><b>Portfolio.</b> The optimiser is a two-asset Markowitz rule in
+          <code>portfolio/optimize.py</code>, not PyPortfolioOpt.</li>
+      </ul>
+      <p>
+        For the app as it is now, read <a href="methodology.md">docs/methodology.md</a> and the
+        <a href="../README.md">README</a>.
+      </p>
+    </aside>
   </header>
 
   <div class="doc">
