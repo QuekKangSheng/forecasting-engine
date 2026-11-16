@@ -1300,14 +1300,20 @@ def _show_directional(
     # a reader does to pan it, and every chart event reruns the page, which
     # silently cuts short any Run still in progress.
     first, last = whole.strategy.index[0].date(), whole.strategy.index[-1].date()
-    start, end = st.slider(
-        "Window",
-        min_value=first,
-        max_value=last,
-        value=(first, last),
-        format="DD/MM/YYYY",
-        key=f"pnl_window_{key}_{name}",
-        help=glossary.term("P&L window"),
+    # A single call is a single date, which leaves no window to narrow: Streamlit
+    # refuses a slider whose two ends are the same.
+    start, end = (
+        st.slider(
+            "Window",
+            min_value=first,
+            max_value=last,
+            value=(first, last),
+            format="DD/MM/YYYY",
+            key=f"pnl_window_{key}_{name}",
+            help=glossary.term("P&L window"),
+        )
+        if first < last
+        else (first, last)
     )
     window = None if (start, end) == (first, last) else (pd.Timestamp(start), pd.Timestamp(end))
     pnl = whole

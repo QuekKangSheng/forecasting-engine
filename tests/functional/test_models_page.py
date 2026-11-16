@@ -1928,3 +1928,13 @@ def test_a_model_set_active_records_the_target_column_it_forecast():
 
     assert not app.exception
     assert active_model.get_active_model(EQUITY).target_column == SPX
+
+
+def test_a_direction_check_with_a_single_call_shows_it_without_a_window_to_narrow():
+    # Fewer forecast dates than one horizon: a single call, on a single date.
+    run = _with_forecast(_oos([0.01, 0.02, 0.01]), _oos([0.02, -0.01, 0.03]))
+    app = _page({EQUITY: {POLY: _polynomial_run(run)}})
+
+    assert not app.exception
+    assert not [s for s in app.slider if s.label == "Window"]
+    assert "1 calls" in _captions(app)
