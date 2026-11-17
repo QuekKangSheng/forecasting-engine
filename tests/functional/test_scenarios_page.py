@@ -1,5 +1,6 @@
 """The Scenarios page, driven through the real Streamlit page script (FYP-32)."""
 
+import html
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -258,6 +259,52 @@ def test_an_index_without_a_polynomial_is_listed_with_the_reason():
     app = _run(_shock(_page(), VIX, "25"))
 
     assert "has no stored polynomial function" in _table(app)
+
+
+def test_a_user_function_saved_before_the_caps_is_evaluated_or_its_row_says_why():
+    # Both were set active before the caps on a new function. The degree-6 one
+    # still evaluates; the one with a plain number too large for a float, which
+    # is refused before it is worked out, says why instead.
+    degree_6 = active_model.ActiveFunction(
+        Origin.USER_SUPPLIED,
+        ModelDescription(
+            name="UserPolynomial",
+            terms=(f"{VIX} ** 3 * {RATE} ** 3",),
+            coefficients=(0.5,),
+            intercept=0.002,
+        ),
+        {VIX: Transform.LEVEL, RATE: Transform.DIFFERENCE},
+    )
+    too_large = replace(
+        BOND_FN, description=replace(BOND_FN.description, terms=(f"{RATE} * 10 ** 400",))
+    )
+    _set_active(EQUITY, "Polynomial (user-supplied)", function=degree_6)
+    _set_active(BOND, "Polynomial (user-supplied)", function=too_large)
+    app = _run(_shock(_page(), VIX, "25"))
+
+    table = html.unescape(_table(app))  # the page escapes each cell's apostrophes
+    assert table.count("can't be") == 1
+    assert "can't be evaluated: a number in the function is too large to work with" in table
+
+
+def test_a_user_function_dividing_by_a_rate_that_didnt_move_says_why_instead_of_a_forecast():
+    # The rate is unchanged on the last day, so its change, which the function
+    # divides by, is zero on the inputs every forecast here reads.
+    committed = _committed()
+    committed.loc[N_DAYS - 1, RATE] = committed.loc[N_DAYS - 2, RATE]
+    divides = replace(
+        BOND_FN,
+        description=replace(BOND_FN.description, terms=(f"{VIX} / {RATE}",)),
+        transforms={VIX: Transform.LEVEL, RATE: Transform.DIFFERENCE},
+    )
+    fingerprint = str(dataset_fingerprint(committed))
+    _set_active(EQUITY, function=LINEAR, fingerprint=fingerprint)
+    _set_active(BOND, "Polynomial (user-supplied)", function=divides, fingerprint=fingerprint)
+    app = _run(_shock(_page(committed), VIX, "25"))
+
+    table = html.unescape(_table(app))
+    assert table.count("can't be") == 1
+    assert "can't be worked out on these inputs: its value is infinite or undefined" in table
 
 
 def test_a_shock_outside_the_training_range_is_flagged_as_an_extrapolation():

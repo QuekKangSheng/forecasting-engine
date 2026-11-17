@@ -65,6 +65,7 @@ from forecasting_engine.models.polynomial import (
     MAX_DEGREE,
     DerivedPolynomial,
     PolynomialConfigError,
+    UserPolynomial,
     placeholders,
     run_derived_polynomial,
     run_user_polynomial,
@@ -423,6 +424,7 @@ def _user_function(
     if not formula:
         return "", ()
     try:
+        UserPolynomial(formula)  # every check a new function must pass to be queued
         names = placeholders(formula)
     except PolynomialConfigError as exc:
         if show:

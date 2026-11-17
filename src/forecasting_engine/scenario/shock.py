@@ -30,7 +30,11 @@ import pandas as pd
 
 from forecasting_engine.ingest.align import Transform, align_and_lag
 from forecasting_engine.models.base import ModelDescription
-from forecasting_engine.models.polynomial import evaluate_formula, placeholders
+from forecasting_engine.models.polynomial import (
+    PolynomialConfigError,
+    evaluate_formula,
+    placeholders,
+)
 from forecasting_engine.reporting.polynomial_function import Origin, from_description
 from forecasting_engine.store.active_model import ActiveFunction
 from forecasting_engine.validation.splitters import PurgedWalkForward
@@ -219,7 +223,7 @@ def evaluate(function: ActiveFunction, inputs: Mapping[str, float]) -> float:
     intercept = 0.0 if description.intercept is None else float(description.intercept)
     if function.origin is Origin.USER_SUPPLIED:
         (slope,) = description.coefficients
-        return intercept + slope * evaluate_formula(description.terms[0], inputs)
+        return intercept + slope * _user_shape(description.terms[0], inputs)
     bounds = description.input_bounds or {}
     centre = description.standardisation or {}
     z = {}
@@ -244,6 +248,27 @@ def evaluate(function: ActiveFunction, inputs: Mapping[str, float]) -> float:
             product *= z[column] ** power
         total += product
     return total
+
+
+def _user_shape(formula: str, inputs: Mapping[str, float]) -> float:
+    """A user function's own value on ``inputs``, before its fitted scale, or why
+    it has none. A run refuses a day like this, so it is refused here too rather
+    than shown as an infinite or blank forecast."""
+    try:
+        shape = evaluate_formula(formula, inputs)
+    except PolynomialConfigError as exc:  # set active before a rule it now breaks
+        raise ScenarioError(
+            f"The active function can't be evaluated: {exc} Change it on the Models "
+            "page, run it and set it active again."
+        ) from exc
+    if math.isnan(shape):
+        raise ScenarioError(
+            "The active function can't be worked out on these inputs: its value is "
+            "infinite or undefined. Look for a division by a signal that is zero here, "
+            "such as a rate's change on a day the rate didn't move, or a signal raised "
+            "to a power too large for its value here."
+        )
+    return shape
 
 
 def training_ranges(

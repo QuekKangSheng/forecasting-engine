@@ -1099,6 +1099,65 @@ def test_a_broken_function_fails_its_own_row_but_the_rest_still_run(stub_ml):
     assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
 
 
+@pytest.mark.parametrize(
+    ("formula", "refusal"),
+    [
+        ("x ** 6", "an exponent must be a whole number from 0 to 5"),
+        ("x ** 3 * y ** 3", "the function's degree is 6, above the highest allowed, 5"),
+        (" + ".join(["x"] * 1200), "the function has 2399 numbers, signals and operations"),
+    ],
+    ids=["exponent", "degree", "too-many-terms"],
+)
+def test_a_function_past_a_cap_is_refused_under_the_box_and_never_runs(stub_ml, formula, refusal):
+    app = _run_equity(_untick(_page(), "Fama-French 5"), formula=formula)
+
+    assert not app.exception
+    assert f"{USER_POLY}: {refusal}" in " ".join(e.value for e in app.error)
+    assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
+
+
+def test_dividing_by_a_signal_on_days_it_is_zero_fails_its_row_and_says_why(stub_ml):
+    spread = "LUACOAS_Index_PX_LAST"
+    committed = _committed()
+    # Five days without a move: the spread's daily change, which the model reads,
+    # is exactly zero on them.
+    committed.loc[60:64, spread] = committed.loc[59, spread]
+    app = _run_equity(
+        _untick(_page(committed=committed), "Fama-French 5"),
+        formula=f"VIX_Index_PX_LAST / {spread}",
+    )
+
+    errors = " ".join(e.value for e in app.error)
+    assert f"{USER_POLY}: the function divides by {spread}, which is zero on 5 days" in errors
+    assert set(_stored_runs(app)) == {NAIVE, "Machine Learning"}
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "VIX_Index_PX_LAST ** 6",
+        "VIX_Index_PX_LAST ** 3 * LUACOAS_Index_PX_LAST ** 3",
+        " + ".join(["VIX_Index_PX_LAST", "LUACOAS_Index_PX_LAST"] * 150),
+    ],
+    ids=["exponent-6", "degree-6", "300-terms"],
+)
+def test_a_saved_user_function_past_a_cap_is_still_shown_and_can_be_set_active(formula):
+    # Saved before the caps a new function must meet: it has run already, so it
+    # is shown as entered and can still be set active.
+    description = ModelDescription("UserPolynomial", (formula,), (0.5,), 0.01)
+    fn = from_description(description, origin=Origin.USER_SUPPLIED, target=SPX, horizon=5)
+    app = _page({EQUITY: {USER_POLY: model_runs.ModelRun(_result(), description, function=fn)}})
+
+    assert not app.exception
+    (equation,) = [e.value for e in app.latex]
+    assert r"0.01000 + 0.5000 \cdot (\text{VIX\_Index\_PX\_LAST" in equation
+
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert not app.exception
+    assert "VIX_Index_PX_LAST" in active_model.get_active_function(EQUITY).inputs
+
+
 def test_every_fit_a_run_makes_is_recorded_in_the_run_history_failures_included(
     monkeypatch, stub_ml
 ):

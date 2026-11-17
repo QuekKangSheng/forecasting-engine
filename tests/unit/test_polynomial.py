@@ -1,4 +1,8 @@
+import os
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -9,9 +13,12 @@ from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models import polynomial
 from forecasting_engine.models.polynomial import (
     MAX_DEGREE,
+    MAX_FORMULA_LENGTH,
+    MAX_FORMULA_NODES,
     DerivedPolynomial,
     PolynomialConfigError,
     UserPolynomial,
+    evaluate_formula,
     placeholders,
     run_derived_polynomial,
 )
@@ -108,6 +115,28 @@ def test_placeholders_stand_for_the_columns_they_are_bound_to():
     )
 
 
+@pytest.mark.parametrize(
+    "bindings",
+    [{"x": "vix", "vix": "spread"}, {"vix": "spread", "x": "vix"}],
+    ids=["placeholder-first", "column-named-placeholder-first"],
+)
+def test_each_placeholder_reads_its_own_column_whatever_order_it_is_bound_in(bindings):
+    # The name vix is itself a placeholder here, standing for spread; x stands for
+    # the vix column, and must read it however the bindings are ordered.
+    f = np.random.default_rng(8).normal(size=40)
+    panel = _shape_panel(f, 0.01 + 0.5 * f)
+    bound = UserPolynomial("x + 2 * vix", bindings)
+    direct = UserPolynomial("vix + 2 * spread")
+
+    for model in (bound, direct):
+        model.fit(panel, panel.frame.index)
+
+    assert bound.resolved_formula == "vix + 2 * spread"
+    pd.testing.assert_series_equal(
+        bound.predict(panel, panel.frame.index), direct.predict(panel, panel.frame.index)
+    )
+
+
 def test_a_placeholder_bound_to_an_unknown_column_is_refused():
     panel = _shape_panel(np.arange(10.0), np.arange(10.0))
     with pytest.raises(PolynomialConfigError, match="not a signal column"):
@@ -139,6 +168,298 @@ def test_user_polynomial_rejects_function_calls_at_construction():
 def test_user_polynomial_rejects_non_integer_exponent_at_construction():
     with pytest.raises(PolynomialConfigError):
         UserPolynomial("vix ** 0.5")
+
+
+@pytest.mark.parametrize("formula", ["vix ** 6", "vix ** 1e9", "vix * 7 ** 999999999", "vix ** -1"])
+def test_an_exponent_must_be_a_whole_number_up_to_the_degree_cap(formula):
+    with pytest.raises(PolynomialConfigError, match=f"a whole number from 0 to {MAX_DEGREE}"):
+        UserPolynomial(formula)
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "x ** 3 * y ** 3",
+        "x * y * x * y * x * y",
+        "(x ** 2) ** 3",
+        "(x + y ** 2) ** 3",
+        "x ** 5 / y",
+    ],
+)
+def test_a_function_above_the_degree_cap_is_refused_at_construction(formula):
+    refusal = f"degree is 6, above the highest allowed, {MAX_DEGREE}"
+    with pytest.raises(PolynomialConfigError, match=refusal):
+        UserPolynomial(formula)
+
+
+@pytest.mark.parametrize(
+    "formula", ["x ** 5", "x ** 3 * y ** 2", "(x + y) ** 5", "x ** 4 / y", "2 ** 5 * x ** 5 - 1"]
+)
+def test_a_function_at_the_degree_cap_is_accepted(formula):
+    UserPolynomial(formula)
+
+
+@pytest.mark.parametrize(
+    "formula",
+    [
+        "vix + 1e400",
+        "vix * (1e300 * 1e300)",
+        f"vix + {'9' * 400}",
+        f"vix + {'9' * 5000}",
+        f"vix + 0x{'f' * 9000}",
+        "vix * (((7 ** 5) ** 5) ** 5) ** 5",
+    ],
+    ids=[
+        "infinite-literal",
+        "infinite-product",
+        "400-digit-literal",
+        "5000-digit-literal",
+        "9000-digit-hex-literal",
+        "power-of-powers",
+    ],
+)
+def test_a_number_too_large_to_use_is_refused_at_construction(formula):
+    # Python itself won't read a 5,000-digit whole number, and its own refusal
+    # talks about its settings; the user is told the number is too large.
+    with pytest.raises(PolynomialConfigError, match="too large to work with; use a smaller"):
+        UserPolynomial(formula)
+
+
+@pytest.mark.parametrize("formula", ["vix / 0", "vix / (2 - 2)", "1 / 0.0 + vix"])
+def test_dividing_by_zero_is_refused_at_construction(formula):
+    with pytest.raises(PolynomialConfigError, match="divides by zero"):
+        UserPolynomial(formula)
+
+
+def test_a_function_with_too_many_terms_is_refused_at_construction():
+    # 1,200 terms once nested past Python's recursion limit and broke the page.
+    with pytest.raises(PolynomialConfigError, match=f"the most allowed is {MAX_FORMULA_NODES}"):
+        UserPolynomial(" + ".join(["vix"] * 1200))
+
+
+@pytest.mark.parametrize(
+    "formula", ["-" * 3000 + "vix", "-" * 9000 + "vix"], ids=["3000-deep", "9000-deep"]
+)
+def test_a_deeply_nested_function_is_refused_rather_than_crashing(formula):
+    with pytest.raises(PolynomialConfigError):
+        UserPolynomial(formula)
+
+
+def test_a_function_longer_than_the_length_cap_is_refused_at_construction():
+    with pytest.raises(PolynomialConfigError, match="characters long"):
+        UserPolynomial("vix" + " " * MAX_FORMULA_LENGTH)
+
+
+#: Each of these once held the only model worker until the app was restarted:
+#: the first built a number with hundreds of millions of digits, the second made
+#: the shown equation multiply vix out a billion times, the third is a power of a
+#: power of ... of 7.
+_USED_TO_HANG = (
+    "vix * 7 ** 999999999",
+    "vix ** 1000000000",
+    "(" * 20 + "7" + " ** 5)" * 20 + " * vix",
+)
+
+_REFUSE_EACH = """
+import math
+import sys
+from forecasting_engine.models.base import ModelDescription
+from forecasting_engine.models.polynomial import (
+    PolynomialConfigError, UserPolynomial, evaluate_formula,
+)
+from forecasting_engine.reporting.polynomial_function import Origin, from_description, to_latex
+
+def refused(check, formula):
+    try:
+        check(formula)
+    except PolynomialConfigError:
+        return True
+    return False
+
+def without_a_value(formula):
+    # Refused, or NaN, as a power of vix beyond a float is: a scenario refuses both.
+    try:
+        return math.isnan(evaluate_formula(formula, {"vix": 1.5}))
+    except PolynomialConfigError:
+        return True
+
+for formula in sys.argv[1:]:
+    if not refused(UserPolynomial, formula):
+        print("accepted as a new function:", formula)
+    if not without_a_value(formula):
+        print("evaluated when read back:", formula)
+    saved = ModelDescription("UserPolynomial", (formula,), (1.0,), 0.0)
+    to_latex(from_description(saved, origin=Origin.USER_SUPPLIED, target="", horizon=1), str)
+"""
+
+
+def _in_a_child(script: str, *args: str) -> str:
+    """What ``script`` prints, run on ``args`` in a child process with a deadline,
+    so a regression fails the test instead of hanging the suite: a big-number
+    power can't be interrupted in-process."""
+    src = Path(polynomial.__file__).resolve().parents[2]
+    path = os.pathsep.join([str(src), os.environ.get("PYTHONPATH", "")])
+    env = {**os.environ, "PYTHONPATH": path}
+    done = subprocess.run(
+        [sys.executable, "-c", script, *args],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert done.returncode == 0, done.stderr
+    return done.stdout
+
+
+def test_functions_that_used_to_hang_are_refused_quickly_whether_new_or_saved():
+    # A saved one is refused when evaluated, or has no value there, as 1.5 to the
+    # power of a billion is beyond a float; it is shown as entered, never worked out.
+    assert _in_a_child(_REFUSE_EACH, *_USED_TO_HANG) == ""
+
+
+_EVALUATE_SAVED = """
+import sys
+from forecasting_engine.models.polynomial import PolynomialConfigError, evaluate_formula
+
+for formula in sys.argv[1:]:
+    try:
+        print("evaluated:", evaluate_formula(formula, {"x": 3}))
+    except PolynomialConfigError as exc:
+        print("refused:", exc)
+"""
+
+
+def test_a_saved_function_raising_a_plain_number_past_a_float_is_refused_quickly_in_plain_words():
+    # Read back, a signal may be raised to any whole power: its value is read as a
+    # float, even a whole number such as this 3, so the power is quick and, past a
+    # float, has no value. A plain number's power is worked out exactly, digit by
+    # digit, so 10 ** 1000000000 would take hours: it is refused from its size first.
+    refusal = "refused: a number in the function is too large to work with; use a smaller one."
+    outcomes = {
+        "10 ** 1000000000 * x": refusal,
+        "x * 2 ** 100000": refusal,
+        "x + 1.5 ** 3000": refusal,
+        "x ** 1000000000": "evaluated: nan",
+    }
+
+    assert _in_a_child(_EVALUATE_SAVED, *outcomes).splitlines() == list(outcomes.values())
+
+
+@pytest.mark.parametrize(
+    ("formula", "value"),
+    [("x ** 3 * y ** 3", 27.0), (" + ".join(["x", "y"] * 150), 525.0)],
+    ids=["degree-6", "300-terms"],
+)
+def test_a_saved_function_past_the_caps_is_still_read_back(formula, value):
+    # A function saved before the caps has run already: it is refused as a new
+    # one, but reading it back still lists its names and evaluates it.
+    with pytest.raises(PolynomialConfigError):
+        UserPolynomial(formula)
+
+    assert placeholders(formula) == ("x", "y")
+    assert evaluate_formula(formula, {"x": 1.5, "y": 2.0}) == value
+
+
+@pytest.mark.parametrize(
+    ("formula", "values", "value"),
+    [
+        ("x ** 6 + y", {"x": 1.5, "y": 2.0}, 1.5**6 + 2.0),
+        ("x ** 7 * y", {"x": 1.5, "y": 2.0}, 1.5**7 * 2.0),
+        ("x ** 1000", {"x": 1.0001}, 1.0001**1000),
+    ],
+    ids=["power-6", "power-7", "power-1000"],
+)
+def test_a_saved_function_raising_a_signal_past_power_5_is_evaluated_though_a_new_one_is_refused(
+    formula, values, value
+):
+    # Saved before the cap on a new function's exponents. Raising a signal's value
+    # to a whole power is quick whatever the power, so it is read back as it ran.
+    with pytest.raises(PolynomialConfigError, match=f"a whole number from 0 to {MAX_DEGREE}"):
+        UserPolynomial(formula)
+
+    assert placeholders(formula) == tuple(values)
+    assert evaluate_formula(formula, values) == pytest.approx(value)
+
+
+@pytest.mark.parametrize("formula", ["x ** -1", "x ** 0.5", "x ** 1e400", "x ** y"])
+def test_reading_a_saved_function_back_still_refuses_a_negative_or_fractional_exponent(formula):
+    with pytest.raises(PolynomialConfigError, match="a whole number of 0 or more"):
+        evaluate_formula(formula, {"x": 1.5, "y": 2.0})
+
+
+def test_reading_back_a_function_nested_too_deeply_to_evaluate_is_refused_not_crashed():
+    # No size cap applies to a saved function, so it is the walk itself that can
+    # run out of depth.
+    with pytest.raises(PolynomialConfigError, match="nested too deeply"):
+        evaluate_formula(" + ".join(["x"] * 1200), {"x": 1.0})
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        pd.Series({"x": 1.5, "y": 0.0}),
+        {"x": 1.5, "y": 0.0},
+        pd.Series({"x": 1e70, "y": 1.0}),
+        {"x": 1e70, "y": 1.0},
+    ],
+    ids=["zero-divisor-in-a-row", "zero-divisor", "too-large-in-a-row", "too-large"],
+)
+def test_a_saved_function_is_nan_on_values_it_cant_be_worked_out_on(values):
+    # A panel's row holds numpy numbers, which give inf rather than raising as
+    # plain floats do; either way there is no value to forecast with.
+    assert np.isnan(evaluate_formula("x ** 5 / y", values))
+
+
+def _dividing_panel(x, y) -> FeaturePanel:
+    idx = pd.date_range("2024-01-01", periods=len(x), freq="D")
+    target = np.arange(len(x), dtype=float)
+    frame = pd.DataFrame({"vix": x, "spread": y, "target": target}, index=idx)
+    return FeaturePanel(frame=frame, signals=("vix", "spread"), targets=("target",), lag_days=1)
+
+
+def test_dividing_by_a_signal_on_days_it_is_zero_stops_the_fit_and_names_it():
+    spread = np.arange(1.0, 41.0)
+    spread[[0, 10, 20]] = 0.0
+    panel = _dividing_panel(np.random.default_rng(5).normal(size=40), spread)
+    model = UserPolynomial("x / y", {"x": "vix", "y": "spread"})
+
+    with pytest.raises(
+        PolynomialConfigError,
+        match=r"divides by y \(spread\), which is zero on 3 days \(the first is 01 Jan 2024\)",
+    ):
+        model.fit(panel, panel.frame.index)
+
+
+def test_a_zero_divisor_only_on_forecast_days_still_stops_the_run():
+    # 0 / 0 is undefined rather than infinite, and is refused the same way.
+    spread = np.arange(1.0, 41.0)
+    spread[30] = 0.0
+    vix = np.random.default_rng(6).normal(size=40)
+    vix[30] = 0.0
+    panel = _dividing_panel(vix, spread)
+    model = UserPolynomial("vix / spread")
+    model.fit(panel, panel.frame.index[:30])
+
+    with pytest.raises(PolynomialConfigError, match=r"divides by spread, which is zero on 1 day "):
+        model.predict(panel, panel.frame.index[30:])
+
+
+def test_a_function_infinite_for_another_reason_still_stops_the_run():
+    panel = _dividing_panel(np.full(20, 1e200), np.arange(1.0, 21.0))
+
+    with pytest.raises(PolynomialConfigError, match="infinite or undefined on 20 days"):
+        UserPolynomial("vix * vix * spread").fit(panel, panel.frame.index)
+
+
+def test_a_missing_input_still_just_leaves_its_row_out():
+    spread = np.arange(1.0, 41.0)
+    spread[5] = np.nan
+    panel = _dividing_panel(np.random.default_rng(7).normal(size=40), spread)
+    model = UserPolynomial("vix / spread")
+
+    model.fit(panel, panel.frame.index)
+
+    assert np.isnan(model.predict(panel, panel.frame.index).iloc[5])
 
 
 def test_user_polynomial_rejects_unknown_column_at_fit():

@@ -279,8 +279,16 @@ def to_latex(fn: PolynomialFunction, label: Callable[[str], str]) -> str:
 
 def shape_latex(fn: PolynomialFunction, label: Callable[[str], str]) -> str:
     """A user function as fitted: ``a + b · (formula)``, with its own formula
-    written back as entered. Without a fitted scale, the formula alone."""
-    body = _latex_node(_parse(fn.shape or fn.formula).body, label)
+    written back as entered. Without a fitted scale, the formula alone.
+
+    A saved function that the caps on a new one refuse is written out as its own
+    text instead: the caps are also what bound how deeply this typesetting
+    recurses, the way ``_expand_formula`` shows such a function as entered."""
+    formula = fn.shape or fn.formula
+    try:
+        body = _latex_node(_parse(formula).body, label)
+    except PolynomialConfigError:
+        body = rf"\text{{{_escape(formula)}}}"
     if fn.scale == 1.0 and fn.offset == 0.0:
         return r"\hat{y} = " + body
     sign = "-" if fn.scale < 0 else "+"

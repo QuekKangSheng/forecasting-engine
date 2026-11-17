@@ -41,6 +41,8 @@ DOCUMENTED = {
     ("forecasting_engine.ingest.fama_french", "MAX_AGE"),
     ("forecasting_engine.ingest.fama_french", "_TIMEOUT_SECONDS"),
     ("forecasting_engine.models.polynomial", "MAX_DEGREE"),
+    ("forecasting_engine.models.polynomial", "MAX_FORMULA_NODES"),
+    ("forecasting_engine.models.polynomial", "MAX_FORMULA_LENGTH"),
     ("forecasting_engine.models.polynomial", "CANDIDATE_DEGREES"),
     ("forecasting_engine.models.polynomial", "SHRINKAGE"),
     ("forecasting_engine.models.shrinkage", "CLIP_SD"),
