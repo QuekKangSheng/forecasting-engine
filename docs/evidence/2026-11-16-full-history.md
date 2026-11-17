@@ -35,7 +35,7 @@ Section 2b, the backtests with the trust gate ignored, is a diagnostic. The prod
 
 50/50 earns a net Sharpe of 0.88.
 
-- **The forecasts add no value at any horizon, and at h = 5 they cost significantly at levels 1 and 2** (t −3.10 and −2.84). They tilt the portfolio at 184 rebalances there, and the extra trading roughly doubles turnover (274–324% a year, against 145–150% for the derived pair). Costs stay small, at most 0.13% a year. The loss comes from the tilts themselves, not from costs.
+- **The forecasts add no value at any horizon, and at h = 5 they cost significantly at levels 1 and 2** (t −3.10 and −2.84). They tilt the portfolio at 184 rebalances there, and the extra trading roughly doubles turnover (274–324% a year, against 130–150% for the derived pair). Costs stay small, at most 0.13% a year. The loss comes from the tilts themselves, not from costs.
 - **At h = 20 the gate is open at 92 of 226 rebalances, against 3 for the derived pair,** and every level 1–4 does worse than with no forecasts. None of those differences is significant.
 - **At h = 1 and 10 the gate never opens, so both pairs give identical portfolios.** At level 5 the forecasts are ignored by design.
 - **Against 50/50, the levels' t mostly reflects their equity weight,** as for the derived pair.
@@ -58,11 +58,11 @@ With β̂ used whatever its t, from 252 pairs on, the forecasts tilt at most reb
 | h | Sprint 4 pair: t vs no forecasts, levels 1–4 | derived for both | costs a year, levels 1–4 |
 |---|---|---|---|
 | 1 | **−4.37**, **−3.83**, **−3.00**, −1.62 | **−5.00**, **−4.50**, **−3.55**, −1.98 | 1.9–3.0% |
-| 5 | **−3.54**, **−2.64**, −1.19, +0.04 | **−2.00**, −1.04, +0.06, +0.46 | 0.19–0.50% |
+| 5 | **−3.54**, **−2.64**, −1.19, +0.04 | −2.00, −1.04, +0.06, +0.46 | 0.19–0.50% |
 | 10 | **−2.37**, −1.61, −1.00, −0.67 | −0.20, −1.01, −1.01, −1.00 | 0.01–0.10% |
 | 20 | **−3.10**, −1.86, −0.01, +1.56 | **−2.58**, −1.56, −0.12, +0.76 | 0.10–0.16% |
 
-Bold marks t beyond ±2. No level at any horizon has t above +2. The best is the Sprint 4 pair at level 4, h = 20, with t +1.56.
+Bold marks t beyond ±2. The derived pair's −2.00 at h = 5, level 1 is −1.998 unrounded, so it is not bold. None did significantly better without the gate (t above 2); the best is the Sprint 4 pair at level 4, h = 20, with t +1.56.
 
 - **At h = 1** the ungated tilts trade 48 to 76 times the portfolio a year, which costs 2–3% a year.
 - **At h = 20** costs are small (0.10–0.16%) and the result is still negative at levels 1–2.

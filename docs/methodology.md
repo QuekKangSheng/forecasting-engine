@@ -966,9 +966,10 @@ signals into the weight schedule step 14 backtests.
    times `w*_L − w_mv`, wider than any move, and the portfolio all but froze
    (turnover 0–3% a year). At h = 5 it let a riskier level hold less equity than
    a safer one at 22 rebalances; with no band there are none at any horizon.
-   Without it, costs are at most 0.06 points a year at any level and horizon
-   (at h = 1, 0.026–0.041% on 66–103% turnover; at h = 5, up to 0.060%; at h = 20,
-   up to 0.015%), so the band saved at most that
+   Without it, with the derived polynomial for both indices, costs are at most
+   0.06 points a year at any level and horizon (at h = 1, 0.026–0.041% on 66–103%
+   turnover; at h = 5, up to 0.060%; at h = 20, up to 0.015%); with the Sprint 4
+   pair (§20) they are at most 0.13 points. So the band saved at most that
    ([evidence](evidence/2026-11-16-optimiser-fixes.md), which reruns the band beside the
    new rule as a sensitivity). The removal was planned before these figures were
    run; Toby confirmed it after seeing them, and nothing was changed because of
@@ -1029,7 +1030,8 @@ in it (findings 2, 3, 5 and 6 of the 12 Nov optimiser audit):
   None is significant, and at h = 5 the sign is against the forecasts. With the
   team's Sprint 4 pair (machine learning for bond) the forecasts do no better, and
   at h = 5 they cost significantly at levels 1 and 2 (§20). Costs are
-  not the reason: they are at most 0.06 points a year. The optimiser is sound as a
+  not the reason: they are at most 0.06 points a year with the derived pair and
+  0.13 points with the Sprint 4 pair. The optimiser is sound as a
   risk-level allocator; on this data the forecasts it tilts on have not earned
   their place.
 - **The trust gate is checked again at every rebalance**, on an expanding sample,
@@ -1250,7 +1252,7 @@ Sprint 4 pair was made the main result after both had been run
 ([evidence](evidence/2026-11-16-full-history.md) says so). The period is
 6 Oct 2008 to Nov 2026, net of costs.
 
-The levels' net Sharpe runs from about 0.75–0.80 at level 1 to 1.03–1.05 at
+The levels' net Sharpe runs from 0.74–0.80 at level 1 to 1.03–1.05 at
 level 5, against 0.88 for 50/50, and their t against 50/50 mostly reflects equity
 weight. Neither pair's forecasts add value at any horizon (§17, known
 limitations):
@@ -1264,8 +1266,8 @@ limitations):
 
 At h = 5 the Sprint 4 pair's forecasts cost significantly at levels 1 and 2.
 
-With the trust gate ignored (a diagnostic only: `β̂` used whatever its t), no
-level at any horizon has t above +2 against no forecasts. Many are significantly
+With the trust gate ignored (a diagnostic only: `β̂` used whatever its t), none
+did significantly better than without forecasts (t above 2); the best is +1.56. Many are significantly
 negative, down to −5.00 at h = 1, where the tilts cost 2–3% a year. The gate is
 not hiding forecast value.
 
