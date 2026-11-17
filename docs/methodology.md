@@ -960,9 +960,10 @@ signals into the weight schedule step 14 backtests.
    2009 and 6.38% at end-May 2020 ([evidence](evidence/2026-11-16-optimiser-fixes.md)).
 
    **Limitations.**
-   - The source's bond leg is long-term government bonds; ours (LBUSTRUU) covers
-     every maturity and earns less, so the prior probably understates our premium
-     by about 0.4 points a year. That is stated, not adjusted.
+   - The source's bond leg is long-term government bonds; ours is the US Aggregate
+     (LBUSTRUU), which is shorter in duration and includes mortgage and corporate
+     bonds. The two premiums differ for both reasons, in opposite directions; we
+     state the mismatch and don't adjust for it.
    - On data from 2006 the prior still carries about 60% of the weight in 2026, so
      `π̄` adapts slowly if the true premium has changed.
    - An upload whose first rebalance falls before May 2005
