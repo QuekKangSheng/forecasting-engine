@@ -2,6 +2,7 @@
 
 import hashlib
 import sys
+import zipfile
 from datetime import date
 from io import BytesIO
 from pathlib import Path
@@ -11,7 +12,10 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
+import bloomberg_extraction_panel
+from forecasting_engine.extraction import bloomberg_csv
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest import upload as upload_rules
 from forecasting_engine.ingest.upload import MAX_UPLOAD_BYTES
 from forecasting_engine.store import lineage
 from forecasting_engine.store.uploads import recent_uploads
@@ -80,6 +84,16 @@ def upload_targets(page, files):
 
 def texts(elements):
     return " ".join(e.value for e in elements)
+
+
+def leave_and_come_back(page, monkeypatch):
+    """Open another page, then this one again. Streamlit drops the widgets of a
+    page it does not draw, so both uploaders come back empty, though the user
+    removed nothing from either."""
+    with monkeypatch.context() as away:
+        away.setattr(bloomberg_extraction_panel, "render", lambda: None)
+        page.run()
+    return page.run()
 
 
 def test_nothing_is_shown_before_a_file_is_uploaded(page):
@@ -157,6 +171,105 @@ def test_a_bad_type_file_among_good_files_is_excluded_while_good_ones_merge(page
     assert "Merged 1 file(s) into 2 rows, 1 data columns" in texts(result.success)
 
 
+def test_a_file_whose_date_order_cannot_be_settled_is_reported_not_guessed(page):
+    # No Period, Start Date or End Date line, and every date reads either way.
+    unsettled = b"Security,AAA Index\n\nDate,PX_LAST\n1/2/2020,1.0\n1/3/2020,2.0\n"
+
+    result = upload(page, [("aaa.csv", unsettled, "text/csv")])
+
+    assert not result.exception
+    assert "month first or day first" in texts(result.error)
+    assert not result.success
+
+
+def test_a_day_first_monthly_file_loads_on_the_dates_it_means(page):
+    # 01/01/2024 .. 01/12/2024, the first of each month written day first:
+    # every date also reads month first, as 1 to 12 January.
+    rows = "".join(f"01/{month:02d}/2024,{2.0 + month / 10}\n" for month in range(1, 13))
+    cpi = ("Security,CPI Index\nPeriod,M\n\nDate,PX_LAST\n" + rows).encode()
+
+    result = upload(page, [("cpi.csv", cpi, "text/csv")])
+
+    assert not result.error
+    assert "Covering 01/01/2024 to 01/12/2024" in texts(result.caption)
+
+
+def test_excel_serial_dates_in_a_csv_are_reported_with_how_to_fix_them(page):
+    serial = b"Security,AAA Index\nPeriod,D\n\nDate,PX_LAST\n46295,1.0\n46294,2.0\n"
+
+    result = upload(page, [("serial.csv", serial, "text/csv"), ("vix.csv", VIX, "text/csv")])
+
+    assert "format the Date column as a date" in texts(result.error)
+    assert "Merged 1 file(s)" in texts(result.success)
+
+
+def test_the_merged_download_uploaded_again_is_refused_not_read_as_one_security(page):
+    result = upload(page, [("spx.csv", SPX, "text/csv"), ("vix.csv", VIX, "text/csv")])
+    download = (
+        bloomberg_csv.with_display_dates(result.session_state["signal_merged"])
+        .to_csv(index=False)
+        .encode()
+    )
+
+    again = AppTest.from_file(str(PAGE), default_timeout=30).run()  # a new window
+    again = upload(again, [("bloomberg_merged.csv", download, "text/csv")])
+
+    assert not again.exception
+    assert "no Security line" in texts(again.error)
+    assert "signal_merged" not in again.session_state
+
+
+def test_an_export_resaved_with_thousands_separators_loads_as_numbers(page):
+    spx = export("SPX Index", ['1/2/2020,"4,512.30"', '1/3/2020,"4,498.10"'])
+
+    result = upload(page, [("spx.csv", spx, "text/csv")])
+
+    assert not result.error
+    assert result.session_state["signal_merged"]["SPX_Index_PX_LAST"].tolist() == [4512.3, 4498.1]
+
+
+def test_a_file_failing_the_schema_on_every_row_is_reported_in_one_short_message(page):
+    dates = pd.bdate_range("2020-01-01", periods=2_000)
+    rows = [f"{d.month}/{d.day}/{d.year},restricted" for d in dates]
+
+    result = upload(page, [("bad.csv", export("BAD Index", rows), "text/csv")])
+
+    (message,) = [e.value for e in result.error]
+    assert "BAD_Index_PX_LAST" in message
+    assert "2,000 values in all" in message
+    assert len(message) < 300
+
+
+def test_a_header_only_export_is_reported_as_an_error_not_merged_and_validated(page):
+    header_only = b"Security,SPX Index\nPeriod,D\n\nDate,PX_LAST\n"
+
+    result = upload(page, [("hdr.csv", header_only, "text/csv")])
+
+    assert "no rows" in texts(result.error)
+    assert "Merged and validated" not in texts(result.success)
+
+
+def test_a_malformed_workbook_is_reported_as_an_error_not_a_crash(page):
+    archive = BytesIO()
+    with zipfile.ZipFile(archive, "w") as target:
+        target.writestr("a.csv", "Date,PX_LAST\n1/2/2024,1\n")
+
+    result = upload(page, [("renamed.xlsx", archive.getvalue(), _XLSX_MIME)])
+
+    assert not result.exception
+    assert "not a readable .xlsx" in texts(result.error)
+
+
+def test_a_file_dated_in_year_zero_is_reported_as_an_error_not_a_crash(page):
+    year_zero = b"Security,AAA Index\n\nDate,PX_LAST\n0000-01-13,1.0\n0000-01-14,2.0\n"
+
+    result = upload(page, [("zero.csv", year_zero, "text/csv"), ("vix.csv", VIX, "text/csv")])
+
+    assert not result.exception
+    assert "zero.csv" in texts(result.error)
+    assert "Merged 1 file(s)" in texts(result.success)
+
+
 def test_the_coverage_metrics_are_shown_for_a_clean_file(page):
     result = upload(page, [("spx.csv", SPX, "text/csv")])
 
@@ -168,16 +281,64 @@ def test_the_coverage_metrics_are_shown_for_a_clean_file(page):
     assert "02/01/2020 to 03/01/2020" in texts(result.caption)
 
 
-def test_duplicate_dates_are_reported_and_named(page):
-    # Same value both rows, so this exercises duplicate-date detection only —
-    # not also the day-over-day move check.
-    dup = export("A Index", ["1/2/2020,1.0", "1/2/2020,1.0"])
+def test_a_row_repeating_a_date_exactly_is_dropped_and_the_user_told(page):
+    # The same date with the same value is one observation written twice.
+    dup = export("A Index", ["1/2/2020,1.0", "1/2/2020,1.0", "1/3/2020,2.0"])
     result = upload(page, [("a.csv", dup, "text/csv")])
 
+    assert not result.error
+    assert "1 row" in texts(result.info)
+    assert "dropped" in texts(result.info)
     labels = {m.label: m.value for m in result.metric}
-    assert labels["Flagged"] == "1"
-    assert any("Duplicate dates" in e.label for e in result.expander)
-    assert "02/01/2020" in texts(result.markdown)
+    assert labels["Rows"] == "2"
+    assert labels["Flagged"] == "0"
+
+
+def _conflicting_a():
+    return export("A Index", ["1/2/2020,1.0", "1/2/2020,9.0", "1/3/2020,2.0"])
+
+
+def test_a_date_repeated_with_different_values_blocks_the_commit(page):
+    result = upload(page, [("a.csv", _conflicting_a(), "text/csv"), ("vix.csv", VIX, "text/csv")])
+
+    assert "A Index" in texts(result.error)
+    assert "02/01/2020" in texts(result.error)
+    commit_button = next(b for b in result.button if b.label == "Use Updated Data")
+    assert commit_button.disabled
+    result = commit_button.click().run()
+    assert "extraction_committed" not in result.session_state
+
+
+def test_a_blocked_commit_stays_blocked_after_leaving_the_page_and_coming_back(
+    page, monkeypatch
+):
+    upload(page, [("a.csv", _conflicting_a(), "text/csv"), ("vix.csv", VIX, "text/csv")])
+
+    back = leave_and_come_back(page, monkeypatch)
+
+    assert "A Index" in texts(back.error)
+    assert next(b for b in back.button if b.label == "Use Updated Data").disabled
+
+
+def test_removing_the_only_signal_file_that_blocked_the_commit_lifts_the_block(page):
+    upload_targets(page, [("spx.csv", SPX, "text/csv")])
+    upload(page, [("a.csv", _conflicting_a(), "text/csv")])
+
+    result = upload(page, [])
+
+    assert "A Index" not in texts(result.error)
+    assert not next(b for b in result.button if b.label == "Use Updated Data").disabled
+
+
+def test_removing_the_only_target_file_that_blocked_the_commit_lifts_the_block(page):
+    upload(page, [("vix.csv", VIX, "text/csv")])
+    conflicting = export("SPX Index", ["1/2/2020,100.0", "1/2/2020,109.0", "1/3/2020,101.0"])
+    upload_targets(page, [("spx.csv", conflicting, "text/csv")])
+
+    result = upload_targets(page, [])
+
+    assert "SPX Index" not in texts(result.error)
+    assert not next(b for b in result.button if b.label == "Use Updated Data").disabled
 
 
 def test_a_statistically_unusual_move_is_flagged_as_info_and_never_blocks_the_commit(page):
@@ -226,6 +387,38 @@ def test_an_oversized_export_is_rejected_before_merging(page):
 
     assert "25.0 MB" in texts(result.error)
     assert not result.success
+
+
+def _too_big_together(monkeypatch):
+    """Three files each under the size limit, and the limit lowered so that the
+    three side by side are not."""
+    dates = pd.bdate_range("2020-01-01", periods=40)
+    rows = [f"{d.month}/{d.day}/{d.year},{100 + i}" for i, d in enumerate(dates)]
+    files = [
+        (f"{ticker.lower()}.csv", export(f"{ticker} Index", rows), "text/csv")
+        for ticker in ("AAA", "BBB", "CCC")
+    ]
+    monkeypatch.setattr(upload_rules, "MAX_UPLOAD_BYTES", max(len(f[1]) for f in files) + 10)
+    return files
+
+
+def test_files_that_merge_into_more_than_the_size_limit_give_a_plain_message(page, monkeypatch):
+    result = upload(page, _too_big_together(monkeypatch))
+
+    assert not result.exception
+    assert "fewer files" in texts(result.error)
+    assert all(b.label != "Use Updated Data" for b in result.button)
+
+
+def test_files_too_big_together_stay_refused_after_leaving_the_page_and_coming_back(
+    page, monkeypatch
+):
+    upload(page, _too_big_together(monkeypatch))
+
+    back = leave_and_come_back(page, monkeypatch)
+
+    assert "fewer files" in texts(back.error)
+    assert all(b.label != "Use Updated Data" for b in back.button)
 
 
 def test_a_column_with_no_data_at_all_is_dropped_and_noted(page):
@@ -601,6 +794,55 @@ def test_the_same_security_cannot_fill_both_target_roles(page):
     assert "SPX Index" in texts(result.error)
 
 
+def _split_vix(overlap_value=16.0):
+    early = export("VIX Index", ["1/2/2020,15.0", "1/3/2020,16.0"])
+    late = export("VIX Index", [f"1/3/2020,{overlap_value}", "1/6/2020,17.0", "1/7/2020,18.0"])
+    return [("vix_late.csv", late, "text/csv"), ("vix_early.csv", early, "text/csv")]
+
+
+def test_a_signal_split_over_two_files_is_joined_and_the_user_told(page):
+    result = upload(page, _split_vix())
+
+    assert not result.error
+    merged = result.session_state["signal_merged"]
+    assert list(merged.columns) == ["Date", "VIX_Index_PX_LAST"]
+    assert merged["VIX_Index_PX_LAST"].tolist() == [15.0, 16.0, 17.0, 18.0]
+    assert "joined" in texts(result.info)
+    assert "Merged 2 file(s) into 4 rows, 1 data columns" in texts(result.success)
+
+
+def test_both_files_of_a_split_security_are_linked_to_the_merged_dataset(page):
+    upload(page, _split_vix())
+
+    merged = next(r for r in recent_uploads() if r.filename == "bloomberg_merged.csv")
+    linked = {s.filename for s in lineage.sources_of(merged.sha256)}
+    assert linked == {"vix_early.csv", "vix_late.csv"}
+
+
+def test_split_files_that_disagree_where_they_overlap_block_the_commit(page):
+    upload_targets(page, [("spx.csv", SPX, "text/csv")])
+    result = upload(page, _split_vix(overlap_value=16.5))
+
+    assert "VIX Index" in texts(result.error)
+    assert "03/01/2020" in texts(result.error)
+    assert next(b for b in result.button if b.label == "Use Updated Data").disabled
+
+
+def test_a_target_split_over_two_files_fills_its_role_once(page):
+    early = export("SPX Index", ["1/2/2020,100.0", "1/3/2020,101.0"])
+    late = export("SPX Index", ["1/6/2020,102.0", "1/7/2020,103.0"])
+    upload_targets(page, [("spx_late.csv", late, "text/csv"), ("spx_early.csv", early, "text/csv")])
+    result = upload(page, [("vix.csv", VIX, "text/csv")])
+
+    assert not result.error
+    assert [s.value for s in result.selectbox if s.label == "Role"] == [TargetRole.EQUITY]
+    result = next(b for b in result.button if b.label == "Use Updated Data").click().run()
+    targets = result.session_state["extraction_committed_targets"]
+    assert targets[TargetRole.EQUITY] == "SPX_Index_PX_LAST"
+    committed = result.session_state["extraction_committed"]
+    assert committed["SPX_Index_PX_LAST"].notna().sum() == 4
+
+
 def test_the_same_filename_in_both_uploads_is_rejected(page):
     spx = export("SPX Index", ["1/2/2020,100.0", "1/3/2020,101.0"])
 
@@ -609,6 +851,18 @@ def test_the_same_filename_in_both_uploads_is_rejected(page):
 
     assert "both a target and a signal" in texts(result.error)
     assert "spx.csv" in texts(result.error)
+
+
+def test_a_target_file_also_uploaded_as_part_of_a_joined_signal_is_rejected(page):
+    # The signal is one export joined from two files, named after both of them;
+    # the file both uploads hold must still be found by its own name.
+    (_, early, _) = _split_vix()[1]
+
+    upload_targets(page, [("vix_early.csv", early, "text/csv")])
+    result = upload(page, _split_vix())
+
+    assert "both a target and a signal" in texts(result.error)
+    assert "vix_early.csv" in texts(result.error)
 
 
 def test_target_and_signal_files_combine_and_commit_with_resolved_targets(page):
@@ -631,6 +885,44 @@ def test_target_and_signal_files_combine_and_commit_with_resolved_targets(page):
     assert TargetRole.BOND not in targets
 
 
+def _daily(security, dates, field="TOT_RETURN_INDEX_GROSS_DVDS"):
+    rows = [f"{d.month}/{d.day}/{d.year},{100 + i / 10}" for i, d in enumerate(dates)]
+    return export(security, rows, fields=field)
+
+
+def test_a_signal_reaching_back_before_the_targets_does_not_warn_of_the_premium_prior(page):
+    # The targets start in August 2006, so the first rebalance on the calendar
+    # they share is years after May 2005; only the signal reaches back to 2000.
+    targets = pd.bdate_range("2006-08-31", periods=1500)
+    signal = pd.bdate_range("2000-01-03", targets[-1])
+    upload_targets(
+        page,
+        [
+            ("spx.csv", _daily("SPX Index", targets), "text/csv"),
+            ("lbustruu.csv", _daily("LBUSTRUU Index", targets), "text/csv"),
+        ],
+    )
+
+    result = upload(page, [("vix.csv", _daily("VIX Index", signal, "PX_LAST"), "text/csv")])
+
+    assert not result.error
+    assert "Covering 03/01/2000" in texts(result.caption)
+    assert "before May 2005" not in texts(result.warning)
+
+
+def test_targets_reaching_back_before_the_premium_prior_are_warned_of(page):
+    targets = pd.bdate_range("2000-01-03", periods=1500)
+    result = upload_targets(
+        page,
+        [
+            ("spx.csv", _daily("SPX Index", targets), "text/csv"),
+            ("lbustruu.csv", _daily("LBUSTRUU Index", targets), "text/csv"),
+        ],
+    )
+
+    assert "before May 2005" in texts(result.warning)
+
+
 def test_missing_one_target_role_does_not_block_committing(page):
     spx = export("SPX Index", ["1/2/2020,100.0", "1/3/2020,101.0"])
     result = upload_targets(page, [("spx.csv", spx, "text/csv")])
@@ -641,14 +933,12 @@ def test_missing_one_target_role_does_not_block_committing(page):
     assert "now committed" in texts(result.success)
 
 
-def test_uploads_stay_visible_after_leaving_the_page_and_coming_back(page):
+def test_uploads_stay_visible_after_leaving_the_page_and_coming_back(page, monkeypatch):
     upload_targets(page, [("spx.csv", SPX, "text/csv")])
     upload(page, [("vix.csv", VIX, "text/csv")])
 
     # Leaving the page empties both uploaders; the parsed files stay in session state.
-    page.file_uploader[0].set_value([])
-    page.file_uploader[1].set_value([])
-    back = page.run()
+    back = leave_and_come_back(page, monkeypatch)
 
     shown = texts(back.caption)
     assert "In use from your last upload: **spx.csv**" in shown

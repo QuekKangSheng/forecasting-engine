@@ -54,15 +54,35 @@ a target is decided at ingestion, never inferred later.
   saved value refuses the file. A workbook with a `Data` sheet is read the older
   way, from `Data` and `Metadata`. Every data column is renamed
   `{security}_{field}`, e.g. `VIX_Index_PX_LAST`. Files over `MAX_UPLOAD_BYTES`
-  are refused (`ingest/upload.py`).
+  are refused (`ingest/upload.py`), and so is a set of files whose merge is.
+  A file with more than one data column and no `Security` line is refused, since
+  nothing says which security each column is.
+- **Dates.** Each file's dates are read one way for the whole column
+  (`bloomberg_csv.read_dates`). A date that reads only one way settles month
+  first or day first; otherwise the dates must fit between the `Start Date` and
+  `End Date` lines and step as the `Period` line says (`_PERIOD_STEP_DAYS`, the
+  days between consecutive dates each period allows). A file nothing settles is
+  refused rather than guessed, as is a CSV of Excel serial numbers or of dates
+  with two-digit years.
+- **Repeated dates.** Before the schema, a row that repeats an earlier row
+  exactly is dropped and reported (`validation.drop_exact_repeats`). A date given
+  different values leaves the file out and blocks the commit
+  (`validation.repeated_date_error`).
 - **Per-file schema.** Each file is checked on its own before merging
   (`extraction/validation.schema_errors`). A column whose name contains a
   `POSITIVE_FIELD_MARKERS` entry (a total-return index) must be positive; one
-  containing a `NUMERIC_FIELD_MARKERS` entry need only be numeric, since
-  `PX_LAST` is any series' last value and a curve can be negative; any other must
-  lie within `SANE_RANGE`. A failing file is excluded, and the good files still merge.
-- **Merge.** Files are outer-joined on `Date`. Two files sharing a security are
-  relabelled by file name. A column with no value on any date is dropped
+  whose field starts with a `NUMERIC_FIELD_MARKERS` entry need only be numeric,
+  since `PX_LAST` is any series' last value and a curve can be negative; any other
+  must lie within `SANE_RANGE`. A failing file is excluded, and the good files
+  still merge; the message names the first few offending values and counts the rest.
+- **Merge.** Files are outer-joined on `Date`. Files sharing a security and the
+  same fields are one series in parts, joined into one
+  (`bloomberg_csv.join_split_files`) when they agree on every date they share,
+  a blank in one filled from another; when they disagree, they are left out and
+  the commit is blocked. Files sharing
+  a security but not their fields are relabelled by file name, a joined series by
+  its first part's (`bloomberg_csv.file_label`). A column with no
+  value on any date is dropped
   (`bloomberg_csv.drop_empty_columns`), and the drop is listed in the data quality
   report.
 - **Target roles.** A target file's security pre-fills its role from
@@ -74,7 +94,9 @@ a target is decided at ingestion, never inferred later.
   auto-corrected.
 - **Commit.** "Use Updated Data" commits the merged frame, the target columns and
   each column's security and field (`bloomberg_csv.column_sources`). Nothing is
-  forward-filled.
+  forward-filled. The button is disabled while a blocking problem above stands:
+  removing the files it came from lifts it, leaving the page and coming back does
+  not.
 
 ## 2. Target calendar and as-of alignment
 
@@ -97,7 +119,8 @@ a target is decided at ingestion, never inferred later.
   assignment, never from a hard-coded list.
 - Each security contributes one column: its `TOT_RETURN_INDEX` field if there is
   one, otherwise `PX_LAST` (`_PRICE_FIELD`), otherwise its first other field by
-  name. Bid and ask quotes (`_QUOTE_FIELDS`) are never used.
+  name. Bid and ask quotes (`_QUOTE_FIELDS`) are never used. A column from a file
+  with no `Security` line stands alone.
 - The kept signals are sorted by name, so a model does not depend on the order
   the files were uploaded in.
 
@@ -939,7 +962,9 @@ signals into the weight schedule step 14 backtests.
      `π̄` adapts slowly if the true premium has changed.
    - An upload whose first rebalance falls before May 2005
      (`PREMIUM_PRIOR_PUBLISHED`) would use the prior before it was published. The
-     Data page warns of such an upload.
+     Data page warns of such an upload, once both targets are picked, reading the
+     first rebalance off the dates both targets have a price, as the optimiser
+     does; a signal reaching back further does not move it.
    - Disclosed as a sensitivity only: with the prior at 3.6% or 9.6% a year the
      forecasts' value against no forecasts (step 9) moves by no more than about
      0.3 in t at h = 5 and 0.13 at h = 20. The constants were not changed because
@@ -1325,6 +1350,9 @@ Values are Python literals as the code holds them.
 | `NUMERIC_FIELD_MARKERS` | `forecasting_engine.extraction.validation` | `("PX_",)` |
 | `SANE_RANGE` | `forecasting_engine.extraction.validation` | `(-300.0, 10_000.0)` |
 | `MAD_THRESHOLD` | `forecasting_engine.extraction.validation` | `8.0` |
+| `MAX_NAMED_VALUES` | `forecasting_engine.extraction.validation` | `5` |
+| `MAX_NAMED_DATES` | `forecasting_engine.extraction.bloomberg_csv` | `10` |
+| `_PERIOD_STEP_DAYS` | `forecasting_engine.extraction.bloomberg_csv` | `{"D": (1, 7), "W": (5, 9), "M": (25, 35), "Q": (80, 100), "S": (170, 195), "Y": (350, 380), "A": (350, 380)}` |
 | `TARGET_TICKERS` | `forecasting_engine.extraction.targets` | `{"SPX Index": "equity", "LBUSTRUU Index": "bond"}` |
 | `PREFERRED_FIELD` | `forecasting_engine.extraction.targets` | `"TOT_RETURN_INDEX_GROSS_DVDS"` |
 | `MAX_STALENESS` | `forecasting_engine.ingest.align` | `3` |

@@ -29,6 +29,19 @@ Date,PX_LAST,PX_BID
 
 Trailing empty metadata cells, such as `Security,SPX Index,`, are accepted.
 Placeholder-only fields are removed after merging because they carry no data.
+A data row with one empty cell more than the header names
+(`9/30/2026,16.3,` under `Date,PX_LAST`) is accepted too; a row with a real
+value past the last named column is refused. Numbers Excel wrote with thousands
+separators when the sheet was saved again (`"4,512.30"`) are read as numbers,
+unless the column could as well mean a decimal comma (`"4,512"` and nothing
+else).
+
+The `Security` line is needed for a file with more than one data column: without
+it nothing says which security each column is, so the file is refused. A header
+ending in a comma (`Date,PX_LAST,`) with nothing under the unnamed column is
+still one data column. That
+includes the merged file the Data page offers for download, which is for
+reading, not for uploading again.
 
 **An `.xlsx` export** from Spreadsheet Builder is one sheet laid out exactly
 like the CSV export: the `Security` / `Start Date` / `End Date` / `Period`
@@ -81,14 +94,40 @@ Nothing needs a command line and no temporary signal CSV is produced.
 
 **Dates in a CSV export** are `m/d/yyyy` or `d/m/yyyy` depending on the
 terminal's locale, and for any day up to the 12th the two look the same. The
-reader takes the format from the file's first date, so a file whose first date
-is ambiguous (`1/4/2016`) is read month first, Bloomberg's default. A later date
-that doesn't fit that format (`13/01/2016` in a month-first file) is not
-guessed: it reads as blank, and the file fails validation (a date may not be
-blank) and is left out of the merge with that reason. If a merged file's dates
-look a month out, or a file is refused for a blank date, check the terminal's
-date format setting. Dates in an `.xlsx`
-export are stored as dates, so the order question doesn't arise.
+reader settles the order once for the whole file, from the file itself: one
+date that reads only one way (`13/01/2016`, `1/13/2016`) settles it; failing
+that, the dates must fall between the `Start Date` and `End Date` lines and
+step the way the `Period` line says, a daily file by days and a monthly one by
+months. If nothing settles it, or the dates disagree with each other, the file
+is refused with that reason rather than guessed: check the terminal's date
+format setting and export again with the metadata lines left in. A CSV whose
+Date column holds Excel serial numbers (`46295`) is refused too, with how to fix
+it, and so is one whose dates have two-digit years (`9/30/26`, `26-09-28`):
+Bloomberg writes four, and with two neither the century nor which number is the
+year is certain. Dates in an `.xlsx` export are stored as dates or serial numbers, so the
+order question doesn't arise; text dates in a workbook are read the same way as
+a CSV's.
+
+**A repeated date** in one file is settled before the merge. A row that only
+repeats an earlier one, the same date with the same values, is dropped, and the
+page says how many were. A date given two different values is not the app's to
+settle: the file is left out, the page names the security and the dates, and
+nothing can be committed until the file is corrected and uploaded again, or
+removed. Leaving the page and coming back does not lift this.
+
+**One security split over several files**, such as a long history exported in
+two parts, is joined into one series when the parts agree on every date they
+share, and the page says so. A part that is blank on a shared date, as an export
+taken before that day's value was in can be, takes the other part's value. If
+they give a shared date different values they are left out, and nothing can be
+committed until the wrong file is removed or the security exported again as one
+file. Files of one
+security with different fields (SPX price and SPX total return) are kept apart,
+labelled by file name.
+
+**Size.** Each file may be up to 25 MB, and so may the merged data the files
+make together; files that add up to more are refused with a message instead of
+merged.
 
 The merged Bloomberg CSV is downloadable directly. Fama-French factors are not
 part of it: they are fetched when the Fama-French model is run on the Models

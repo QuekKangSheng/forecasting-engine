@@ -223,6 +223,27 @@ def test_a_column_with_no_known_source_is_kept_as_its_own_signal():
     assert select_signals(["a", "b", "t"], ["t"], {}) == ["a", "b"]
 
 
+def test_columns_from_files_with_no_security_line_are_each_their_own_signal():
+    # Without a Security line nothing says two files hold the same security,
+    # so neither may stand in for the other.
+    sources = {
+        "first_export_PX_LAST": ColumnSource("", "PX_LAST"),
+        "second_export_PX_LAST": ColumnSource("", "PX_LAST"),
+    }
+    assert select_signals(list(sources), [], sources) == [
+        "first_export_PX_LAST",
+        "second_export_PX_LAST",
+    ]
+
+
+def test_a_quote_from_a_file_with_no_security_line_is_still_never_a_signal():
+    sources = {
+        "first_export_PX_BID": ColumnSource("", "PX_BID"),
+        "second_export_PX_LAST": ColumnSource("", "PX_LAST"),
+    }
+    assert select_signals(list(sources), [], sources) == ["second_export_PX_LAST"]
+
+
 def test_two_column_orders_give_the_same_signal_list():
     sources = {
         **_sources(VIX_LAST="PX_LAST", SPX_TOT="TOT_RETURN_INDEX_GROSS_DVDS", DXY_LAST="PX_LAST"),

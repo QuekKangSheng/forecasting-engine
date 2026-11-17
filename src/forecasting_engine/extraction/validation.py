@@ -1,21 +1,30 @@
 """Validating merged Bloomberg data: a pandera schema plus a plain report.
 
-Pandera enforces structure — the date column is unique, non-null and sorted;
-every data column is numeric and, for total-return index columns, positive. Everything
-a real market can legitimately produce — a duplicate date from a revision, a
-weekend row, a statistically unusual move — is reported rather than rejected, so a
-human sees it before the file is used instead of it being silently dropped.
+Pandera enforces structure — the date column is non-null and sorted; every
+data column is numeric and, for total-return index columns, positive. A repeated
+date is settled per file before that: a row that only repeats an earlier one is
+dropped and the drop reported, and a date given two different values stops the
+data being committed, since a model needs one value per date and nothing in the
+file says which is right. Everything else a real market can legitimately produce
+— a weekend row, a statistically unusual move — is reported rather than rejected,
+so a human sees it before the file is used instead of it being silently dropped.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 import pandas as pd
 import pandera.pandas as pa
 
-from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN, DATE_DISPLAY_FORMAT
+from forecasting_engine.extraction.bloomberg_csv import (
+    DATE_COLUMN,
+    DATE_DISPLAY_FORMAT,
+    MAX_NAMED_DATES,
+    BloombergCsvExport,
+    named_dates,
+)
 
 #: Bloomberg field mnemonics that name a total-return index level, which must
 #: be positive. This is a rough classifier by field name, not a real
@@ -26,7 +35,8 @@ POSITIVE_FIELD_MARKERS: tuple[str, ...] = ("TOT_RETURN",)
 #: Field mnemonics checked only for being numeric. ``PX_LAST`` is Bloomberg's
 #: last value for any series, not only prices: a curve such as ``USYC2Y10`` is
 #: negative for long stretches. Everything else (spreads, vol, rates, ...)
-#: falls back to SANE_RANGE below.
+#: falls back to SANE_RANGE below. Matched where a field name starts, so SPX's
+#: own ticker does not make every SPX field one of these.
 NUMERIC_FIELD_MARKERS: tuple[str, ...] = ("PX_",)
 
 #: Robust z-score of a day-over-day change worth flagging for review. Financial
@@ -41,10 +51,9 @@ _MAD_TO_SIGMA = 0.6745
 #: points (2s10s has gone below -100 bps), not just small negative spreads.
 SANE_RANGE: tuple[float, float] = (-300.0, 10_000.0)
 
-#: How many offending dates a report names outright. ``duplicate_dates`` and
-#: ``weekend_rows`` stay exact counts; a file with thousands of weekend rows
-#: should not print thousands of dates.
-MAX_NAMED_DATES = 10
+#: How many offending values a schema message names outright; the rest are
+#: counted. One bad column in a ten-year file must not print every value in it.
+MAX_NAMED_VALUES = 5
 
 
 @dataclass(frozen=True)
@@ -53,7 +62,8 @@ class ValidationReport:
 
     duplicate_dates: int
     duplicate_date_values: tuple[str, ...]
-    """The repeated dates themselves, capped at ``MAX_NAMED_DATES``."""
+    """The repeated dates themselves, capped at ``MAX_NAMED_DATES``. Exact
+    counts stay in ``duplicate_dates`` and ``weekend_rows``."""
     weekend_rows: int
     weekend_date_values: tuple[str, ...]
     """The weekend dates themselves, capped at ``MAX_NAMED_DATES``."""
@@ -77,19 +87,21 @@ def is_positive_column(name: str) -> bool:
 
 
 def is_numeric_only_column(name: str) -> bool:
+    # A column is "{label}_{field}", so a field name starts just after an
+    # underscore: "SPX_Index_PX_LAST" has a PX_ field, "SPX_Index_CUR_MKT_CAP"
+    # only has "PX_" inside its ticker.
     return not is_positive_column(name) and any(
-        marker in name for marker in NUMERIC_FIELD_MARKERS
+        f"_{marker}" in name for marker in NUMERIC_FIELD_MARKERS
     )
 
 
 def build_schema(columns: list[str]) -> pa.DataFrameSchema:
     """A pandera schema for ``columns``, classifying each by its field name.
 
-    The date column is not checked for uniqueness here — a repeated date is
-    common (a revision republished under the same date) and is reported via
-    ``duplicate_dates`` instead, the same "reported, not blocking" treatment
-    every other gap in this file gets. Blocking on it would refuse a file for
-    the one kind of duplicate this tool is explicitly designed to tolerate.
+    The date column is not checked for uniqueness here: a repeated date is
+    settled per file before the schema runs (``drop_exact_repeats``,
+    ``repeated_date_error``), where the message can name the file and its
+    security instead of a column.
     """
     schema_columns: dict[str, pa.Column] = {
         DATE_COLUMN: pa.Column(
@@ -118,15 +130,63 @@ def schema_errors(frame: pd.DataFrame) -> list[str]:
     Meant to be called per source file, before merging: a file that fails
     here should be excluded the same way a file that fails to parse is,
     rather than let a bad value ride into the merged dataset.
+
+    One message per column and check, naming the first few offending values
+    and counting the rest, however many rows fail.
     """
     try:
         build_schema(list(frame.columns)).validate(frame, lazy=True)
     except pa.errors.SchemaErrors as exc:
+        cases = exc.failure_cases.groupby(["column", "check"], sort=False, dropna=False)
         return [
-            f"{row['column']}: {row['check']} (got {_format_failure(row['failure_case'])})"
-            for _, row in exc.failure_cases.iterrows()
+            f"{column}: {check} (got {_named_failures(group['failure_case'])})"
+            for (column, check), group in cases
         ]
     return []
+
+
+def drop_exact_repeats(export: BloombergCsvExport) -> BloombergCsvExport:
+    """``export`` without the rows that repeat an earlier row exactly, with a
+    note saying how many went.
+
+    The same date with the same values is one observation written twice (a
+    file appended to a copy of itself, a row pasted in again), so dropping the
+    copy loses nothing. A date repeated with different values is left alone,
+    for ``repeated_date_error``.
+    """
+    repeats = export.frame.duplicated()
+    if not repeats.any():
+        return export
+    count = int(repeats.sum())
+    note = (
+        f"{export.filename}: {count} row{'s' if count != 1 else ''} repeated an earlier "
+        f"row exactly, the same date with the same values, and "
+        f"{'were' if count != 1 else 'was'} dropped."
+    )
+    frame = export.frame[~repeats].reset_index(drop=True)
+    return replace(export, frame=frame, notes=(*export.notes, note))
+
+
+def repeated_date_error(export: BloombergCsvExport) -> str | None:
+    """Why ``export`` cannot be committed, if it gives one date different
+    values, else None.
+
+    Every model needs one value per date, and nothing in a file tells a
+    revision from the figure it replaced, so this stops the commit rather than
+    picking one. Run it after ``drop_exact_repeats``, so only real
+    disagreements are left.
+    """
+    dates = export.frame[DATE_COLUMN]
+    clashing = dates[dates.duplicated(keep=False) & dates.notna()].drop_duplicates()
+    if clashing.empty:
+        return None
+    count = len(clashing)
+    return (
+        f"{export.filename}: {export.security or 'this file'} has different values on "
+        f"the same date, on {count} date{'s' if count != 1 else ''}: "
+        f"{named_dates(clashing.sort_values())}. Keep one row for each date in the file "
+        "and upload it again; until then this data cannot be committed."
+    )
 
 
 def validate(frame: pd.DataFrame) -> ValidationReport:
@@ -158,6 +218,15 @@ def _format_failure(value: object) -> str:
     if isinstance(value, pd.Timestamp):
         return value.strftime(DATE_DISPLAY_FORMAT)
     return repr(value)
+
+
+def _named_failures(values: pd.Series) -> str:
+    """The first few distinct offending values, and how many failed in all."""
+    distinct = values.drop_duplicates()
+    shown = ", ".join(_format_failure(v) for v in distinct.head(MAX_NAMED_VALUES))
+    if len(values) > min(len(distinct), MAX_NAMED_VALUES):
+        shown += f"; {len(values):,} values in all"
+    return shown
 
 
 def _named_dates(dates: pd.Series) -> tuple[str, ...]:
