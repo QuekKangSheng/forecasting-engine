@@ -27,7 +27,8 @@ TERMS: Mapping[str, str] = {
     ),
     "Function source": (
         "Choose one. **Derive automatically** searches a small grid of polynomial "
-        "degrees and regularizers and reports the best one. Regularization pushes "
+        "degrees and regularizers and reports the best one (on the Bond tab, chosen "
+        "per test window from earlier windows only). Regularization pushes "
         "weak terms to exactly zero, so the result stays short enough to read.\n\n"
         "**Use your own function** takes the shape you write, using placeholders "
         "such as x and y that you then point at signals, and fits only a scale "
@@ -58,6 +59,15 @@ TERMS: Mapping[str, str] = {
         "is gated like every other model. Its inputs were chosen by looking at "
         "results on the Sep 2026 upload (Aug 2016 – Sep 2026), so treat its score "
         "as optimistic."
+    ),
+    "Chosen per window": (
+        "How the Bond tab's derived polynomial and machine learning pick between their "
+        "candidates. Picking the one that scored best over the whole test period would "
+        "score it on the same windows it was picked on, which flatters it: on the bond "
+        "index at 20 days that pick read +0.030 where choosing honestly reads −0.054. So "
+        "each test window uses the candidate that scored best on the earlier windows "
+        "alone, and the row's score is what those choices earned. The Equity tab still "
+        "picks on the whole period, so its scores overstate it."
     ),
     "Max terms": (
         "The most terms the derived equation may keep. The cap works through the "

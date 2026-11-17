@@ -28,6 +28,7 @@ from forecasting_engine.features.screening import screen_over_folds
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import Forecaster, ModelDescription
 from forecasting_engine.reporting.model_metrics import (
+    CandidateChoice,
     ConstantForecasts,
     FoldTerms,
     Holdout,
@@ -44,6 +45,11 @@ from forecasting_engine.validation.splitters import PurgedWalkForward
 
 TRAINING_MEAN: str = "TrainingMean"
 """The description name of a fold that kept no signal and forecast its training mean."""
+
+MIN_SELECTION_HISTORY: int = 12
+"""Earlier test windows, every label of each ended, that online selection needs before
+it chooses (``select_online``); until then a window uses the grid's declared default.
+Twelve 20-row windows are about a year of scores."""
 
 
 @dataclass(frozen=True)
@@ -310,6 +316,78 @@ def select_best_candidate(per_candidate: dict[str, tuple[FoldResult, ...]]) -> s
         for name, folds in per_candidate.items()
     }
     return max(scores, key=scores.__getitem__)
+
+
+def select_online(
+    per_candidate: Mapping[str, tuple[FoldResult, ...]],
+    label_end: pd.Series,
+    default: str,
+) -> tuple[str, ...]:
+    """Per test window, in order, the candidate it uses: the one with the best pooled
+    Signal Rank IC, the measure ``select_best_candidate`` uses, over the earlier windows
+    whose every label ended before the window's first date.
+
+    ``select_best_candidate`` picks on the windows the pick is then scored on, so its
+    score includes the luck of the pick. Here no window's choice reads that window or
+    any later one, so the pooled score of the chosen windows is out of sample for the
+    choice too. Until ``MIN_SELECTION_HISTORY`` earlier windows have ended, and whenever
+    no candidate can be scored on them, a window uses ``default``. A tie goes to the
+    first candidate in ``per_candidate``'s order. Every candidate must have been scored
+    on the same test windows."""
+    names = list(per_candidate)
+    tests = [f.test for f in per_candidate[default]]
+    for name in names:
+        if [f.test[0] for f in per_candidate[name]] != [t[0] for t in tests]:
+            raise ValueError(f"candidate {name!r} was not scored on the same test windows")
+    ends = [label_end.reindex(t).max() for t in tests]
+    signals = {name: signal_forecasts(per_candidate[name]) for name in names}
+    realised = {name: pooled(per_candidate[name])[1] for name in names}
+    picks = []
+    for k, test in enumerate(tests):
+        history = [j for j in range(k) if pd.notna(ends[j]) and ends[j] < test[0]]
+        pick = default
+        if len(history) >= MIN_SELECTION_HISTORY:
+            dates = [d for j in history for d in tests[j]]
+            best: tuple[float, str] | None = None
+            for name in names:
+                s, y = signals[name].reindex(dates), realised[name].reindex(dates)
+                ok = s.notna() & y.notna()
+                if ok.sum() <= 2 or s[ok].nunique() <= 1:
+                    continue  # nothing to rank: a constant or an empty signal
+                value = metrics.rank_ic(s[ok], y[ok])
+                if value == value and (best is None or value > best[0]):
+                    best = (value, name)
+            if best is not None:
+                pick = best[1]
+        picks.append(pick)
+    return tuple(picks)
+
+
+def summarize_online(
+    per_candidate: Mapping[str, tuple[FoldResult, ...]], panel: FeaturePanel, default: str
+) -> tuple[ModelRunResult, ModelDescription]:
+    """``summarize`` over the windows ``select_online`` chose: each test window's fold
+    from the candidate it uses. The description is the latest window's candidate's, and
+    the result records which candidate each window used (``ModelRunResult.selection``)."""
+    picks = select_online(per_candidate, _label_ends(panel), default)
+    if not picks:
+        raise ValueError("online selection needs at least one test window.")
+    folds = tuple(per_candidate[name][k] for k, name in enumerate(picks))
+    result, description = summarize(folds)
+    counts = dict.fromkeys(per_candidate, 0)
+    for name in picks:
+        counts[name] += 1
+    choice = CandidateChoice(windows=tuple(counts.items()), latest=picks[-1], default=default)
+    return replace(result, selection=choice), description
+
+
+def _label_ends(panel: FeaturePanel) -> pd.Series:
+    """Each row's label end date, ``align_and_lag``'s, or on a panel built by hand the
+    date ``horizon`` rows on, as a splitter assumes."""
+    if panel.label_end is not None:
+        return panel.label_end
+    index = panel.frame.index
+    return pd.Series(index, index=index).shift(-panel.horizon)
 
 
 def fold_baseline(fold: FoldResult) -> float:

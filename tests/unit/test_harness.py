@@ -9,14 +9,17 @@ from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.validation import metrics
 from forecasting_engine.validation.gates import evaluate_candidate
 from forecasting_engine.validation.harness import (
+    MIN_SELECTION_HISTORY,
     FoldResult,
     evaluate,
     fold_baseline,
     holdout,
     pooled,
     select_best_candidate,
+    select_online,
     signal_forecasts,
     summarize,
+    summarize_online,
 )
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
@@ -793,3 +796,153 @@ def test_with_no_fold_before_the_cutoff_there_is_no_holdout():
     folds = evaluate(_EchoForecaster, panel, PurgedWalkForward(train=40, test=10, embargo=5))
 
     assert holdout(panel, folds, pd.Timestamp("2016-03-01")) is None
+
+
+# --- online selection: each window's candidate chosen from earlier windows only ----
+
+_ROWS = 5  # rows per test window
+
+
+def _windows(n: int = 24) -> tuple[list[pd.DatetimeIndex], pd.Series]:
+    """``n`` back-to-back test windows of business days, and each row's label end: the
+    next row, so a window's last label ends on the next window's first date."""
+    dates = pd.bdate_range("2020-01-01", periods=n * _ROWS + 1)
+    tests = [dates[k * _ROWS : (k + 1) * _ROWS] for k in range(n)]
+    label_end = pd.Series(dates[1:], index=dates[:-1])
+    return tests, label_end
+
+
+def _candidate(tests, predicted: list[np.ndarray], realised: list[np.ndarray]):
+    """One candidate's folds, each with level zero, so its signal is its forecast."""
+    train = pd.bdate_range("2019-01-01", periods=10)
+    folds = []
+    for k, test in enumerate(tests):
+        folds.append(
+            FoldResult(
+                fold=k,
+                train=train,
+                test=test,
+                predicted=pd.Series(predicted[k], index=test, dtype=float),
+                predicted_train=pd.Series(np.linspace(-1, 1, 10), index=train),
+                realised=pd.Series(realised[k], index=test, dtype=float),
+                realised_train=pd.Series(np.linspace(-1, 1, 10), index=train),
+                description=ModelDescription(name=f"fold{k}", terms=(), coefficients=()),
+                own_level=0.0,
+            )
+        )
+    return tuple(folds)
+
+
+def _two_candidates(n: int = 24, seed: int = 0, good_until: int | None = None):
+    """``good`` forecasts the realised returns and ``bad`` their reverse, up to window
+    ``good_until``; after it the two swap."""
+    tests, label_end = _windows(n)
+    rng = np.random.default_rng(seed)
+    realised = [rng.normal(size=_ROWS) for _ in tests]
+    good_until = n if good_until is None else good_until
+    noise = [rng.normal(scale=0.1, size=_ROWS) for _ in tests]
+    good = [
+        (r if k < good_until else -r) + e
+        for k, (r, e) in enumerate(zip(realised, noise, strict=True))
+    ]
+    bad = [-g for g in good]
+    return tests, label_end, realised, good, bad
+
+
+def _pair(tests, realised, first, second, names=("bad", "good")):
+    return {
+        names[0]: _candidate(tests, first, realised),
+        names[1]: _candidate(tests, second, realised),
+    }
+
+
+def test_online_selection_uses_the_default_until_twelve_earlier_windows_have_ended():
+    tests, label_end, realised, good, bad = _two_candidates()
+
+    picks = select_online(_pair(tests, realised, bad, good), label_end, "bad")
+
+    # Window k's earlier windows that have ended are 0 .. k-2: the last label of window
+    # k-1 ends on window k's first date, which is not before it.
+    assert picks[: MIN_SELECTION_HISTORY + 1] == ("bad",) * (MIN_SELECTION_HISTORY + 1)
+    assert picks[MIN_SELECTION_HISTORY + 1 :] == ("good",) * (24 - MIN_SELECTION_HISTORY - 1)
+
+
+def test_online_selection_follows_whichever_candidate_scored_better_earlier():
+    # Good for the first 16 windows, then reversed: the choice changes only once enough
+    # of the later windows have ended to outweigh the earlier ones.
+    tests, label_end, realised, good, bad = _two_candidates(n=40, good_until=16)
+
+    picks = select_online(_pair(tests, realised, good, bad, ("a", "b")), label_end, "b")
+
+    assert picks[13] == "a"
+    assert picks[-1] == "b"
+    assert picks.index("b", 13) > 17  # not before the windows that favour it have ended
+
+
+@pytest.mark.parametrize("k", [13, 17, 23])
+def test_no_realised_return_in_window_k_or_later_changes_window_ks_choice(k):
+    tests, label_end, realised, good, bad = _two_candidates(seed=3)
+    rng = np.random.default_rng(9)
+    rewritten = [r if j < k else rng.normal(scale=5, size=_ROWS) for j, r in enumerate(realised)]
+    forecast = [g if j < k else rng.normal(size=_ROWS) for j, g in enumerate(good)]
+
+    before = select_online(_pair(tests, realised, bad, good), label_end, "bad")
+    after = select_online(
+        {"bad": _candidate(tests, bad, rewritten), "good": _candidate(tests, forecast, rewritten)},
+        label_end,
+        "bad",
+    )
+
+    assert after[: k + 1] == before[: k + 1]
+
+
+def test_the_earlier_windows_do_change_the_choice():
+    # The check above would pass vacuously if the choice read nothing at all.
+    tests, label_end, realised, good, bad = _two_candidates(seed=3)
+
+    assert select_online(_pair(tests, realised, bad, good), label_end, "bad")[-1] == "good"
+    assert select_online(_pair(tests, realised, good, bad), label_end, "bad")[-1] == "bad"
+
+
+def test_a_tie_goes_to_the_first_candidate_in_the_grids_order():
+    tests, label_end, realised, good, _ = _two_candidates()
+    same = _candidate(tests, good, realised)
+
+    assert set(select_online({"x": same, "y": same}, label_end, "y")[13:]) == {"x"}
+    assert set(select_online({"y": same, "x": same}, label_end, "x")[13:]) == {"y"}
+
+
+def test_a_candidate_with_nothing_to_rank_is_never_chosen():
+    tests, label_end, realised, good, bad = _two_candidates()
+    flat = [np.zeros(_ROWS) for _ in tests]
+
+    # A constant forecast has no Signal Rank IC, so even a bad candidate beats it.
+    picks = select_online(_pair(tests, realised, flat, bad, ("flat", "bad")), label_end, "flat")
+    assert set(picks[13:]) == {"bad"}
+
+
+def test_candidates_scored_on_other_windows_are_refused():
+    tests, label_end, realised, good, bad = _two_candidates()
+    shifted = _candidate(tests[1:], good[1:], realised[1:])
+
+    with pytest.raises(ValueError, match="same test windows"):
+        select_online({"a": _candidate(tests, bad, realised), "b": shifted}, label_end, "a")
+
+
+def test_the_online_result_is_each_windows_chosen_fold_and_says_which_was_used():
+    tests, label_end, realised, good, bad = _two_candidates()
+    per_candidate = _pair(tests, realised, bad, good)
+    frame = pd.DataFrame({"s": 0.0, "y": 0.0}, index=label_end.index)
+    panel = FeaturePanel(frame=frame, signals=("s",), targets=("y",), label_end=label_end)
+
+    result, description = summarize_online(per_candidate, panel, "bad")
+
+    picks = select_online(per_candidate, label_end, "bad")
+    chosen = tuple(per_candidate[p][k] for k, p in enumerate(picks))
+    expected, latest = summarize(chosen)
+    assert result.signal_rank_ic == expected.signal_rank_ic
+    pd.testing.assert_series_equal(result.forecast, expected.forecast)
+    assert description == latest == per_candidate["good"][-1].description
+    assert result.selection.windows == (("bad", 13), ("good", 11))
+    assert result.selection.latest == "good"
+    assert result.selection.default == "bad"

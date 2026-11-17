@@ -133,6 +133,21 @@ class Holdout:
 
 
 @dataclass(frozen=True)
+class CandidateChoice:
+    """How a run with several candidates chose, window by window, which one to use
+    (``validation.harness.summarize_online``): each test window takes the candidate
+    with the best Signal Rank IC over the earlier windows only."""
+
+    windows: tuple[tuple[str, int], ...]
+    """``(candidate, test windows it was used in)``, in the grid's order, every
+    candidate listed, one used in no window with zero."""
+    latest: str
+    """The candidate the latest window used: the one whose equation the run reports."""
+    default: str
+    """The candidate every window used until enough earlier windows had been scored."""
+
+
+@dataclass(frozen=True)
 class ModelRunResult:
     """One model family's completed run."""
 
@@ -181,6 +196,10 @@ class ModelRunResult:
     """For a research model, its score on the test windows out of sample for its
     research's choices (``validation.harness.holdout``); ``None`` for any other model,
     or where the data holds no such window."""
+    selection: CandidateChoice | None = None
+    """For a grid that chose its candidate per window from earlier windows only, which
+    one each window used; ``None`` for one configuration, or a grid that chose one
+    candidate on the whole scored period (``validation.harness.select_best_candidate``)."""
 
     @property
     def gated_rank_ic(self) -> float:

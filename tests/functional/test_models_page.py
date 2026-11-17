@@ -33,6 +33,7 @@ from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import LatestFit, Tune, TuningLog
 from forecasting_engine.models.famafrench import FACTOR_COLUMNS, FactorCoverage
 from forecasting_engine.reporting.model_metrics import (
+    CandidateChoice,
     FoldTerms,
     Holdout,
     ModelRunResult,
@@ -950,7 +951,7 @@ def test_committing_a_new_dataset_clears_everything():
 def stub_ml(monkeypatch):
     calls = []
 
-    def fake(panel, splitter):
+    def fake(panel, splitter, **kwargs):
         calls.append(panel)
         return _result(), _ml_run().description, _tuning_log()
 
@@ -1355,7 +1356,7 @@ def test_a_run_fits_in_the_background_and_its_results_appear_when_done(monkeypat
     monkeypatch.setattr(model_jobs, "INLINE", False)
     release = threading.Event()
 
-    def slow(panel, splitter):
+    def slow(panel, splitter, **kwargs):
         release.wait(10)
         return _result(), _ml_run().description, _tuning_log()
 
@@ -1461,7 +1462,7 @@ def test_saved_runs_are_not_shown_under_other_settings(stub_ml):
 
 
 def test_a_failing_model_reports_its_error_after_a_background_run(monkeypatch):
-    def broken(panel, splitter):
+    def broken(panel, splitter, **kwargs):
         raise ValueError("unexpected")
 
     monkeypatch.setattr(boosted, "run_boosted", broken)
@@ -2023,3 +2024,82 @@ def test_a_direction_check_with_a_single_call_shows_it_without_a_window_to_narro
     assert not app.exception
     assert not [s for s in app.slider if s.label == "Window"]
     assert "1 calls" in _captions(app)
+
+
+# --- the bond grids choose their candidate per window from earlier windows only --------
+
+PER_WINDOW = "Chosen per test window from the earlier windows only"
+
+
+def _chosen(*windows: tuple[str, int], latest: str, default: str) -> CandidateChoice:
+    return CandidateChoice(windows=windows, latest=latest, default=default)
+
+
+def test_each_tab_says_how_its_derived_grid_picks_a_candidate():
+    captions = _captions(_page(bond=True))
+
+    assert "and a shrinkage fit, and reports the one with the best Signal Rank IC." in captions
+    assert (
+        "and a shrinkage fit. Each test window uses the one with the best Signal Rank IC over "
+        "the earlier windows only (the shrinkage fit until 12 have been scored), so no "
+        "window's choice sees its own score."
+    ) in captions
+
+
+def test_a_bond_derived_run_says_which_candidate_each_window_used():
+    choice = _chosen(
+        ("degree1_lasso", 149),
+        ("degree2_lasso", 39),
+        ("degree3_lasso", 27),
+        ("shrinkage", 13),
+        latest="degree1_lasso",
+        default="shrinkage",
+    )
+    run = _polynomial_run(replace(_result(), selection=choice))
+    app = _page({BOND: {POLY: run}}, bond=True)
+
+    assert not app.exception
+    captions = _captions(app)
+    assert PER_WINDOW in captions
+    assert (
+        "Used: degree-1 lasso in 149 windows, degree-2 lasso in 39 windows, degree-3 lasso in "
+        "27 windows, shrinkage in 13 windows. The equation shown is the latest window's, "
+        "degree-1 lasso."
+    ) in captions
+
+
+def test_an_equity_derived_run_chosen_on_the_whole_period_says_nothing_of_windows():
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
+
+    assert PER_WINDOW not in _captions(app)
+
+
+def test_a_bond_machine_learning_run_says_which_library_each_window_used():
+    choice = _chosen(("xgboost", 200), ("lightgbm", 28), latest="lightgbm", default="xgboost")
+    run = replace(_ml_run(replace(_result(), selection=choice)), tuning=_tuning_log())
+    app = _page({BOND: {POLY: _polynomial_run(), "Machine Learning": run}}, bond=True)
+
+    assert not app.exception
+    assert (
+        "Used: XGBoost in 200 windows, LightGBM in 28 windows. The attribution shown is the "
+        "latest window's, LightGBM."
+    ) in _captions(app)
+
+
+def test_run_tells_each_grid_which_target_it_is_for(monkeypatch):
+    roles = []
+
+    def fake(panel, splitter, **kwargs):
+        roles.append(kwargs.get("role"))
+        return _result(), _ml_run().description, _tuning_log()
+
+    monkeypatch.setattr(boosted, "run_boosted", fake)
+    app = _untick(_page(bond=True), "Fama-French 5")
+    next(b for b in app.button if b.label == "Run all targets").click().run()
+
+    assert not app.exception
+    assert roles == [EQUITY, BOND]
+    derived = {role: _stored_runs(app, role)[POLY].result for role in (EQUITY, BOND)}
+    assert derived[EQUITY].selection is None
+    assert derived[BOND].selection is not None
+    assert derived[BOND].selection.default == "shrinkage"

@@ -244,7 +244,8 @@ hosting step is needed.
   - a naive training-mean baseline, the bar every model has to beat;
   - the Fama-French five-factor benchmark (equity only);
   - a polynomial, one at a time: derived automatically from the signals (a grid of
-    lasso fits at degrees 1 to 3 and a shrinkage fit, chosen per run),
+    lasso fits at degrees 1 to 3 and a shrinkage fit, chosen per run; for bond, per
+    test window from earlier windows only, as machine learning's library is),
     or the user's own shape (placeholders pointed at signals) with only a scale and
     intercept fitted;
   - each tab's research model, run as the model research ran it, with a caption

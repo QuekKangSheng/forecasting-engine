@@ -23,7 +23,7 @@ flowchart TD
     H["8. Per-fold screening<br/>features/screening"] --> I
     I["9. Fit each model family per fold<br/>models/"] --> J
     J["10. Pooled metrics<br/>validation/harness.summarize"] --> K
-    K["11. Selection<br/>validation/harness.select_best_candidate"] --> L
+    K["11. Selection<br/>validation/harness.select_online (bond), select_best_candidate"] --> L
     L["12. Gates<br/>validation/gates"]
     J --> M["13. Naive baseline row<br/>models/naive"]
     J --> Q["17. Optimiser: risk level's target tilted by the signals<br/>portfolio/optimize"]
@@ -369,7 +369,13 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
     release; LightGBM's own documentation expects results to differ across
     systems and versions. So the same run on a laptop and on the hosted app can
     tune or fit slightly differently, and at the margin pick the other library.
-    Neither library is given a seed of its own: the machine-learning results rely
+    Known limitation: on a near-noise target the gap is not small. For bond at
+    h = 20 on the data from 2006, with the same code and `uv.lock`, LightGBM scores
+    +0.0267 (t 0.55) on Windows and on Linux, but XGBoost +0.0449 (t 0.88) on
+    Windows against +0.0033 (t 0.07) on Linux: a tiny difference in one fit sends
+    the tuning down another path. The bond machine-learning figures in this document
+    and its evidence are Windows figures, and the hosted app (Linux) does not
+    reproduce them. Neither library is given a seed of its own: the machine-learning results rely
     on each library's default seed and on the installed versions of XGBoost and
     LightGBM, and a different version may give different results. A scenario
     refits the latest fold on the same installation, so it reproduces the fold's
@@ -678,8 +684,59 @@ values end to end, then computes once:
 ## 11. Selection
 
 Where a family has several setups (the derived polynomial's grid; tuned XGBoost
-vs. tuned LightGBM), `validation/harness.select_best_candidate` reports the setup
-with the best Signal Rank IC.
+vs. tuned LightGBM), it is still one row with one score. How the setup is chosen
+depends on the target. The grids themselves are the same on both.
+
+**Bond: chosen per window from earlier windows only** (`validation/harness.select_online`,
+`summarize_online`). Each test window uses the setup with the best pooled Signal
+Rank IC, the measure `select_best_candidate` uses, over the earlier test windows
+whose every label ended before the window's first date. Until
+`MIN_SELECTION_HISTORY` such windows exist, it uses the grid's declared default
+(`ONLINE_SELECTION_DEFAULT`: the shrinkage fit for the derived polynomial, XGBoost
+for machine learning), as it does if no setup can be scored on them. A tie goes to
+the first setup in the grid's order (lasso at degree 1, 2, 3, then shrinkage;
+XGBoost, then LightGBM), and a setup with nothing to rank there (a constant
+forecast) is passed over. The row's score is the pooled score of the windows so
+chosen, each window's fold coming from the setup it used (`summarize` over them,
+§10). The equation, its SHAP, the latest tune shown and the fit a scenario refits
+(§18) are the latest window's setup's. The page says under the row how many windows
+each setup was used in (`ModelRunResult.selection`).
+
+**Why.** Reporting the setup with the best whole-period score, and then that score,
+scores the pick on the windows it was picked on: the pick takes the luckiest of the
+setups, and the score keeps the luck. Choosing each window from earlier windows
+only leaves no window's choice knowing that window, so the score is out of sample
+for the choice too. On the data from 2006 the bond derived polynomial reads
+(Signal Rank IC, t; fresh is Oct 2008 – Jul 2016, later Aug 2016 – Sep 2026; the
+s15 research's figures, which the app reproduces,
+[evidence](evidence/2026-11-17-bond-honest-selection.md)):
+
+| h | Selection | Whole period | Fresh | Later |
+|---|---|---|---|---|
+| 1 | whole-period pick (shrinkage) | +0.029, t 1.84 | +0.015, t 0.63 | +0.034, t 1.60 |
+| 1 | per window | +0.029, t 1.84 | +0.015, t 0.63 | +0.034, t 1.60 |
+| 5 | whole-period pick (degree-1 lasso) | +0.030, t 1.00 | −0.009, t −0.24 | +0.043, t 1.04 |
+| 5 | per window | +0.032, t 1.19 | −0.008, t −0.20 | +0.038, t 1.07 |
+| 10 | whole-period pick (degree-3 lasso) | +0.021, t 0.48 | −0.049, t −0.80 | +0.056, t 0.95 |
+| 10 | per window | −0.022, t −0.53 | −0.113, t −1.98 | +0.053, t 0.98 |
+| 20 | whole-period pick (degree-2 lasso) | +0.030, t 0.49 | −0.088, t −1.03 | +0.092, t 1.14 |
+| 20 | per window | −0.054, t −1.02 | −0.111, t −1.44 | −0.007, t −0.09 |
+
+At h = 1 the shrinkage fit wins every window either way. At 10 and 20 days the
+whole-period pick's positive score was the pick's luck: no setup in the grid
+forecasts the bond index there, and chosen honestly the grid scores below zero.
+Machine learning, choosing between two libraries, moves less: XGBoost was the
+whole-period pick at every horizon, and per window its score is +0.019, +0.012,
+−0.022 and +0.032 at h = 1, 5, 10 and 20, against +0.019, +0.013, −0.017 and +0.045
+(Windows figures, which the hosted app does not reproduce for bond: §9). Its fresh and
+later figures are in the evidence.
+
+**Equity: the whole-period pick, a known limitation.** The Equity tab still reports
+the setup with the best Signal Rank IC over the whole scored period
+(`validation/harness.select_best_candidate`), so its derived polynomial's and
+machine learning's scores are overstated by the same kind of luck, by an amount
+not measured here. It is left as it is on Joash's instruction (bonds first), and
+equity's results are exactly what they were.
 
 There is no probability of backtest overfitting (PBO) any more. On the Sep 2026
 data it was not stable enough to gate on: machine learning's, comparing two
@@ -1336,12 +1393,19 @@ current results.
 | Equity | Polynomial – fixed economic inputs | +0.033, t 2.11, passes | +0.068, t 2.10, passes | +0.050, t 1.09 | +0.071, t 1.10 |
 | Equity | Machine learning | +0.028, t 1.71 | +0.068, t 2.34, passes | +0.097, t 2.48, passes | +0.082, t 1.71 |
 | Equity | Fama-French 5 | −0.006, t −0.35 | +0.021, t 1.27 | −0.003, t −0.17 | −0.013, t −0.83 |
-| Bond | Polynomial (derived) | +0.029, t 1.84 | +0.030, t 1.00 | +0.021, t 0.48 | +0.031, t 0.49 |
+| Bond | Polynomial (derived), whole-period pick (until 17 Nov) | +0.029, t 1.84 | +0.030, t 1.00 | +0.021, t 0.48 | +0.031, t 0.49 |
+| Bond | Polynomial (derived), chosen per window (§11) | +0.029, t 1.84 | +0.032, t 1.19 | −0.022, t −0.53 | −0.054, t −1.02 |
 | Bond | Polynomial – fixed carry inputs (`VERSION` 2) | +0.004, t 0.26 | +0.021, t 0.62 | +0.039, t 0.79 | +0.063, t 0.94 |
-| Bond | Machine learning | +0.019, t 1.30 | +0.013, t 0.54 | −0.017, t −0.46 | +0.045, t 0.88 |
+| Bond | Machine learning, whole-period pick (until 17 Nov) | +0.019, t 1.30 | +0.013, t 0.54 | −0.017, t −0.46 | +0.045, t 0.88 |
+| Bond | Machine learning, chosen per window (§11) | +0.019, t 1.28 | +0.012, t 0.48 | −0.022, t −0.59 | +0.032, t 0.64 |
 
 No bond model passes at any horizon, and at the default 20-day horizon no model
-passes for either index. Both research models score near zero on their pre-2016
+passes for either index. Since 17 Nov 2026 the bond derived polynomial and machine
+learning choose their candidate per test window from earlier windows only (§11); the
+"chosen per window" rows are from that change's
+[evidence](evidence/2026-11-17-bond-honest-selection.md), on the same files, and the
+whole-period rows are kept as the record. Machine learning's are Windows figures (§9).
+The portfolio below was run before that change. Both research models score near zero on their pre-2016
 hold-out at every horizon (t −0.44 to +0.65; §9.2 has the 20-day figures).
 
 **Portfolio.** The main result uses the team's Sprint 4 default pair, the derived
@@ -1410,6 +1474,7 @@ Values are Python literals as the code holds them.
 | `DEFAULT_MAX_TERMS` | `model_settings` | `10` |
 | `TUNING_ROWS` | `forecasting_engine.validation.splitters` | `504` |
 | `INCLUSION_THRESHOLD` | `forecasting_engine.features.screening` | `0.02` |
+| `MIN_SELECTION_HISTORY` | `forecasting_engine.validation.harness` | `12` |
 | `FACTOR_COLUMNS` | `forecasting_engine.models.famafrench` | `("Mkt-RF", "SMB", "HML", "RMW", "CMA")` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.famafrench` | `15` |
 | `MAX_AGE` | `forecasting_engine.ingest.fama_french` | `timedelta(days=30)` |
@@ -1419,6 +1484,7 @@ Values are Python literals as the code holds them.
 | `MAX_FORMULA_LENGTH` | `forecasting_engine.models.polynomial` | `10_000` |
 | `CANDIDATE_DEGREES` | `forecasting_engine.models.polynomial` | `(1, 2, 3)` |
 | `SHRINKAGE` | `forecasting_engine.models.polynomial` | `"shrinkage"` |
+| `ONLINE_SELECTION_DEFAULT` | `forecasting_engine.models.polynomial` | `{"bond": "shrinkage"}` |
 | `CLIP_SD` | `forecasting_engine.models.shrinkage` | `4.0` |
 | `COMMON_SLOPE_SCALE` | `forecasting_engine.models.shrinkage` | `0.2` |
 | `MAX_OVERLAP` | `forecasting_engine.models.shrinkage` | `63.0` |
@@ -1451,6 +1517,7 @@ Values are Python literals as the code holds them.
 | `MIN_TUNING_FOLDS` | `forecasting_engine.models.boosted` | `3` |
 | `TUNING_TRAIN_WINDOW` | `forecasting_engine.models.boosted` | `252` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.boosted` | `15` |
+| `ONLINE_SELECTION_DEFAULT` | `forecasting_engine.models.boosted` | `{"bond": "xgboost"}` |
 | `FLAG_PERCENTILE` | `forecasting_engine.validation.crash` | `0.05` |
 | `TAIL_STD_MULTIPLE` | `forecasting_engine.validation.crash` | `2.0` |
 | `SIGNAL_RANK_IC_GATE` | `forecasting_engine.validation.gates` | `0.02` |

@@ -44,7 +44,12 @@ from forecasting_engine.ingest.align import (
 from forecasting_engine.ingest.fama_french import FactorFetchError
 from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models.base import ModelDescription
-from forecasting_engine.models.boosted import BoostedConfigError, fits_tuning_period, run_boosted
+from forecasting_engine.models.boosted import (
+    LIBRARY_NAMES,
+    BoostedConfigError,
+    fits_tuning_period,
+    run_boosted,
+)
 from forecasting_engine.models.carry_research import VERSION as CARRY_RESEARCH_VERSION
 from forecasting_engine.models.carry_research import (
     CarryResearchInputsError,
@@ -63,6 +68,8 @@ from forecasting_engine.models.polynomial import (
     CANDIDATE_CONFIGS,
     CLIP_SD,
     MAX_DEGREE,
+    ONLINE_SELECTION_DEFAULT,
+    SHRINKAGE,
     DerivedPolynomial,
     PolynomialConfigError,
     UserPolynomial,
@@ -85,6 +92,7 @@ from forecasting_engine.portfolio.directional import (
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import (
     MODEL_ORDER,
+    CandidateChoice,
     Cell,
     FoldTerms,
     Holdout,
@@ -111,6 +119,7 @@ from forecasting_engine.validation.gates import (
     evaluate_candidate,
     is_high_risk,
 )
+from forecasting_engine.validation.harness import MIN_SELECTION_HISTORY
 from forecasting_engine.validation.splitters import (
     TUNING_ROWS,
     PurgedWalkForward,
@@ -199,8 +208,9 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 #: but the naive baseline is gated on Signal Rank IC and t. 6: every model's Signal
 #: Rank IC and baseline are measured against its own level, and the standard error
 #: for overlapping labels counts every lag in full. 7: the research models' results
-#: carry their pre-2016 hold-out.
-RESULT_VERSION = 7
+#: carry their pre-2016 hold-out. 8: on the Bond tab the derived polynomial and machine
+#: learning choose their candidate per test window from the earlier windows only.
+RESULT_VERSION = 8
 
 st.set_page_config(
     page_title="Models · Forecasting Engine", page_icon=":material/functions:", layout="wide"
@@ -381,10 +391,19 @@ def _polynomial_settings(
         )
         _keep(terms_key, int(max_terms))
         settings[DERIVED] = int(max_terms)
-        st.caption(
+        tries = (
             f"Tries a Lasso fit at each degree from 1 to 3 (of up to {MAX_DEGREE} allowed) "
-            "and a shrinkage fit, and reports the one with the best Signal Rank IC."
+            "and a shrinkage fit"
         )
+        if TargetRole(key) in ONLINE_SELECTION_DEFAULT:
+            st.caption(
+                f"{tries}. Each test window uses the one with the best Signal Rank IC over "
+                f"the earlier windows only (the {_candidate_label(SHRINKAGE)} fit until "
+                f"{MIN_SELECTION_HISTORY} have been scored), so no window's choice sees its "
+                "own score."
+            )
+        else:
+            st.caption(f"{tries}, and reports the one with the best Signal Rank IC.")
         return DERIVED, settings
     formula = st.text_input(
         "Function — write its shape with placeholders, then pick each one's signal",
@@ -482,13 +501,19 @@ def _latest(series: pd.Series) -> str:
 
 
 def _run_derived(
-    max_terms: int, panel: FeaturePanel, price_col: str, splitter: PurgedWalkForward
+    max_terms: int,
+    panel: FeaturePanel,
+    price_col: str,
+    splitter: PurgedWalkForward,
+    role: TargetRole,
 ) -> model_runs.ModelRun:
     candidates = tuple(
         DerivedPolynomial(degree=c.degree, regularizer=c.regularizer, max_terms=max_terms)
         for c in CANDIDATE_CONFIGS
     )
-    result, description = run_derived_polynomial(panel, splitter, candidates=candidates)
+    result, description = run_derived_polynomial(
+        panel, splitter, candidates=candidates, role=role
+    )
     fn = from_description(
         description,
         origin=Origin.DERIVED,
@@ -697,8 +722,10 @@ def _run_famafrench(
     )
 
 
-def _run_ml(panel: FeaturePanel, splitter: PurgedWalkForward) -> model_runs.ModelRun:
-    result, description, tuning = run_boosted(panel, splitter)
+def _run_ml(
+    panel: FeaturePanel, splitter: PurgedWalkForward, role: TargetRole
+) -> model_runs.ModelRun:
+    result, description, tuning = run_boosted(panel, splitter, role=role)
     return model_runs.ModelRun(result, description, tuning=tuning)
 
 
@@ -1030,6 +1057,8 @@ def _show_polynomial_expander(
                 f"on every date before its test window, not the latest {TRAIN_WINDOW}, as "
                 "the research did. " + RESEARCH_CAPTIONS[BOND_RESEARCH]
             )
+        elif name == DERIVED:
+            _show_selection(run.result.selection, "equation")
         _show_polynomial(run)
 
 
@@ -1070,7 +1099,39 @@ def _show_famafrench(run: model_runs.ModelRun) -> None:
         _show_fitted_terms(run.shap, is_shap=True)
 
 
+def _candidate_label(name: str) -> str:
+    """A grid candidate's name as the page writes it: ``degree2_lasso`` is
+    "degree-2 lasso", ``xgboost`` "XGBoost"."""
+    if name in LIBRARY_NAMES:
+        return LIBRARY_NAMES[name]
+    degree, _, regularizer = name.partition("_")
+    if degree.startswith("degree") and regularizer:
+        return f"{degree.replace('degree', 'degree-')} {regularizer}"
+    return name
+
+
+def _show_selection(choice: CandidateChoice | None, shown: str) -> None:
+    """For a grid that chose its candidate per test window from the earlier windows
+    only: how many windows each candidate was used in, and which one ``shown`` (the
+    equation, the attribution) is from."""
+    if choice is None:
+        return
+    used = ", ".join(
+        f"{_candidate_label(name)} in {count} window{'' if count == 1 else 's'}"
+        for name, count in choice.windows
+    )
+    st.caption(
+        "Chosen per test window from the earlier windows only: each uses the candidate "
+        "with the best Signal Rank IC over the windows whose labels had all ended before "
+        f"it opened, and the {_candidate_label(choice.default)} fit until "
+        f"{MIN_SELECTION_HISTORY} had. Used: {used}. The {shown} shown is the latest "
+        f"window's, {_candidate_label(choice.latest)}.",
+        help=glossary.term("Chosen per window"),
+    )
+
+
 def _show_ml(run: model_runs.ModelRun) -> None:
+    _show_selection(run.result.selection, "attribution")
     _show_fitted_terms(run.description, is_shap=True)
     _show_no_signal_folds(run.result.screening)
     tuning = run.tuning
@@ -1475,7 +1536,9 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if (clicked or run_all) and not nothing_to_run and not running:
         runners = {
             NAIVE: functools.partial(_run_naive, panel, splitter),
-            DERIVED: functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter),
+            DERIVED: functools.partial(
+                _run_derived, settings[DERIVED], panel, price_col, splitter, role
+            ),
             RESEARCH: functools.partial(
                 _run_research, research_inputs, indexed, price_col, horizon, splitter
             ),
@@ -1484,7 +1547,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
             ),
             USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
-            ML: functools.partial(_run_ml, panel, splitter),
+            ML: functools.partial(_run_ml, panel, splitter, role),
         }
         keys = {name: _result_key(role, name, settings) for name in models}
         model_jobs.submit(

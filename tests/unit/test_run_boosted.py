@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 import shap
 
+from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
 from forecasting_engine.models import boosted
 from forecasting_engine.models.boosted import BoostedConfigError, run_boosted
@@ -183,3 +184,33 @@ def test_too_few_tuning_folds_is_refused_before_any_tuning(monkeypatch):
 def test_machine_learning_needs_a_tuning_period():
     with pytest.raises(BoostedConfigError, match="tuning period"):
         _run(splitter=_splitter(tuning_rows=0))
+
+
+# --- which library the run reports: per window for bond, whole period for equity -----
+
+
+def test_only_the_bond_target_chooses_its_library_per_window():
+    assert boosted.ONLINE_SELECTION_DEFAULT == {TargetRole.BOND: "xgboost"}
+
+
+def test_for_bond_the_reported_library_and_its_fit_are_the_latest_windows():
+    panel = _panel(n=150)
+    result, description, tuning = _run(panel=panel, role=TargetRole.BOND)
+
+    choice = result.selection
+    assert [name for name, _ in choice.windows] == ["xgboost", "lightgbm"]
+    assert sum(count for _, count in choice.windows) == len(tuning.fold_tunes)
+    assert choice.default == "xgboost"
+    # The first windows have too few earlier ones scored, so they use the default.
+    assert dict(choice.windows)["xgboost"] >= min(len(tuning.fold_tunes), 13)
+    assert tuning.library == tuning.latest.library == choice.latest
+    assert description.name == f"Boosted[{choice.latest}]"
+
+
+def test_equity_and_a_run_with_no_target_report_the_whole_period_pick():
+    result, _description, tuning = _run(role=TargetRole.EQUITY)
+    plain, _, plain_tuning = _run()
+
+    assert result.selection is None and plain.selection is None
+    assert result.signal_rank_ic == plain.signal_rank_ic
+    assert tuning.library == plain_tuning.library

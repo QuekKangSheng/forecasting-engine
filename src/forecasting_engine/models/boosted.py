@@ -36,6 +36,7 @@ import pandas as pd
 from lightgbm import LGBMRegressor
 from xgboost import XGBRegressor
 
+from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.parallel import map_processes
@@ -46,6 +47,7 @@ from forecasting_engine.validation.harness import (
     pooled,
     select_best_candidate,
     summarize,
+    summarize_online,
 )
 from forecasting_engine.validation.metrics import rank_ic
 from forecasting_engine.validation.splitters import PurgedWalkForward
@@ -54,6 +56,13 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 _LIBRARIES: dict[str, type] = {"xgboost": XGBRegressor, "lightgbm": LGBMRegressor}
 LIBRARY_NAMES: dict[str, str] = {"xgboost": "XGBoost", "lightgbm": "LightGBM"}
+
+ONLINE_SELECTION_DEFAULT: Mapping[TargetRole, str] = {TargetRole.BOND: "xgboost"}
+"""Per target, the library each test window uses until enough earlier windows have been
+scored, where the library is chosen per window from the earlier windows only
+(``harness.summarize_online``). A target not listed (equity) keeps the library with the
+best Signal Rank IC over the whole scored period, which overstates its score; left so
+for now."""
 
 #: Fixed, non-tuned settings per library. ``subsample_freq`` is what makes
 #: LightGBM honour the tuned ``subsample`` at all — without it the fraction is
@@ -151,7 +160,8 @@ class TuningLog:
     fold_tunes: tuple[int, ...]
     """For each walk-forward fold, the index in ``tunes`` of the tune it used."""
     library: str
-    """The library the run reports."""
+    """The library the run reports: the whole-period pick or, where the library is
+    chosen per window, the latest window's."""
     latest: LatestFit | None = None
 
 
@@ -297,10 +307,19 @@ def run_boosted(
     n_trials: int = N_TRIALS,
     retune_trials: int = RETUNE_TRIALS,
     retune_every: int = RETUNE_EVERY,
+    *,
+    role: TargetRole | None = None,
 ) -> tuple[ModelRunResult, ModelDescription, TuningLog]:
     """Tunes XGBoost and LightGBM on a rolling schedule (see the module docstring),
     evaluates both through the shared harness with each fold's latest tune,
-    and reports the one with the best Signal Rank IC.
+    and reports them as one model.
+
+    For a target in ``ONLINE_SELECTION_DEFAULT`` (bond), each test window uses the
+    library with the best Signal Rank IC over the earlier windows only
+    (``harness.summarize_online``); the description, the latest tune shown and the fit
+    a scenario refits are the latest window's library's. Otherwise (equity, or no
+    target given) the library with the best Signal Rank IC over the whole scored
+    period is reported.
 
     Feature selection is screened per fold (``evaluate(..., screen=True)``).
     Tuning searches over every signal; only which columns a fold is *fit* on is
@@ -344,8 +363,13 @@ def run_boosted(
         for number, window in enumerate(windows)
     ]
     per_candidate = {library: fits for library, (_, fits) in zip(libraries, outcomes, strict=True)}
-    best_name = select_best_candidate(per_candidate)
-    result, _description = summarize(per_candidate[best_name])
+    default = ONLINE_SELECTION_DEFAULT.get(role) if role is not None else None
+    if default is None:
+        best_name = select_best_candidate(per_candidate)
+        result, _description = summarize(per_candidate[best_name])
+    else:
+        result, _description = summarize_online(per_candidate, panel, default)
+        best_name = result.selection.latest
     latest = _fitted_params(best_name, tunes[fold_tunes[-1]])
     last_fold = per_candidate[best_name][-1]
     description = _explain_last_fold(panel, last_fold, best_name, latest)

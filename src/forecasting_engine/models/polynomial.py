@@ -21,6 +21,7 @@ from sklearn.linear_model import enet_path
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
+from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import FeaturePanel
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.shrinkage import ShrinkagePolynomial
@@ -31,6 +32,7 @@ from forecasting_engine.validation.harness import (
     evaluate,
     select_best_candidate,
     summarize,
+    summarize_online,
 )
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
@@ -759,6 +761,12 @@ SHRINKAGE: str = "shrinkage"
 """The grid's other candidate: ``shrinkage.ShrinkagePolynomial``, a degree-1 fit
 whose slopes are shrunk toward one common slope."""
 
+ONLINE_SELECTION_DEFAULT: Mapping[TargetRole, str] = {TargetRole.BOND: SHRINKAGE}
+"""Per target, the grid's default where it chooses its candidate per test window from
+the earlier windows only (``harness.summarize_online``). A target not listed (equity)
+keeps the candidate with the best Signal Rank IC over the whole scored period
+(``harness.select_best_candidate``), which overstates its score; left so for now."""
+
 
 def run_user_polynomial(
     formula: str,
@@ -779,10 +787,16 @@ def run_derived_polynomial(
     candidates: tuple[DerivedPolynomial, ...] = CANDIDATE_CONFIGS,
     *,
     shrinkage: bool = True,
+    role: TargetRole | None = None,
 ) -> tuple[ModelRunResult, ModelDescription]:
     """Evaluates every candidate in ``candidates``, and the shrinkage polynomial
-    unless ``shrinkage`` is false, then reports the one with the best Signal Rank
-    IC.
+    unless ``shrinkage`` is false, then reports how they score as a grid.
+
+    For a target in ``ONLINE_SELECTION_DEFAULT`` (bond), each test window uses the
+    candidate with the best Signal Rank IC over the earlier windows only, the default
+    until enough have been scored (``harness.summarize_online``), and the equation is
+    the latest window's. Otherwise (equity, or no target given) the candidate with the
+    best Signal Rank IC over the whole scored period is reported.
 
     Feature selection is screened per fold (``evaluate(..., screen=True)``) —
     a signal below FYP-102's inclusion threshold, judged on that fold's own
@@ -803,7 +817,13 @@ def run_derived_polynomial(
         for (degree, regularizer, _), folds in zip(configs, fits, strict=True)
     }
     _require_folds(next(iter(per_candidate.values()), ()), panel, splitter)
-    return summarize(per_candidate[select_best_candidate(per_candidate)])
+    default = ONLINE_SELECTION_DEFAULT.get(role) if role is not None else None
+    if default is None:
+        return summarize(per_candidate[select_best_candidate(per_candidate)])
+    # A grid run without its declared default (no shrinkage) starts on its first.
+    return summarize_online(
+        per_candidate, panel, default if default in per_candidate else next(iter(per_candidate))
+    )
 
 
 def _evaluate_candidate(
