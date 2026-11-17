@@ -113,19 +113,22 @@ long-term mix.
 1. Open **Scenarios** after the Portfolio Optimizer: the portfolio impact uses
    its latest weights.
 2. Under **Signals to shock**, pick one or more signals, choose **New value** or
-   **% change** for each, and enter it.
+   **% change** for each, and enter it. Each signal says which index's active
+   model reads it ("read by: Equity, Bond").
 3. Click **Run scenario**. **Forecast impact** shows each index's forecast
-   before and after the shock; **Portfolio impact** shows the portfolio's
-   return, volatility and maximum drawdown over the next horizon, at the latest
-   weights held as they are.
+   before and after the shock. **Portfolio impact** shows both indices and the
+   whole portfolio over the next horizon: each index's weight, held as it is,
+   and its forecast, then the portfolio's return, volatility and maximum
+   drawdown.
 4. Optionally switch on **Re-optimise under shock** to see the weights the
    optimiser would choose under the shock. The Portfolio page itself is
    unchanged.
 
-*Check:* a shock only moves an index whose active model reads that signal, and
-only a polynomial can be stressed: an index whose active model is machine
-learning says so in its row. A shocked value outside the range the model was
-trained on is flagged as an extrapolation.
+*Check:* the scenario is model-based: a shock only moves an index whose active
+model reads that signal, and a row that didn't move says why. Polynomials and
+machine learning can both be stressed; a machine-learning model set active
+before 17 Nov has to be re-run and set active again first. A shocked value
+outside the range the model was trained on is flagged as an extrapolation.
 
 ### 5. Run history: save, compare and report
 
@@ -194,8 +197,8 @@ manager works in:
 4. **Portfolio Optimizer** — once an equity and a bond model are active, splits
    between the two indices at each rebalance and backtests that allocation
    against an equal-weight benchmark.
-5. **Scenarios** — shock signals the active polynomials read and see each index's
-   forecast, and the optimised portfolio, beside the base case, without refitting.
+5. **Scenarios** — shock signals the active models read and see each index's
+   forecast, and the optimised portfolio, beside the base case.
 6. **Run history** — every model fit and every distinct Portfolio result recorded
    in DuckDB, newest first; open one to see its settings, results and the data it
    was fitted on.
@@ -302,18 +305,22 @@ hosting step is needed.
 
 **Scenarios**
 
-- **Signal shocks** — choose signals the active polynomials read and give each a
-  new value or a % change; the shocks are validated (a number, above zero where
-  the series always is, within 10 times its observed range) and then both indices'
-  active functions are evaluated again on the shocked inputs, without refitting,
-  beside the base case. A shocked input outside the model's training range is
-  flagged as an extrapolation. The active polynomial's fitted function is saved in
-  DuckDB with the active model for this.
+- **Signal shocks** — choose signals the active models read (each says which
+  index reads it) and give each a new value or a % change; the shocks are
+  validated (a number, above zero where the series always is, within 10 times its
+  observed range). Each index's active polynomial is then evaluated again on the
+  shocked inputs without refitting, and an active machine-learning model's latest
+  fold is refitted exactly as it was and predicts on them, beside the base case.
+  A shocked input outside the model's training range is flagged as an
+  extrapolation, and an index whose model reads none of the shocked signals says
+  so. The polynomial's fitted function, or what the machine-learning model's
+  latest fold was fitted on, is saved in DuckDB with the active model for this.
 - **Portfolio impact** — the shocked forecasts carried through to the optimised
   portfolio at its latest weights, held as they are (the Portfolio page's last
-  result on the committed data and the models active now): return, volatility and
-  max drawdown over the next horizon beside the base case, from the same Monte
-  Carlo paths, so the difference is the shock's alone.
+  result on the committed data and the models active now): each index's weight and
+  forecast, then the portfolio's return, volatility and max drawdown over the next
+  horizon beside the base case, from the same Monte Carlo paths, so the difference
+  is the shock's alone.
 - **Re-optimise under shock** — an optional switch that solves the latest
   allocation again from the shocked forecasts, with the same risk level, limits,
   covariance and forecast trust, and shows the re-solved weights and their
