@@ -10,16 +10,22 @@ from __future__ import annotations
 
 import html
 
+import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 import bloomberg_extraction_panel
+import hero
+import market_chart
 import model_runs
+import model_settings
 import portfolio_summary
 import tokens
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
-from forecasting_engine.ingest.align import select_signals
+from forecasting_engine.ingest import index_feed
+from forecasting_engine.ingest.align import Transform, select_signals, transform_for
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import (
     MODEL_ORDER,
@@ -39,13 +45,16 @@ GO_TO = {
     "models": "Go to Models",
     "portfolio": "Go to Portfolio Optimizer",
 }
-
-ui.page_header(
-    "Forecasting Engine",
-    "Tests whether forecasts of S&P 500 and US bond returns hold up on data they never saw, "
-    "and only then uses them to split a portfolio between the two.",
-    kicker="00 / Status",
-)
+#: The second link in the opening: the page before the one the first leads to, or
+#: the analysis that follows the last.
+ALSO = {
+    "data": ("models", "Open Models"),
+    "models": ("data", "Open Data"),
+    "portfolio": ("models", "Open Models"),
+    None: ("scenarios", "Open Scenarios"),
+}
+#: The maker's name, typed out as the page's heading.
+MAKER = "Finlytics"
 
 bloomberg_extraction_panel.restore_last_commit()
 merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)
@@ -141,6 +150,137 @@ def _next_step() -> tuple[str, str] | None:
     return None
 
 
+def _signals() -> list[str]:
+    numeric = [c for c in merged.columns if c != DATE_COLUMN and merged[c].dtype.kind in "fi"]
+    return select_signals(numeric, list(targets.values()), sources)
+
+
+def _status_line(step: tuple[str, str] | None) -> str:
+    """What the app is working from, in one line short enough to sit on one: the
+    data, how many models are set on it, and, once every step has run, that it is up
+    to date. The allocation is in the figures below; a step left is said under them."""
+    if merged is None:
+        return "waiting for data: upload exports on the Data page"
+    fresh = sum(1 for role in ROLES if actives[role] and not _active_stale(role))
+    done = " · up to date" if step is None else ""
+    return (
+        f"{len(merged[DATE_COLUMN].dropna()):,} days · {len(_signals())} signals · "
+        f"{fresh} of {len(ROLES)} models active{done}"
+    )
+
+
+def _committed_closes() -> tuple[pd.Series, str] | None:
+    """The committed data's S&P 500, to draw when the live feed does not answer: its
+    price field if there is one, the figure the feed quotes, else the equity target."""
+    if merged is None:
+        return None
+    price = next(
+        (
+            column
+            for column, source in sources.items()
+            if source.security == "SPX Index" and source.field == "PX_LAST"
+        ),
+        None,
+    )
+    column = price if price in merged.columns else targets.get(TargetRole.EQUITY)
+    if column not in merged.columns:
+        return None
+    return merged.set_index(DATE_COLUMN)[column], label(column)
+
+
+def _market() -> None:
+    """The S&P 500 beside the words, as a trading chart: live where the feed answers, a
+    candle size at a time from the committed data where it does not, and said which."""
+    bundles, _ = market_chart.live()
+    bundles = dict(bundles)
+    name = f"S&P 500 · {index_feed.SYMBOL}"
+    missing = [interval for interval in index_feed.INTERVALS if interval not in bundles]
+    committed = _committed_closes() if missing else None
+    if committed is not None:
+        closes, committed_name = committed
+        for interval in missing:
+            try:
+                bundles[interval] = index_feed.from_closes(closes, interval)
+            except ValueError:  # no closes in the committed column
+                break
+        if not any(candles.live for candles in bundles.values()):
+            name = committed_name
+    if not bundles:
+        st.caption("The live feed did not answer, and no S&P 500 is committed to draw.")
+        return
+    components.html(market_chart.chart_html(bundles, name), height=market_chart.HEIGHT)
+
+
+def _tape() -> str:
+    """Both targets, then every signal, each with its change over one horizon."""
+    if merged is None:
+        return ""
+    columns = [targets[role] for role in ROLES if targets.get(role) in merged.columns]
+    columns += [c for c in _signals() if c not in columns]
+    span = model_settings.DEFAULT_HORIZON
+    items = hero.ticks(
+        merged.set_index(DATE_COLUMN),
+        columns,
+        [label(c) for c in columns],
+        [transform_for(sources.get(c)) is Transform.LOG_RETURN for c in columns],
+        span,
+    )
+    return hero.tape(items, span)
+
+
+def _plain(step_text: str) -> str:
+    """A next step as a sentence of plain text: no bold, a capital first letter."""
+    text = step_text.replace("**", "")
+    return text[:1].upper() + text[1:]
+
+
+def _lead(step: tuple[str, str] | None) -> str:
+    """The opening's words. Once every step has run, the latest weights are the
+    heading, with how they have done under them; until then, the next step is."""
+    typed = hero.typed(_status_line(step))
+    if step is not None or not _portfolio_current():
+        if step is None:  # every step done but the result is not this session's
+            step = ("open the **Portfolio Optimizer** to see the latest weights.", "portfolio")
+        return hero.lead(MAKER, "Next step", _plain(step[0]), "", typed, long=True)
+    level = "" if summary.risk_level is None else f" · risk level {summary.risk_level} of 5"
+    split = ui.split_bar(
+        [
+            ("Equity", summary.equity_weight, tokens.SERIES_EQUITY),
+            ("Bond", summary.bond_weight, tokens.SERIES_BOND),
+        ],
+        labelled=False,
+    )
+    return hero.lead(
+        MAKER,
+        f"Latest weights · {summary.as_of:%d %b %Y}{level}",
+        f"{summary.equity_weight:.0%} equity, {summary.bond_weight:.0%} bonds.",
+        split + ui.strip(_figures(), inline=True),
+        typed,
+    )
+
+
+def _opening(step: tuple[str, str] | None) -> None:
+    """The first screen: what the app is for and what it is working from, beside the
+    equity index as the committed data has it, then every committed series."""
+    where = None if step is None else step[1]
+    words, picture = st.columns([5, 7], gap="medium", vertical_alignment="bottom")
+    with words:
+        # The stylesheet travels with the first thing seen, as on every other page.
+        st.markdown(ui.stylesheet() + hero.CSS + _lead(step), unsafe_allow_html=True)
+        # Side by side at their own widths, the second dropping under the first where
+        # the column is too narrow for both.
+        with st.container(key="fe-hero-go", horizontal=True):
+            ui.page_link(where or "portfolio", GO_TO.get(where, "Open Portfolio Optimizer"))
+            ui.page_link(*ALSO[where])
+    with picture:
+        _market()
+    strip = _tape()
+    if strip:
+        st.markdown(strip, unsafe_allow_html=True)
+    else:
+        ui.rule()
+
+
 def _tick(ok: bool) -> str:
     return ui.lozenge("✓", "success") if ok else ui.lozenge("✗", "danger")
 
@@ -154,8 +294,7 @@ def _data_card() -> None:
         st.caption("Nothing committed yet.")
         return
     dates = merged[DATE_COLUMN].dropna()
-    numeric = [c for c in merged.columns if c != DATE_COLUMN and merged[c].dtype.kind in "fi"]
-    signals = select_signals(numeric, list(targets.values()), sources)
+    signals = _signals()
     rows = [
         ui.status_row("Committed", ui.lozenge("Yes", "success")),
         ui.status_row("Equity target", _tick(TargetRole.EQUITY in targets)),
@@ -265,61 +404,39 @@ def _portfolio_card() -> None:
     ui.page_link("portfolio", "Open Portfolio Optimizer")
 
 
-def _headline() -> None:
-    """The latest portfolio result, first, for anyone who opens the app to see it."""
-    if not _portfolio_current():
-        return
-    cells = [
-        (
-            f"Latest weights, {summary.as_of:%d %b %Y}",
-            f"{summary.equity_weight:.0%} / {summary.bond_weight:.0%}",
-            # The split as a bar, in the colours the two indices have on every chart.
-            ui.split_bar(
-                [
-                    ("Equity", summary.equity_weight, tokens.SERIES_EQUITY),
-                    ("Bond", summary.bond_weight, tokens.SERIES_BOND),
-                ]
-            ),
-        ),
-    ]
-    if summary.risk_level is not None:
-        cells.append(("Risk level", f"{summary.risk_level} of 5", ""))
+def _figures() -> list[tuple[str, str, str]]:
+    """How the latest weights have done: Sharpe after costs against 50/50, and whether
+    the forecasts added value. The weights and risk level are the heading above."""
     gap = summary.net_sharpe - summary.baseline_net_sharpe
-    cells.append(
+    cells = [
         (
             "Sharpe after costs",
             f"{summary.net_sharpe:.2f}",
             ui.delta(gap, f"{abs(gap):.2f}") + f" vs {summary.baseline_net_sharpe:.2f} for 50/50",
         )
-    )
+    ]
     if summary.forecast_value_label is not None:
         cells.append(
             (
-                "Forecast value after costs",
+                "Forecast value",
                 ui.lozenge(html.escape(summary.forecast_value_label), summary.forecast_value_tone),
                 f"t = {summary.forecast_value_t}",
             )
         )
-    st.markdown(ui.strip(cells), unsafe_allow_html=True)
+    return cells
 
 
-_headline()
 step = _next_step()
-if step is None:
-    st.success(
-        "**Up to date:** every step has run on the committed data.",
-        icon=":material/check_circle:",
-    )
-else:
-    what, where = step
-    st.info(f"**Next step:** {what}", icon=":material/arrow_forward:")
-    ui.page_link(where, GO_TO[where])
-# The three stages in pipeline order, numbered as the sidebar numbers them. Models
-# gets the most room: it lists every model's result for both indices.
-data_col, models_col, portfolio_col = st.columns([5, 7, 5])
-with data_col, st.container(border=True):
-    _data_card()
-with models_col, st.container(border=True):
-    _models_card()
-with portfolio_col, st.container(border=True):
-    _portfolio_card()
+_opening(step)
+# The three stages in pipeline order, numbered as the sidebar numbers them, folded:
+# the opening and the status bar already say where things stand. Open whenever a
+# step is left, so what needs doing (a stale model, a stale run) is never hidden.
+# Models gets the most room: it lists every model's result for both indices.
+with st.expander("Pipeline detail", expanded=step is not None):
+    data_col, models_col, portfolio_col = st.columns([5, 7, 5])
+    with data_col, st.container(border=True):
+        _data_card()
+    with models_col, st.container(border=True):
+        _models_card()
+    with portfolio_col, st.container(border=True):
+        _portfolio_card()

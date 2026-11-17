@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+  @font-face { font-family: "IBM Plex Mono"; font-weight: 400;
+    src: url("/app/static/IBMPlexMono-Regular.woff2") format("woff2"); }
+  @font-face { font-family: "IBM Plex Sans"; font-weight: 300 700;
+    src: url("/app/static/IBMPlexSans-Variable.woff2") format("woff2"); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: __HEIGHT__px; background: transparent; overflow: hidden;
+    font-family: "IBM Plex Sans", system-ui, sans-serif; color: #E9ECF1; }
+  .head { display: flex; align-items: baseline; gap: 0.85rem; flex-wrap: wrap; }
+  .name { font: 500 10.5px "IBM Plex Mono", monospace; letter-spacing: 0.12em;
+    text-transform: uppercase; color: #B7BFCA; }
+  .last { font-size: 24px; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .move { font: 11.5px "IBM Plex Mono", monospace; }
+  .bar { display: flex; align-items: center; gap: 0.75rem; margin: 0.5rem 0 0.25rem; }
+  .spans { display: inline-flex; flex: none; border: 1px solid #36404D; border-radius: 2px; }
+  button { font: 500 11px "IBM Plex Mono", monospace; letter-spacing: 0.06em; color: #B7BFCA;
+    background: transparent; border: 0; padding: 4px 11px; cursor: pointer; }
+  .spans button + button { border-left: 1px solid #36404D; }
+  button[aria-pressed="true"] { background: rgba(76, 144, 240, 0.16); color: #8ABBFF; }
+  button:hover { color: #E9ECF1; }
+  button:focus-visible { outline: 1px solid #4C90F0; outline-offset: 1px; }
+  #depth, #now { flex: none; border: 1px solid #36404D; border-radius: 2px; }
+  #now { margin-left: auto; visibility: hidden; }
+  .readout { font: 11px "IBM Plex Mono", monospace; color: #8B95A4; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .readout b { font-weight: 400; color: #E9ECF1; margin-right: 0.6em; }
+  /* The stage: a dotted floor and, standing on it, the chart, tilted back at rest. */
+  .stage { position: relative; height: 336px; perspective: 1300px; perspective-origin: 50% 0%; }
+  .floor { position: absolute; left: -12%; right: -12%; bottom: -30px; height: 150px;
+    background:
+      radial-gradient(ellipse at 50% 0%, rgba(76, 144, 240, 0.16), transparent 70%),
+      radial-gradient(circle at 1px 1px, rgba(233, 236, 241, 0.16) 1px, transparent 0) 0 0 / 18px 18px;
+    transform: rotateX(72deg); transform-origin: 50% 0%; opacity: 0;
+    transition: opacity 500ms ease; pointer-events: none;
+    -webkit-mask-image: linear-gradient(to bottom, #000, transparent 85%);
+            mask-image: linear-gradient(to bottom, #000, transparent 85%); }
+  .plane { position: absolute; inset: 0; transform-origin: 50% 100%;
+    transition: transform 520ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 520ms ease; }
+  .tilted .floor { opacity: 1; }
+  .tilted .plane { transform: rotateX(17deg) scale(0.95);
+    box-shadow: 0 34px 50px -30px rgba(76, 144, 240, 0.35); }
+  .tilted .stage:hover .plane, .tilted .stage:focus-within .plane { transform: none; box-shadow: none; }
+  .tilted .stage:hover .floor { opacity: 0.35; }
+  .foot { display: flex; flex-wrap: wrap; gap: 0.3rem 0.5rem; align-items: center; margin-top: 0.45rem;
+    font: 10.5px "IBM Plex Mono", monospace; letter-spacing: 0.04em; color: #8B95A4; }
+  .foot i { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .hint { margin-left: auto; opacity: 0.8; }
+  .foot a { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
+  .foot a:hover { color: #B7BFCA; }
+  /* The candle under the pointer, beside the pointer. */
+  .tip { position: absolute; z-index: 5; display: none; pointer-events: none; min-width: 176px;
+    padding: 8px 10px 7px; background: rgba(16, 20, 26, 0.95); border: 1px solid #36404D;
+    border-radius: 2px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+    font: 11px "IBM Plex Mono", monospace; color: #8B95A4; top: 0; left: 0; }
+  .tip b { display: block; margin-bottom: 5px; font-weight: 500; color: #E9ECF1; letter-spacing: 0.02em; }
+  .tip div { display: flex; justify-content: space-between; gap: 1.2rem; line-height: 1.65; }
+  .tip div span:last-child { color: #E9ECF1; font-variant-numeric: tabular-nums; }
+  @media (prefers-reduced-motion: reduce) { .plane, .floor { transition: none; } }
+</style></head>
+<body>
+  <div class="head">
+    <span class="name">__NAME__</span>
+    <span class="last" id="last"></span>
+    <span class="move" id="move"></span>
+  </div>
+  <div class="bar">
+    <div class="spans" role="group" aria-label="Candle">__BUTTONS__</div>
+    <div class="readout" id="readout" aria-live="polite"></div>
+    <button type="button" id="now" title="Back to the latest candle">Now ⇥</button>
+    <button type="button" id="depth" aria-pressed="true" title="Stand the chart in 3D at rest">3D</button>
+  </div>
+  <div class="stage" id="stage"><div class="floor"></div><div class="plane" id="plane"><div class="tip" id="tip" role="tooltip"></div></div></div>
+  <div class="foot"><i id="dot"></i><span id="where"></span>
+    <span class="hint">Drag for the past · scroll to zoom · double-click to fit all · chart by
+    <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a></span></div>
+<script src="__LIBRARY__"></script>
+<script>
+(() => {
+  const DATA = __DATA__;
+  const C = __COLOURS__;
+  let span = __FIRST__;
+  const $ = (id) => document.getElementById(id);
+  const money = (v) => v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  // The axis in whole points; the readout and the line above give every price to the cent.
+  const whole = (v) => v.toLocaleString("en-US", {maximumFractionDigits: 0});
+  const pct = (v) => (v >= 0 ? "+" : "") + (100 * v).toFixed(2) + "%";
+  const shares = (v) => v >= 1e9 ? (v / 1e9).toFixed(2) + "B" : v >= 1e6 ? (v / 1e6).toFixed(1) + "M" : String(v);
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const day = (t) => typeof t === "string" ? t :
+    `${t.year}-${String(t.month).padStart(2, "0")}-${String(t.day).padStart(2, "0")}`;
+  const when = (t, period) => {
+    const [y, m, d] = day(t).split("-").map(Number);
+    if (period === "Q") return `Q${Math.floor((m - 1) / 3) + 1} ${y}`;
+    if (period === "M") return `${months[m - 1]} ${y}`;
+    if (period === "W") return `w/c ${d} ${months[m - 1]} ${y}`;
+    return `${d} ${months[m - 1]} ${y}`;
+  };
+  const remember = (key, value) => { try { localStorage.setItem(key, value); } catch (e) {} };
+  const recall = (key) => { try { return localStorage.getItem(key); } catch (e) { return null; } };
+
+  // Each size's rows as the library takes them, built once, and each candle's place.
+  const BARS = {}, VOLUME = {}, PLACE = {};
+  for (const [key, d] of Object.entries(DATA)) {
+    BARS[key] = d.rows.map(([time, open, high, low, close]) => ({time, open, high, low, close}));
+    VOLUME[key] = d.rows.filter((r) => r[5] !== null).map((r) => ({
+      time: r[0], value: r[5], color: r[4] >= r[1] ? "rgba(50,164,103,0.35)" : "rgba(205,66,70,0.4)",
+    }));
+    PLACE[key] = new Map(d.rows.map((r, i) => [r[0], i]));
+  }
+
+  // Depth: on unless switched off here before, or the viewer asked for less motion.
+  const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let depth = !still && recall("fe-depth") !== "off";
+  const setDepth = (on) => {
+    depth = on;
+    document.body.classList.toggle("tilted", on);
+    $("depth").setAttribute("aria-pressed", String(on));
+  };
+  setDepth(depth);
+  $("depth").addEventListener("click", () => { setDepth(!depth); remember("fe-depth", depth ? "on" : "off"); });
+
+  if (!window.LightweightCharts) {
+    $("where").textContent = "The chart library did not load.";
+    return;
+  }
+  const chart = LightweightCharts.createChart($("plane"), {
+    autoSize: true,
+    layout: { background: { type: "solid", color: "rgba(0,0,0,0)" }, textColor: C.muted, attributionLogo: false,
+              fontFamily: "'IBM Plex Mono', ui-monospace, monospace", fontSize: 11 },
+    grid: { vertLines: { visible: false }, horzLines: { color: C.border } },
+    rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.24 } },
+    timeScale: { borderVisible: false, rightOffset: 4, fixLeftEdge: true, lockVisibleTimeRangeOnResize: true },
+    crosshair: {
+      mode: LightweightCharts.CrosshairMode.Normal,
+      vertLine: { color: C.muted, style: 2, width: 1, labelBackgroundColor: C.raised },
+      horzLine: { color: C.muted, style: 2, width: 1, labelBackgroundColor: C.raised },
+    },
+    localization: { priceFormatter: whole },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+    handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true, axisDoubleClickReset: true },
+  });
+  // Closed up: outlined. Closed down: filled. Never colour alone.
+  const candles = chart.addCandlestickSeries({
+    upColor: "rgba(0,0,0,0)", downColor: C.fall,
+    borderUpColor: C.rise, borderDownColor: C.fall,
+    wickUpColor: C.rise, wickDownColor: C.fall,
+    priceLineColor: C.accentBright, priceLineStyle: 2,
+  });
+  // Volume under the candles, on a scale of its own along the bottom fifth.
+  const volume = chart.addHistogramSeries({ priceScaleId: "volume", priceFormat: { type: "volume" },
+                                            lastValueVisible: false, priceLineVisible: false });
+  chart.priceScale("volume").applyOptions({ scaleMargins: { top: 0.8, bottom: 0 }, visible: false });
+
+  const readout = (bar, period) => {
+    if (!bar) { $("readout").textContent = ""; return; }
+    const move = bar.open ? bar.close / bar.open - 1 : 0;
+    $("readout").innerHTML =
+      `<b>${when(bar.time, period)}</b>O ${money(bar.open)}  H ${money(bar.high)}  ` +
+      `L ${money(bar.low)}  C ${money(bar.close)}  ` +
+      `<span style="color:${move >= 0 ? C.up : C.down}">${pct(move)}</span>`;
+  };
+
+  // The move over what is in view, from the first candle's open to the last one's close,
+  // and the "Now" button only when the latest candle is out of view.
+  const inView = () => {
+    const bars = BARS[span], range = chart.timeScale().getVisibleLogicalRange();
+    if (!range || !bars.length) return;
+    const from = Math.max(0, Math.ceil(range.from)), to = Math.min(bars.length - 1, Math.floor(range.to));
+    if (to <= from) return;
+    const change = bars[to].close / bars[from].open - 1;
+    $("move").style.color = change >= 0 ? C.up : C.down;
+    $("move").textContent = `${change >= 0 ? "▲" : "▼"} ${Math.abs(100 * change).toFixed(1)}% in view · ` +
+      `${when(bars[from].time, DATA[span].period)} – ${when(bars[to].time, DATA[span].period)}`;
+    $("now").style.visibility = range.to < bars.length - 1 ? "visible" : "hidden";
+  };
+  chart.timeScale().subscribeVisibleLogicalRangeChange(inView);
+
+  const latest = () => {
+    const bars = BARS[span], n = DATA[span].visible;
+    chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, bars.length - n), to: bars.length - 1 + 4 });
+  };
+  const show = (next) => {
+    span = next;
+    const d = DATA[span];
+    candles.setData(BARS[span]);
+    volume.setData(VOLUME[span]);
+    chart.applyOptions({ localization: { priceFormatter: whole, timeFormatter: (t) => when(t, d.period) } });
+    latest();
+    $("last").textContent = money(d.last);
+    $("where").textContent = d.where;
+    $("dot").style.background = d.live ? C.up : C.warn;
+    document.querySelectorAll("[data-span]").forEach((b) =>
+      b.setAttribute("aria-pressed", String(b.dataset.span === span)));
+    readout(BARS[span][BARS[span].length - 1], d.period);
+    inView();
+  };
+
+  // The candle under the pointer, in a box beside it: its period, open, high, low and
+  // close, its move from open to close, its change from the candle before, and volume.
+  const tip = $("tip");
+  const row = (label, value, colour) =>
+    `<div><span>${label}</span><span${colour ? ` style="color:${colour}"` : ""}>${value}</span></div>`;
+  const place = (point) => {
+    const plane = $("plane");
+    const w = tip.offsetWidth, h = tip.offsetHeight, gap = 16;
+    let x = point.x + gap;
+    if (x + w > plane.clientWidth - 64) x = point.x - w - gap;  // clear of the price axis
+    const y = Math.min(Math.max(point.y - h / 2, 4), plane.clientHeight - h - 30);
+    tip.style.transform = `translate(${Math.max(x, 4)}px, ${y}px)`;
+  };
+  const showTip = (param, d) => {
+    const bar = param && param.time && param.point ? param.seriesData.get(candles) : null;
+    if (!bar) { tip.style.display = "none"; return; }
+    const at = PLACE[span].get(day(bar.time));
+    const before = at > 0 ? d.rows[at - 1][4] : null;
+    const traded = at === undefined ? null : d.rows[at][5];
+    const move = bar.open ? bar.close / bar.open - 1 : 0;
+    const change = before ? bar.close / before - 1 : null;
+    tip.innerHTML = `<b>${when(bar.time, d.period)}</b>` +
+      row("Open", money(bar.open)) + row("High", money(bar.high)) +
+      row("Low", money(bar.low)) + row("Close", money(bar.close)) +
+      row("Open → close", pct(move), move >= 0 ? C.up : C.down) +
+      (change === null ? "" : row(`vs last ${d.unit}`, pct(change), change >= 0 ? C.up : C.down)) +
+      (traded === null ? "" : row("Volume", shares(traded)));
+    tip.style.display = "block";
+    place(param.point);
+  };
+  chart.subscribeCrosshairMove((param) => {
+    const d = DATA[span];
+    const bars = BARS[span];
+    readout(param && param.time ? param.seriesData.get(candles) : bars[bars.length - 1], d.period);
+    showTip(param, d);
+  });
+  document.querySelectorAll("[data-span]").forEach((b) =>
+    b.addEventListener("click", () => { show(b.dataset.span); remember("fe-interval", span); }));
+  $("now").addEventListener("click", latest);
+  $("plane").addEventListener("dblclick", () => chart.timeScale().fitContent());
+  const kept = recall("fe-interval");
+  show(kept && DATA[kept] ? kept : span);
+})();
+</script>
+</body></html>

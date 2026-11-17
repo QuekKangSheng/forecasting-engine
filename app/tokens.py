@@ -42,6 +42,14 @@ STATE = {
     "danger": ("#FA999C", "rgba(205, 66, 70, 0.20)"),
 }
 
+# --- direction: a month that closed up and one that closed down ----------------------
+# The theme's own green and red (config.toml's greenColor and redColor), on Home's
+# candles and tape. Which way something moved is a state, not a series: no chart
+# draws a candle beside the bond's line, and a candle that closed up is outlined
+# while one that closed down is filled, so the two never rest on colour alone.
+RISE = "#32A467"
+FALL = "#CD4246"
+
 # --- data series ---------------------------------------------------------------------
 # Chosen by measurement on the dark surface, not by eye: every pair of the three hues
 # stays apart under simulated red-green colour blindness (worst pair 8.6, target 8)

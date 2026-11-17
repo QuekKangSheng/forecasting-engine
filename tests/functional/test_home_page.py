@@ -1,5 +1,8 @@
 """The Home page's pipeline status, driven through the real page script (FYP-218)."""
 
+import html
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -14,6 +17,8 @@ import portfolio_summary
 from forecasting_engine.extraction import validation
 from forecasting_engine.extraction.bloomberg_csv import ColumnSource
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest import index_feed
+from forecasting_engine.ingest.index_feed import Candles, IndexFeedError
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult, ScreeningSummary
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
@@ -31,6 +36,48 @@ NAIVE, DERIVED, ML = "Naive (training mean)", "Polynomial (derived)", "Machine L
 def isolated_active_model_db(monkeypatch, tmp_path):
     """The active-model store reads DuckDB at a default, cwd-relative path."""
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def no_live_feed(monkeypatch):
+    """No test asks the network: the live feed does not answer unless a test says so."""
+
+    def offline(interval, **kwargs):
+        raise IndexFeedError("the live feed did not answer (offline in tests)")
+
+    monkeypatch.setattr(index_feed, "fetch", offline)
+
+
+def _live_feed(monkeypatch) -> list[str]:
+    """The live feed answering with three monthly candles; the spans asked for."""
+    asked = []
+
+    def answer(interval, **kwargs):
+        asked.append(interval)
+        frame = pd.DataFrame(
+            {
+                "open": [7500.0, 7690.0, 7650.0],
+                "high": [7820.0, 7790.0, 7700.0],
+                "low": [7500.0, 7510.0, 7350.0],
+                "close": [7686.0, 7650.0, 7418.2],
+            },
+            index=pd.date_range("2026-08-01", periods=3, freq="MS"),
+        )
+        return Candles(frame, "M", "Yahoo Finance", True, 7418.2, pd.Timestamp("2026-11-16 16:00"))
+
+    monkeypatch.setattr(index_feed, "fetch", answer)
+    return asked
+
+
+def _frames(app: AppTest) -> list[str]:
+    """Each frame the page drew, as its page."""
+    return [frame.proto.srcdoc for frame in app.get("iframe")]
+
+
+def _chart_data(app: AppTest) -> dict:
+    """The market chart's spans, as the frame holds them."""
+    (page,) = _frames(app)
+    return json.loads(re.search(r"const DATA = (.*?);\n", page).group(1))
 
 
 @pytest.fixture(autouse=True)
@@ -128,15 +175,24 @@ def _captions(app: AppTest) -> str:
     return " ".join(c.value for c in app.caption)
 
 
+def _heading(app: AppTest) -> str:
+    """What the opening says of where things stand, under the name, as text."""
+    opening = next(m.value for m in app.markdown if 'aria-level="1"' in m.value)
+    return html.unescape(re.search(r'class="fe-hero-state[^"]*">(.*?)</div>', opening).group(1))
+
+
 def _next_step(app: AppTest) -> str:
-    return next(i.value for i in app.info if i.value.startswith("**Next step:**"))
+    """The next step, which is the heading while one is left."""
+    opening = next(m.value for m in app.markdown if 'aria-level="1"' in m.value)
+    assert 'class="fe-hero-label">Next step<' in opening
+    return _heading(app)
 
 
 def test_with_nothing_committed_the_next_step_is_the_data_page():
     app = _page()
 
     assert not app.exception
-    assert "**Data** page" in _next_step(app)
+    assert "Data page" in _next_step(app)
     assert [s.value for s in app.subheader] == ["Data", "Models", "Portfolio Optimizer"]
     assert "Nothing committed yet." in _captions(app)
     assert "Not run yet." in _captions(app)
@@ -154,7 +210,7 @@ def test_with_data_only_the_data_card_is_filled_and_the_next_step_is_to_run_mode
     markdown = _markdown(app)
     assert "Equity target" in markdown and "Bond target" in markdown
     assert markdown.count("✓") == 2  # both targets; no active models yet
-    assert "run the equity models on the **Models** page" in _next_step(app)
+    assert _next_step(app) == "Run the equity models on the Models page."
 
 
 def test_models_that_ran_are_listed_with_their_gate_signal_rank_ic_and_t():
@@ -167,7 +223,7 @@ def test_models_that_ran_are_listed_with_their_gate_signal_rank_ic_and_t():
     assert "Signal Rank IC 0.040 · t 4.00" in markdown
     assert "Signal Rank IC 0.010 · t 1.00" in markdown
     assert "1 of 2 signals passed screening in the latest fold" in _captions(app)
-    assert "set an active equity model on the **Models** page" in _next_step(app)
+    assert _next_step(app) == "Set an active equity model on the Models page."
 
 
 def test_a_target_named_with_html_in_its_column_shows_the_name_as_text():
@@ -217,7 +273,7 @@ def test_a_stale_active_model_and_portfolio_run_are_flagged_amber():
     warnings = [w.value for w in app.warning]
     assert any("fitted on different data" in w for w in warnings)
     assert any("last run used different data" in w for w in warnings)
-    assert "re-run the equity models" in _next_step(app)
+    assert _next_step(app).startswith("Re-run the equity models")
     assert "Net Sharpe 0.85 against 0.83 for 50/50." in _captions(app)
 
 
@@ -247,11 +303,13 @@ def test_an_up_to_date_pipeline_says_there_is_nothing_left_to_do():
 
     assert not app.exception
     assert not app.warning
-    assert not [i for i in app.info if i.value.startswith("**Next step:**")]
-    assert "every step has run on the committed data" in app.success[0].value
+    assert _heading(app) == "60% equity, 40% bonds."
+    assert 'class="fe-hero-label">Next step<' not in _markdown(app)
+    assert not app.success  # no banner: the typed line says it
+    assert "2 of 2 models active · up to date</span>" in _markdown(app)
     # The latest result leads the page, ahead of the pipeline cards.
     strip = next(m.value for m in app.markdown if '<div class="fe-strip' in m.value)
-    assert "60% / 40%" in strip and "0.83 for 50/50" in strip
+    assert "0.83 for 50/50" in strip
     assert "Latest weights (01 Mar 2024): 60% equity, 40% bond." in _captions(app)
 
 
@@ -286,7 +344,7 @@ def test_a_portfolio_run_on_an_active_model_since_replaced_is_flagged_amber():
     assert not app.exception
     warnings = [w.value for w in app.warning]
     assert any("last run used different active models" in w for w in warnings)
-    assert "open the **Portfolio Optimizer**" in _next_step(app)
+    assert _next_step(app).startswith("Open the Portfolio Optimizer")
     # Its weights no longer lead the page as the latest result.
     assert not [m for m in app.markdown if '<div class="fe-strip' in m.value]
 
@@ -343,7 +401,7 @@ def test_after_the_data_is_cleared_the_last_allocation_is_not_shown_as_current()
 
     assert not app.exception
     assert not [m for m in app.markdown if '<div class="fe-strip' in m.value]
-    assert "**Data** page" in _next_step(app)
+    assert "Data page" in _next_step(app)
 
 
 def test_a_model_fitted_on_another_target_column_is_flagged_on_home():
@@ -355,4 +413,115 @@ def test_a_model_fitted_on_another_target_column_is_flagged_on_home():
 
     assert not app.exception
     assert any("fitted on different data" in w.value for w in app.warning)
-    assert "re-run the equity models" in _next_step(app)
+    assert _next_step(app).startswith("Re-run the equity models")
+
+def _long_committed(days: int = 220) -> pd.DataFrame:
+    """Enough months for the field to draw, the index rising a little each day."""
+    rng = np.random.default_rng(1)
+    return pd.DataFrame(
+        {
+            "Date": pd.bdate_range("2024-01-02", periods=days),
+            SPX: 4000 + np.arange(days, dtype=float),
+            AGG: 2200 + np.cumsum(rng.normal(size=days)),
+            "VIX_Index_PX_LAST": 15 + rng.normal(size=days),
+            "LUACOAS_Index_PX_LAST": 1.2 + rng.normal(scale=0.1, size=days),
+        }
+    )
+
+
+def test_the_page_opens_on_the_name_then_the_step_left_while_one_is():
+    app = _page(_committed())
+
+    assert _markdown(app).count('aria-level="1"') == 1
+    assert 'aria-level="1" aria-label="Finlytics"' in _markdown(app)
+    assert _heading(app) == "Run the equity models on the Models page."
+    assert not app.info  # said once, as the heading
+
+
+def test_the_opening_says_what_the_app_is_working_from():
+    markdown = _markdown(_page(_committed()))
+
+    assert ">60 days · 2 signals · 0 of 2 models active</span>" in markdown
+
+
+def test_with_nothing_committed_and_no_feed_the_opening_says_so_and_draws_nothing():
+    app = _page()
+
+    assert ">waiting for data: upload exports on the Data page</span>" in _markdown(app)
+    assert '<div class="fe-tape"' not in _markdown(app)
+    assert not _frames(app)
+    assert "no S&P 500 is committed to draw" in _captions(app)
+
+
+def test_the_s_and_p_is_drawn_live_with_every_candle_size_fetched_at_once(monkeypatch):
+    asked = _live_feed(monkeypatch)
+    app = _page(_committed())
+
+    assert not app.exception
+    assert sorted(asked) == ["1D", "1M", "1W", "3M"]
+    data = _chart_data(app)
+    assert sorted(data) == ["1D", "1M", "1W", "3M"]
+    assert [row[4] for row in data["1D"]["rows"]] == [7686.0, 7650.0, 7418.2]
+    assert data["1D"]["where"] == "Live · Yahoo Finance · 16 Nov 2026 16:00 New York"
+    assert 'data-span="1D" aria-pressed="true"' in _frames(app)[0]
+
+
+def test_the_feed_is_asked_once_however_often_the_page_reruns(monkeypatch):
+    asked = _live_feed(monkeypatch)
+    app = _page(_committed())
+    app.run()
+
+    assert len(asked) == len(index_feed.INTERVALS)
+
+
+def test_without_the_feed_the_committed_s_and_p_is_drawn_and_said_to_be():
+    app = _page(_long_committed())
+
+    assert not app.exception
+    data = _chart_data(app)
+    months = pd.bdate_range("2024-01-02", periods=220).to_period("M").nunique()
+    assert len(data["1M"]["rows"]) == months
+    assert len(data["1D"]["rows"]) == 220
+    assert data["1M"]["where"].startswith("From the committed data · to")
+    assert not data["1M"]["live"]
+
+
+def test_the_tape_shows_both_targets_then_each_signal_with_its_change_over_a_horizon():
+    markdown = _markdown(_page(_long_committed()))
+
+    tape = markdown[markdown.index('<div class="fe-tape"') :]
+    run = tape[: tape.index('<span class="fe-tape-run" aria-hidden="true">')]
+    names = ["S&amp;P 500", "US Aggregate Bond", "US IG credit spread", "VIX"]
+    places = [run.index(f"<b>{name}</b>") for name in names]
+    assert places == sorted(places)
+    assert "change over 20 trading days" in tape
+    # The index rose a point a day from 4,199 to 4,219 over the last twenty.
+    assert "▲ 0.5%" in run
+
+
+def test_a_model_fitted_on_other_data_is_not_counted_as_active():
+    committed = _committed()
+    active_model.set_active_model(
+        EQUITY,
+        ML,
+        _result(0.04),
+        high_risk=False,
+        horizon=20,
+        train_window=504,
+        test_window=20,
+        dataset_fingerprint="some other dataset",
+    )
+    active_model.set_active_model(
+        BOND,
+        ML,
+        _result(0.04),
+        high_risk=False,
+        horizon=20,
+        train_window=504,
+        test_window=20,
+        dataset_fingerprint=str(dataset_fingerprint(committed)),
+    )
+
+    markdown = _markdown(_page(committed))
+
+    assert "1 of 2 models active</span>" in markdown
