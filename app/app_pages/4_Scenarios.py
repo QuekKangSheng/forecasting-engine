@@ -1,10 +1,14 @@
-"""Scenarios page: shock one or more signals the active polynomials read and see
+"""Scenarios page: shock one or more signals the active models read and see
 what each index's forecast becomes (FYP-32), then what that does to the
 optimised portfolio (FYP-33).
 
-The active functions are evaluated again on the shocked inputs; nothing is
-refitted. Each shock replaces the signal's last observed value and goes through
-the same alignment, transform and lag as the fit (``scenario.shock``). Shocks are
+An active polynomial's function is evaluated again on the shocked inputs, without
+refitting; an active machine-learning model's latest fold is fitted again exactly
+as the run fitted it, then predicts on them. Each shock replaces the signal's last
+observed value and goes through the same alignment, transform and lag as the fit
+(``scenario.shock``). A shock moves an index only through the signals its active
+model reads: the scenario is model-based, with no direct bond-price effect for a
+move in rates or spreads. Shocks are
 validated before the scenario can run, and a shocked input outside the range the
 model was trained on is flagged as an extrapolation.
 
@@ -29,9 +33,10 @@ import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import transform_for
+from forecasting_engine.models.boosted import LIBRARY_NAMES
 from forecasting_engine.portfolio import optimize
 from forecasting_engine.reporting.factor_labels import labeller
-from forecasting_engine.reporting.model_metrics import display_model_name
+from forecasting_engine.reporting.model_metrics import MODEL_ORDER, display_model_name
 from forecasting_engine.reporting.polynomial_function import dataset_fingerprint
 from forecasting_engine.risk import monte_carlo
 from forecasting_engine.scenario import portfolio_impact, shock
@@ -45,13 +50,16 @@ RESULT_KEY = "scenario_result"
 METHOD_KEY = "monte_carlo_method"
 PATHS_KEY = "monte_carlo_paths"
 REOPTIMISE_KEY = "scenario_reoptimise"
+ML_NAME = MODEL_ORDER[-1]
+#: The bond research model, whose inputs are the dates a forecast window holds.
+CALENDAR_NAME = "Polynomial – calendar inputs (research)"
 KIND_LABELS = {shock.ShockKind.ABSOLUTE: "New value", shock.ShockKind.PERCENT: "% change"}
 
 ui.page_header(
     "Scenarios",
-    "Shock one or more signals the active polynomials read, and see how each index's "
-    "forecast changes. Nothing is refitted: the active functions are evaluated again on "
-    "the shocked inputs.",
+    "Shock one or more signals the active models read, and see how each index's "
+    "forecast changes and what that does to the portfolio. The scenario is model-based: a "
+    "shock moves an index only through the signals its active model reads.",
     kicker="04 / Stress",
 )
 
@@ -71,9 +79,10 @@ label = labeller(numeric_cols)
 sources = st.session_state.get(bloomberg_extraction_panel.COMMITTED_SOURCES_KEY, {})
 frame = merged.set_index(DATE_COLUMN)
 
-# Per index: its active model, and the function a scenario evaluates, or why not.
+# Per index: its active model, and the polynomial function a scenario evaluates or
+# the machine-learning fit it refits, or why there is neither.
 actives = {role: active_model.get_active_model(role) for role in ROLES}
-records, functions, unavailable = {}, {}, {}
+records, models, unavailable = {}, {}, {}
 for role in ROLES:
     name = label(target_columns[role]) if role in target_columns else role.value.title()
     record = actives[role]
@@ -92,31 +101,59 @@ for role in ROLES:
             "data on the Models page and set it active again."
         )
     else:
-        function = active_model.get_active_function(role)
-        if function is None:
+        model = active_model.get_active_function(role) or active_model.get_active_ml(role)
+        if model is not None:
+            records[role], models[role] = record, model
+        elif record.model_name == CALENDAR_NAME:
             unavailable[role] = (
-                f"The active {name} model, {display_model_name(record.model_name)}, has no "
-                "stored polynomial function: a scenario moves market signals and "
-                "re-evaluates a polynomial in them. Machine learning has none, and the "
-                "calendar model's reads only dates, which no scenario moves. Set another "
-                "polynomial active on the Models page (setting one again stores its "
-                "function)."
+                f"The active {name} model, {CALENDAR_NAME}, reads only the dates each "
+                "forecast window holds, which no scenario moves, so a shock leaves its "
+                "forecast where it is."
+            )
+        elif record.model_name == ML_NAME:
+            unavailable[role] = (
+                f"The active {name} model, {ML_NAME}, was set active before scenarios could "
+                "stress machine learning. Re-run machine learning and set it active again to "
+                "stress it."
             )
         else:
-            records[role], functions[role] = record, function
+            unavailable[role] = (
+                f"The active {name} model, {display_model_name(record.model_name)}, was set "
+                "active before scenarios could stress it. Set it active again on the Models "
+                "page."
+            )
 
-if not functions:
+if not models:
     st.info(
-        "A scenario needs an active polynomial for at least one index. "
-        + " ".join(unavailable.values()),
+        "A scenario needs an active polynomial or machine-learning model for at least one "
+        "index. " + " ".join(unavailable.values()),
         icon=":material/info:",
     )
     st.stop()
 
+
+def _role_name(role: TargetRole) -> str:
+    return role.value.title()
+
+
+def _model_name(role: TargetRole) -> str:
+    """The active model as the tables name it: a machine-learning model with its library."""
+    name = display_model_name(records[role].model_name)
+    model = models.get(role)
+    if isinstance(model, active_model.ActiveML):
+        return f"{name}, {LIBRARY_NAMES.get(model.library, model.library)}"
+    return name
+
+
+def _listed(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} or {names[-1]}"
+
+
 # A signal's "last observed" value is its last observation on or before the earliest
-# last price among the indices evaluated: after that, no function reads anything.
-as_of = min(frame[target_columns[role]].dropna().index[-1] for role in functions)
-inputs = list(dict.fromkeys(s for f in functions.values() for s in f.inputs))
+# last price among the indices evaluated: after that, no model reads anything.
+as_of = min(frame[target_columns[role]].dropna().index[-1] for role in models)
+inputs = list(dict.fromkeys(s for m in models.values() for s in m.inputs))
+read_by = {s: [_role_name(r) for r in models if s in models[r].inputs] for s in inputs}
 
 st.markdown(
     ui.eyebrow("Signals to shock", glossary.term("Signal shock")), unsafe_allow_html=True
@@ -124,7 +161,7 @@ st.markdown(
 selected = st.multiselect(
     "Signals to shock",
     inputs,
-    format_func=label,
+    format_func=lambda s: f"{label(s)} (read by: {', '.join(read_by[s])})",
     placeholder="Choose the signals the scenario moves",
     label_visibility="collapsed",
 )
@@ -135,8 +172,8 @@ for signal in selected:
     cols = st.columns([4, 4, 3], vertical_alignment="bottom")
     cols[0].markdown(
         f"**{html.escape(label(signal))}**<br>"
-        f'<span style="color: var(--fe-muted)">Last observed {value:,.4g} on '
-        f"{date:%d %b %Y}</span>",
+        f'<span style="color: var(--fe-muted)">Read by: {", ".join(read_by[signal])}. '
+        f"Last observed {value:,.4g} on {date:%d %b %Y}</span>",
         unsafe_allow_html=True,
     )
     kind = cols[1].segmented_control(
@@ -170,29 +207,34 @@ if pending and selected:
 # Everything a result depends on: one from other inputs is not shown as this one's.
 inputs_key = (
     fingerprint,
-    tuple((role, records[role].set_at) for role in functions),
+    tuple((role, records[role].set_at) for role in models),
     tuple(sorted(levels.items())),
 )
 blocked = not selected or bool(pending) or bool(errors)
 if st.button("Run scenario", type="primary", disabled=blocked):
     results, failures = {}, {}
-    for role, function in functions.items():
+    for role, model in models.items():
         record = records[role]
-        splitter = PurgedWalkForward(
-            train=record.train_window,
-            test=record.test_window,
-            embargo=EMBARGO_DAYS,
-            tuning_rows=TUNING_ROWS,
-        )
         try:
-            results[role] = shock.run_scenario(
-                function,
-                frame,
-                target_columns[role],
-                levels,
-                horizon=record.horizon,
-                splitter=splitter,
-            )
+            if isinstance(model, active_model.ActiveML):
+                results[role] = shock.run_ml_scenario(
+                    model, frame, target_columns[role], levels, horizon=record.horizon
+                )
+            else:
+                splitter = PurgedWalkForward(
+                    train=record.train_window,
+                    test=record.test_window,
+                    embargo=EMBARGO_DAYS,
+                    tuning_rows=TUNING_ROWS,
+                )
+                results[role] = shock.run_scenario(
+                    model,
+                    frame,
+                    target_columns[role],
+                    levels,
+                    horizon=record.horizon,
+                    splitter=splitter,
+                )
         except shock.ScenarioError as exc:
             failures[role] = str(exc)
     st.session_state[RESULT_KEY] = (inputs_key, results, failures)
@@ -232,8 +274,7 @@ def _index_cell(role: TargetRole) -> str:
     """The index, with the active model behind its figures beneath it."""
     name = label(target_columns[role]) if role in target_columns else role.value.title()
     model = (
-        f'<br><span style="color: var(--fe-muted)">'
-        f"{html.escape(display_model_name(records[role].model_name))}</span>"
+        f'<br><span style="color: var(--fe-muted)">{html.escape(_model_name(role))}</span>'
         if role in records
         else ""
     )
@@ -252,16 +293,35 @@ header = (
     + _heading("Change")
     + _heading("% change")
 )
+
+
+def _unread(role: TargetRole) -> str | None:
+    """Why the shocks can't move ``role``'s forecast, if its model reads none of the
+    signals shocked: a bare 0.00 would read as the shock having no effect."""
+    read = models[role].inputs
+    if set(read) & set(levels):
+        return None
+    name = label(target_columns[role])
+    shocked = _listed([label(s) for s in levels])
+    lead = f"Unchanged: the active {name} model, {_model_name(role)}, doesn't read {shocked}"
+    if not read:
+        return f"{lead}: its latest fit uses no signals, so no shock can move it."
+    return f"{lead}. Its latest fit uses: {', '.join(label(s) for s in read)}."
+
+
 rows = []
 for role in ROLES:
     if role in results:
         result = results[role]
+        unread = _unread(role)
+        change = (
+            f'<td colspan="2" style="white-space: normal; color: var(--fe-muted)">'
+            f"{html.escape(unread)}</td>"
+            if unread
+            else _cell(f"{result.change * 100:+.2f} pts") + _cell(_pct(result.relative_change))
+        )
         rows.append(
-            _index_cell(role)
-            + _cell(_pct(result.base))
-            + _cell(_pct(result.shocked))
-            + _cell(f"{result.change * 100:+.2f} pts")
-            + _cell(_pct(result.relative_change))
+            _index_cell(role) + _cell(_pct(result.base)) + _cell(_pct(result.shocked)) + change
         )
     else:
         reason = failures.get(role) or unavailable.get(role, "")
@@ -277,24 +337,33 @@ st.markdown(
 horizons = sorted({records[role].horizon for role in results})
 st.caption(
     f"Returns over the next {' or '.join(map(str, horizons))} trading days after "
-    f"{as_of:%d %b %Y}. The base case is each active function on the latest data; the "
-    "shocked forecast is the same function with the shocks applied. Change is shocked "
+    f"{as_of:%d %b %Y}. The base case is each active model on the latest data; the "
+    "shocked forecast is the same model with the shocks applied. Change is shocked "
     "less base in percentage points, and % change is that change relative to the base "
-    "case."
+    "case. The scenario is model-based: a shock moves an index only through the signals "
+    "its active model reads, and nothing is added for a direct effect of rates or spreads "
+    "on bond prices."
 )
 
 for role, result in results.items():
     index_name = label(target_columns[role])
+    trees = isinstance(models[role], active_model.ActiveML)
     for change in result.changes:
         low, high = change.trained_on
         # A clipped input caps the shock's effect, extrapolation or not: without
         # saying so, every shock beyond the bound reads as the same forecast.
-        clipped = (
-            f"The model clips this input to {change.clipped_to:.4g} before its terms "
-            "apply, so any shock beyond that gives the same forecast."
-            if change.clipped_to is not None
-            else ""
-        )
+        if change.clipped_to is None:
+            clipped = ""
+        elif trees:
+            clipped = (
+                f"Trees can't extrapolate: beyond {change.clipped_to:.4g} the model gives "
+                f"the same forecast as at {change.clipped_to:.4g}."
+            )
+        else:
+            clipped = (
+                f"The model clips this input to {change.clipped_to:.4g} before its terms "
+                "apply, so any shock beyond that gives the same forecast."
+            )
         if change.extrapolated:
             st.warning(
                 f"Extrapolation: {label(change.signal)} enters the {index_name} model as "
@@ -312,7 +381,7 @@ for role, result in results.items():
 with st.expander("What each model reads"):
     detail = []
     for role, result in results.items():
-        transforms = functions[role].transforms
+        transforms = models[role].transforms
         for change in result.changes:
             low, high = change.trained_on
             detail.append(
@@ -330,7 +399,7 @@ with st.expander("What each model reads"):
     st.caption(
         "Each input after the transform the model was fitted on (a level, a one-day "
         "change, or a one-day log return) and the one-day lag. Trained on is the input's "
-        "range over the latest walk-forward fold's training rows, the fit the function is."
+        "range over the latest walk-forward fold's training rows, the fit the model is."
     )
 
 
@@ -454,7 +523,32 @@ def _metric_row(name: str, term: str, read, *, signed: bool = True) -> str:
     )
 
 
-held_equity = _pct(impact.weights[TargetRole.EQUITY], signed=False)
+def _weight_row(role: TargetRole) -> str:
+    """An index's weight: held in the base and shocked cases, so it moves only in the
+    re-optimised column (FYP-248)."""
+    held = _pct(impact.weights[role], signed=False)
+    return (
+        _heading(f"{label(target_columns[role])} weight")
+        + _cell(held)
+        + _cell(held)
+        + _cell(_pts(0.0))
+        + (_cell(_pct(resolved.weights[role], signed=False)) if resolved else "")
+    )
+
+
+def _forecast_row(role: TargetRole) -> str:
+    """An index's forecast over the horizon, base and shocked. The re-optimised case
+    reads the same shocked forecast: only the weights differ."""
+    base, shocked_value = base_forecasts[role], shocked_forecasts[role]
+    return (
+        _heading(f"{label(target_columns[role])} forecast", "Shocked forecast")
+        + _cell(_pct(base))
+        + _cell(_pct(shocked_value))
+        + _cell(_pts(shocked_value - base))
+        + (_cell(_pct(shocked_value)) if resolved else "")
+    )
+
+
 impact_header = (
     _heading("Metric")
     + _heading("Base case")
@@ -463,19 +557,17 @@ impact_header = (
     + (_heading("Shocked, re-optimised", "Re-optimise under shock") if resolved else "")
 )
 impact_rows = [
-    # FYP-248: the weights move only in the re-optimised column.
-    _heading(f"{equity_name} weight")
-    + _cell(held_equity)
-    + _cell(held_equity)
-    + _cell(_pts(0.0))
-    + (_cell(_pct(resolved.weights[TargetRole.EQUITY], signed=False)) if resolved else ""),
-    _metric_row("Return", "Shocked return", lambda m: m.mean_return),
-    _metric_row("Volatility", "Shocked volatility", lambda m: m.volatility, signed=False),
+    *(_weight_row(role) for role in ROLES),
+    *(_forecast_row(role) for role in ROLES),
+    _metric_row("Portfolio return", "Shocked return", lambda m: m.mean_return),
+    _metric_row(
+        "Portfolio volatility", "Shocked volatility", lambda m: m.volatility, signed=False
+    ),
 ]
 for confidence in impact.base.max_drawdown:
     impact_rows.append(
         _metric_row(
-            f"Max drawdown {confidence:.0%}",
+            f"Portfolio max drawdown {confidence:.0%}",
             "Shocked drawdown",
             lambda m, c=confidence: m.max_drawdown[c],
         )
@@ -492,8 +584,9 @@ st.caption(
     f"{impact.weights[TargetRole.BOND]:.0%} {bond_name}, as of {summary.as_of:%d %b %Y}), "
     "held as they are: the weights are not re-optimised for the shock. The base case "
     f"and the shocked case are simulated on the same {impact.paths:,} {method} paths, so "
-    "the change is the shock's alone. Volatility is the spread of the simulated horizon "
-    "returns; max drawdown is the fall only the worst 5% or 1% of paths exceed."
+    "the change is the shock's alone. Each index's forecast is the return the simulation "
+    "centres that index on. Portfolio volatility is the spread of the simulated horizon "
+    "returns; portfolio max drawdown is the fall only the worst 5% or 1% of paths exceed."
     + (
         f" {' and '.join(untouched)} had no scenario result, so its base-case "
         "forecast is used in both cases."

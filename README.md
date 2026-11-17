@@ -5,7 +5,151 @@ those forecasts against overfitting, and feeds them into an equity/bond portfoli
 that is backtested against a 50/50 benchmark. Built for Alpha Norm by Finlytics
 (IS484).
 
-## Getting started
+## Using the dashboard
+
+A short guide from data to a portfolio report. For how each model and number is
+worked out, see the [methodology](docs/methodology.md).
+
+Work through the pages in order, top to bottom of the sidebar: **Home**, **Data**,
+**Models**, **Portfolio Optimizer**, **Scenarios**, **Run history**. The status bar
+at the top of every page shows how far you've got: the dates of the data
+committed, the active **Equity** and **Bond** models, and the latest
+**Allocation**.
+
+### Home: where you are and what to do next
+
+**Home** opens with **Next step**: the first thing left to do, with a button to
+the page where it's done. Under it, the status line sums up what the app is
+working from: how many days of data, how many signals, and how many of the 2
+models are active. Once every step has run, it ends "up to date", and the heading
+becomes the **Latest weights** instead. Beside it is the S&P 500, and under both
+a strip of every committed series with its latest value and its 20-day change.
+The **Data**, **Models** and **Portfolio Optimizer** cards below show each step's
+state.
+
+*Check:* if a card says something was fitted or solved on other data or other
+models, redo that step before reading its figures.
+
+### 1. Data: load the Bloomberg history
+
+1. Open **Data**.
+2. Put the two target indices (the S&P 500 and the US Aggregate bond index) in
+   **Target index files**, and every other export (VIX, credit spreads, rates, FX
+   volatility and so on) in **Signal files**. Excel or CSV, exactly as Bloomberg
+   exported them, up to 25 MB each. The page guesses which target is equity and
+   which is bond from the security in each file: confirm or change it.
+3. Click **Use Updated Data**. Every other page now works on this data.
+4. Read the **Data quality report**: the rows, columns and dates covered, then
+   **Completeness**, **Unusual moves** and **Missing rows**. Nothing is changed
+   for you: flagged values are only shown, and none of them stops a run.
+
+*Check:* the dates covered are what you expect. If the data starts so early that
+the portfolio's first rebalance would fall before May 2005, the page warns you:
+the optimiser's long-run premium comes from research published in April 2005,
+so rebalancing before then would use a figure nobody had yet.
+
+### 2. Models: forecast each index and pick one to use
+
+1. Open **Models**. There is one tab per index: **Equity** and **Bond**.
+2. Under **Settings**, choose the **Forecast horizon**: 1, 5, 10 or 20 trading
+   days ahead (20 by default). The train and test windows are fixed.
+3. Click **Run all targets** to fit every ticked model on both tabs, or **Run**
+   on one tab. Fitting runs in the background and takes several minutes on 20
+   years of data.
+4. Read the results table. A model **passes the gate** only if its forecasts rank
+   future returns better than its own average forecast does (Signal Rank IC
+   above 0.02) **and** that is statistically reliable (t above 2).
+5. Under **Set active model**, choose one model per index and click **Set as
+   active**. A model that fails both gates can still be used, after a
+   confirmation.
+
+*Check:* **Fitted terms** under each polynomial (which signals it uses, and how
+strongly), and **Would the forecast's direction have paid?**, which shows what
+following the model's signal would have earned.
+
+**The models, in one line each**
+
+- **Naive (training mean):** forecasts the average return over its training
+  window. The baseline every other model has to beat.
+- **Fama-French 5 (equity only):** a standard academic factor model, kept as a
+  benchmark.
+- **Polynomial, derived automatically:** picks the useful signals afresh for
+  every test period and fits a polynomial in them (degrees 1 to 3, including
+  terms that multiply two signals together).
+- **Polynomial, your own function:** type your own formula in the signals; only
+  its scale and intercept are fitted.
+- **Polynomial – fixed economic inputs (research, equity):** high-yield and
+  investment-grade credit spreads, VIX and the 2s10s curve slope, with the signs
+  economics expects. Its inputs were chosen by looking at past results, so its
+  scores are labelled optimistic.
+- **Polynomial – calendar inputs (research, bond):** how many month-ends, month
+  starts and jobs-report Fridays each forecast window holds, since bond returns
+  are a few basis points higher on a month's last trading day. It carries
+  information at the 1- and 5-day horizons only. Same caveat. It replaced a bond
+  model on fixed carry inputs on 17 Nov 2026; if that one is still the active bond
+  model, Home and the Portfolio Optimizer say it is no longer offered: set another.
+- **Machine learning:** gradient-boosted trees (XGBoost and LightGBM), with a
+  table of which signals drive them most (SHAP).
+
+### 3. Portfolio Optimizer: build and test the allocation
+
+1. Open **Portfolio Optimizer**. It needs an active model for both indices.
+2. Choose a **Risk level**, from 1 (risk-loving, most equity) to 5 (risk-averse,
+   least), the **Minimum in each index**, and whether returns are shown **After
+   costs** or **Before costs**.
+3. Read the results:
+   - the **latest weights**, and how they were set;
+   - **Performance against the equal-weight benchmark**: return, Sharpe,
+     drawdown and more, against a 50/50 portfolio;
+   - **Is the outperformance genuine?**, including **Did the forecasts add
+     value?**: the same risk level with and without the forecasts;
+   - the charts (weights against volatility, cumulative return, drawdown,
+     rolling Sharpe) and the **Tail risk** table;
+   - **Run simulation** for a Monte Carlo view of the next horizon.
+4. **Download run report** saves the run as a file to read offline.
+
+*Check:* the forecasts only move the weights once their past record is
+statistically reliable. Until then the portfolio holds the risk level's
+long-term mix.
+
+### 4. Scenarios: stress a signal
+
+1. Open **Scenarios** after the Portfolio Optimizer: the portfolio impact uses
+   its latest weights.
+2. Under **Signals to shock**, pick one or more signals, choose **New value** or
+   **% change** for each, and enter it.
+3. Click **Run scenario**. **Forecast impact** shows each index's forecast
+   before and after the shock; **Portfolio impact** shows the portfolio's
+   return, volatility and maximum drawdown over the next horizon, at the latest
+   weights held as they are.
+4. Optionally switch on **Re-optimise under shock** to see the weights the
+   optimiser would choose under the shock. The Portfolio page itself is
+   unchanged.
+
+*Check:* a shock only moves an index whose active model reads that signal, and
+only a polynomial can be stressed: an index whose active model is machine
+learning says so in its row. A shocked value outside the range the model was
+trained on is flagged as an extrapolation.
+
+### 5. Run history: save, compare and report
+
+1. Open **Run history**. **Portfolio runs** lists every distinct portfolio result,
+   numbered; you can name a run. **Model fits** lists every model fit.
+2. **Open** a run to see its settings and results without recomputing.
+3. **Compare runs** puts runs side by side.
+4. **Report** downloads a self-contained report of the run: data quality, active
+   models, settings, results and charts.
+
+### Where to read more
+
+- [Methodology](docs/methodology.md): every step, model, gate and parameter.
+- [Run history](docs/run-history.md): what is recorded and how to query it.
+- The latest results on the 20-year data:
+  [docs/evidence/2026-11-16-full-history.md](docs/evidence/2026-11-16-full-history.md).
+
+## For developers
+
+### Getting started
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). On macOS:
 `brew install uv`. `.python-version` pins 3.13, the version CI runs on; uv uses
@@ -60,7 +204,7 @@ manager works in:
    in DuckDB, newest first; open one to see its settings, results and the data it
    was fitted on.
 
-## Checks
+### Checks
 
 ```bash
 uv run pytest
@@ -72,14 +216,14 @@ uv run ruff check .
 
 Both run in CI on every pull request.
 
-## Deployment
+### Deployment
 
 The dashboard is hosted on Streamlit Community Cloud, connected to this
 repo's `main` branch. Merging a pull request into `main` (which requires
 CI to pass) automatically redeploys the live app — no manual push or
 hosting step is needed.
 
-## What works today
+### What works today
 
 **Data in, and checked**
 
@@ -182,7 +326,7 @@ hosting step is needed.
   simulated results in a separate, clearly labelled column. The held weights and
   the Portfolio page are left as they are.
 
-### Results on the full history
+#### Results on the full history
 
 On the Bloomberg data from 31 Aug 2006 to Nov 2026 (16 Nov 2026 rerun):
 
@@ -198,7 +342,7 @@ On the Bloomberg data from 31 Aug 2006 to Nov 2026 (16 Nov 2026 rerun):
 See [methodology §20](docs/methodology.md) and
 [the evidence](docs/evidence/2026-11-16-full-history.md).
 
-## Interface
+### Interface
 
 The dashboard is styled as an operations console: one dark theme, designed as
 such rather than flipped from a light one, with one blue for whatever can be
@@ -213,7 +357,7 @@ and the shared presentation helpers.
 
 No emoji anywhere: an internal analytical tool should read as a tool.
 
-## Layout
+### Layout
 
 ```
 src/forecasting_engine/     core library, never imports Streamlit
@@ -241,7 +385,7 @@ docs/                       data specification, design, decisions
 tests/                      unit, integration, functional
 ```
 
-## Documentation
+### Documentation
 
 - [Methodology](docs/methodology.md) — every step from export to score, and every
   parameter, checked against the code by the test suite

@@ -30,7 +30,7 @@ from forecasting_engine.ingest.provenance import SourceFile
 from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models import boosted
 from forecasting_engine.models.base import ModelDescription
-from forecasting_engine.models.boosted import Tune, TuningLog
+from forecasting_engine.models.boosted import LatestFit, Tune, TuningLog
 from forecasting_engine.models.famafrench import FACTOR_COLUMNS, FactorCoverage
 from forecasting_engine.reporting.model_metrics import (
     FoldTerms,
@@ -603,6 +603,32 @@ def test_setting_machine_learning_active_stores_no_function():
 
     assert active_model.get_active_model(EQUITY).model_name == "Machine Learning"
     assert active_model.get_active_function(EQUITY) is None
+
+
+def test_setting_machine_learning_active_stores_its_latest_fold_so_a_scenario_can_refit_it():
+    latest = LatestFit(
+        "xgboost",
+        {"max_depth": 4, "learning_rate": 0.05, "verbosity": 0, "n_jobs": 1},
+        ("VIX_Index_PX_LAST",),
+        pd.Timestamp("2024-03-01"),
+        pd.Timestamp("2024-04-25"),
+        40,
+    )
+    run = replace(_ml_run(), tuning=replace(_tuning_log(), latest=latest))
+    app = _page({EQUITY: {"Machine Learning": run}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    ml = active_model.get_active_ml(EQUITY)
+    # The input keeps the transform the page fitted it with, whatever that is here.
+    assert ml.inputs == latest.signals
+    assert ml == active_model.ActiveML(
+        "xgboost",
+        latest.params,
+        dict(ml.transforms),
+        latest.train_first,
+        latest.train_last,
+        40,
+    )
 
 
 def test_setting_machine_learning_active_stores_its_attribution_for_the_run_report():

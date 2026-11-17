@@ -381,7 +381,10 @@ TERMS: Mapping[str, str] = {
     "Signal shock": (
         "A what-if: replace a signal's last observed value with a stressed one, such "
         "as VIX at 45, and see what the active models would forecast. Only signals "
-        "the active polynomials read can be shocked, since nothing else moves them."
+        "an active model reads can be shocked, since nothing else moves them, and each "
+        "says which index's model reads it. The scenario is model-based: a shock moves "
+        "an index only through the signals its model reads, with no direct effect of "
+        "rates or spreads on bond prices added."
     ),
     "Shock as": (
         "**New value** sets the signal's level directly. **% change** moves it from "
@@ -390,25 +393,28 @@ TERMS: Mapping[str, str] = {
         "as the model was fitted."
     ),
     "Base-case forecast": (
-        "The active model's function evaluated on the latest data, with no shock: what "
-        "it forecasts for the next horizon today. A shock is measured against it."
+        "The active model on the latest data, with no shock: what it forecasts for "
+        "the next horizon today. A shock is measured against it."
     ),
     "Portfolio impact": (
         "What the shock does to the optimised portfolio as a whole, not just to each "
         "index's forecast. The Monte Carlo simulation is run twice with the same "
         "weights and the same random paths, once centred on the base-case forecasts "
         "and once on the shocked ones, so the difference is the shock's alone. The "
-        "weights are the latest optimised weights, held as they are, not re-solved."
+        "weights are the latest optimised weights, held as they are, not re-solved. "
+        "Both indices are shown: each one's weight and its forecast, base and shocked, "
+        "then the whole portfolio's return, volatility and drawdown."
     ),
     "Shocked return": (
-        "The portfolio's mean simulated return over the next horizon under the shocked "
-        "forecasts, against the base case. Lower means the shock would cost the "
-        "allocation held today."
+        "Portfolio return: the portfolio's mean simulated return over the next horizon "
+        "under the shocked forecasts, against the base case. Lower means the shock "
+        "would cost the allocation held today."
     ),
     "Shocked volatility": (
-        "How widely the simulated horizon returns spread around their mean, as a "
-        "standard deviation. A shock that only shifts the forecasts leaves it close to "
-        "the base case, since the size of the daily moves comes from history."
+        "Portfolio volatility: how widely the portfolio's simulated horizon returns "
+        "spread around their mean, as a standard deviation. A shock that only shifts "
+        "the forecasts leaves it close to the base case, since the size of the daily "
+        "moves comes from history."
     ),
     "Re-optimise under shock": (
         "Solve the latest rebalance's weights again as if the shocked forecasts were the "
@@ -417,14 +423,18 @@ TERMS: Mapping[str, str] = {
         "re-solved weights and how they fare under the shock, on the same paths."
     ),
     "Shocked drawdown": (
-        "The worst fall from a peak within the horizon that only 5% (or 1%) of paths "
-        "exceed, under the shocked forecasts. A lower forecast tilts every path down, "
-        "so the tail of drawdowns deepens."
+        "Portfolio max drawdown: the portfolio's worst fall from a peak within the "
+        "horizon that only 5% (or 1%) of paths exceed, under the shocked forecasts. A "
+        "lower forecast tilts every path down, so the tail of drawdowns deepens."
     ),
     "Shocked forecast": (
-        "The same function, not refitted, evaluated on the shocked inputs. It shows "
-        "how much the forecast leans on the signals moved, not what the market would "
-        "do: a fitted function is only as reliable as the range it was trained on."
+        "The same model on the shocked inputs: a polynomial's function evaluated "
+        "again, not refitted, or a machine-learning model's latest fold fitted again "
+        "exactly as it was and asked to predict. It shows how much the forecast leans "
+        "on the signals moved, not what the market would do: a fitted model is only as "
+        "reliable as the range it was trained on, and trees forecast beyond that range "
+        "as at its edge. An index whose model reads none of the signals moved is "
+        "unchanged, and its row says so."
     ),
     "Run history": (
         "Every model fit the app has made, kept in its database: when it ran, on which "

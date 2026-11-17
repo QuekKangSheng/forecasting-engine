@@ -371,6 +371,11 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
     release; LightGBM's own documentation expects results to differ across
     systems and versions. So the same run on a laptop and on the hosted app can
     tune or fit slightly differently, and at the margin pick the other library.
+    Neither library is given a seed of its own: the machine-learning results rely
+    on each library's default seed and on the installed versions of XGBoost and
+    LightGBM, and a different version may give different results. A scenario
+    refits the latest fold on the same installation, so it reproduces the fold's
+    forecasts exactly (§18).
     The polynomial models, by contrast, reproduce across machines on the same
     library versions. The lasso, elastic-net and least-squares fits are
     deterministic, so the same data and settings give the same equation on any
@@ -1250,8 +1255,12 @@ in it (findings 2, 3, 5 and 6 of the 12 Nov optimiser audit):
 ## 18. Signal shock scenarios
 
 `scenario/shock` answers what the active models would forecast if a signal were
-shocked, such as VIX at 45 (FYP-32). Nothing is refitted: each active polynomial's
-stored function is evaluated again on shocked inputs.
+shocked, such as VIX at 45 (FYP-32). Each active polynomial's stored function is
+evaluated again on shocked inputs, without refitting. An active machine-learning
+model's latest fold is fitted again, exactly as the run fitted it, and predicts on
+them. The scenario is model-based: a shock moves an index only through the signals
+its active model reads. No mechanical effect of a move in rates or spreads on bond
+prices is added.
 
 1. **The stored function.** Setting a derived, research or user-supplied
    polynomial active (§11) also stores its most recent fold's fit
@@ -1259,13 +1268,34 @@ stored function is evaluated again on shocked inputs.
    and per input it reads the transform it was fitted on and its clipping bounds
    and standardisation. The equity research model's inputs are stored as levels, as
    it reads them. It is written in the same DuckDB transaction as the active-model
-   row and its forecasts, so neither is ever visible without the other. Machine
-   learning, FF5 and the bond calendar model (§9.3), whose inputs are dates, store
-   none, so they can't be shocked.
-2. **Shocks.** A shock replaces a signal's last observed value, on or before the
+   row and its forecasts, so neither is ever visible without the other. FF5 stores
+   none, so it can't be shocked, and nor does the bond calendar model (§9.3): its
+   inputs are the dates a forecast window holds, which no shock moves, so its row
+   says so and a scenario keeps its latest saved forecast.
+2. **The stored machine-learning fit.** Setting machine learning active stores
+   what its latest fold was fitted on (`store/active_model.ActiveML`, from
+   `models/boosted.LatestFit`): the library the run reported, the hyperparameters
+   of the tune that fold used (fixed settings included), the signals its
+   screening kept with their transforms, and its first and last training dates
+   and row count. It is written in the same transaction. A scenario rebuilds
+   those signals with `ingest/align.align_and_lag` on the committed data
+   (`ml_panel`), fits a fresh forecaster on the same rows (`refit_latest_fold`)
+   and predicts on the base and shocked inputs. Each signal is aligned,
+   transformed and lagged on its own, so the panel of the screened signals alone
+   reads exactly as the run's panel of every signal. With one thread and each
+   library's default seed (§9) the fit is deterministic, so the refit forecasts
+   what the run's latest fold forecast. If the training rows no longer match, the
+   index's row asks for machine learning to be re-run and set active again. A
+   fold whose screening kept no signal forecasts its training mean whatever the
+   shock. A machine-learning model set active before this was stored has no fit
+   to refit, and its row says: "Re-run machine learning and set it active again
+   to stress it."
+3. **Shocks.** A shock replaces a signal's last observed value, on or before the
    earliest last price of the indices evaluated, either with a new value or with a
-   % change from it. Only signals the active functions read can be chosen.
-3. **Validation** (`validate`), before the scenario may run. The value must be a
+   % change from it. Only signals the active models read can be chosen, and each
+   is listed with the indices whose active model reads it ("read by: Equity,
+   Bond").
+4. **Validation** (`validate`), before the scenario may run. The value must be a
    number. A series of a type that is always above zero (`POSITIVE_TRANSFORMS`:
    gauges and spreads read as levels, prices and total-return indices read as log
    returns, by the transform map of §4) may not go to zero or below; rates and
@@ -1273,13 +1303,13 @@ stored function is evaluated again on shocked inputs.
    `MAX_RANGE_MULTIPLE` times the whole range the series has covered. Each error
    names its signal, and Run is disabled while any remains or a chosen signal has
    no value.
-4. **Inputs.** The shocked frame goes through `ingest/align.align_and_lag` itself
+5. **Inputs.** The shocked frame goes through `ingest/align.align_and_lag` itself
    (§2, §4, §5) on a calendar extended by the next trading day, so the next
    forecast's inputs are the last day's values after alignment, the transform and
    the one-day lag, exactly as a fold reads a real day (`next_inputs`). A
    differenced input moves by the shock less the day before's level; a log-return
    input reads the shock against the day before.
-5. **Evaluation** (`evaluate`). Each input is clipped and standardised with the
+6. **Evaluation** (`evaluate`). Each input is clipped and standardised with the
    stored bounds and statistics, then the terms applied: for every stored model
    this reproduces its own `predict` on the same row. The base case is the same
    function on the unshocked inputs, so a zero shock reproduces it. Where a user
@@ -1288,15 +1318,23 @@ stored function is evaluated again on shocked inputs.
    or it was saved before §9's limits and raises a plain number to a power too
    large for a float, its index's row says so instead of a forecast. A saved
    function raising a signal to a power above `MAX_DEGREE` is evaluated as usual.
-6. **Extrapolation.** A shocked input outside its range over the latest fold's
+   A machine-learning model's base case is the refitted fold's prediction on the
+   unshocked inputs, so a zero shock reproduces it too.
+7. **Extrapolation.** A shocked input outside its range over the latest fold's
    training rows (rebuilt with the active model's own train and test windows) is
    flagged. Where the model clips that input, the flag says so: beyond the bound
-   the forecast moves no further.
+   the forecast moves no further. Trees can't extrapolate either: beyond the range
+   a machine-learning model was trained on, it forecasts as at the range's edge,
+   and the flag says so in the same way.
 
-The Scenarios page shows each index's active model, base case, shocked forecast,
+The Scenarios page shows each index's active model (a machine-learning model with
+its library, such as "Machine Learning, XGBoost"), base case, shocked forecast,
 the change in percentage points and as a % of the base case, the extrapolation
-flags, and what each model reads before and after the shock. An index with no
-stored function is listed with the reason.
+flags, and what each model reads before and after the shock. Where an index's
+active model reads none of the signals shocked, its row keeps the base and shocked
+figures and says why it didn't move in place of the change, naming the signals
+its latest fit uses, or that it uses none, so no shock can move it. An index with
+no stored function or fit is listed with the reason.
 
 ### Portfolio impact (FYP-33)
 
@@ -1319,20 +1357,23 @@ base case.
    model since replaced are not used, and Home flags them as out of date.
 3. **Forecasts.** An index the scenario evaluated contributes its own base-case
    and shocked forecasts (`ScenarioResult`). An index it could not evaluate (no
-   stored function, or no active polynomial) contributes its active model's
+   stored function or fit) contributes its active model's
    latest saved forecast to both cases, so the shock leaves it unmoved and the
    page says so. The horizon is the longest among the indices evaluated.
 4. **Measures**, each read off one portfolio's simulated outcomes
    (`risk/monte_carlo.SimulatedTailRisk`):
-   - **return**: the mean simulated return over the horizon, the base case the
-     paths centre on;
-   - **volatility**: the standard deviation of the simulated horizon returns
+   - **portfolio return**: the mean simulated return over the horizon, the base
+     case the paths centre on;
+   - **portfolio volatility**: the standard deviation of the simulated horizon returns
      across paths. A shock that only shifts the forecasts leaves it close to the
      base case, since the size of the moves is set by history, not the forecast;
-   - **max drawdown** at each of `VAR_CONFIDENCES`: the drawdown only the worst
-     `1 − c` of paths exceed (§19), negative like §14's.
+   - **portfolio max drawdown** at each of `VAR_CONFIDENCES`: the drawdown only
+     the worst `1 − c` of paths exceed (§19), negative like §14's.
    The page shows each beside its base case, with the change in percentage
-   points, and states the weights, the horizon, the paths and the method.
+   points, and states the weights, the horizon, the paths and the method. Above
+   them it shows both indices: each index's weight (held, and re-solved when
+   re-optimising is on) and each index's forecast over the horizon, base and
+   shocked, the forecasts the simulation centres on.
 
 ### Re-optimise under shock (FYP-246)
 
