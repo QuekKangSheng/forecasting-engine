@@ -14,6 +14,7 @@ from __future__ import annotations
 import html
 import math
 import traceback
+from collections.abc import Mapping
 from dataclasses import replace
 
 import pandas as pd
@@ -54,6 +55,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
 )
 from forecasting_engine.reporting.run_results import (
     data_quality_summary,
+    market_conditions,
     model_summary,
     run_results,
     simulation_results,
@@ -418,6 +420,24 @@ run_inputs = portfolio_runs.PortfolioInputs(
 # The run's number once it is recorded with its results, which is all the page needs
 # to know on a rerun: one small read, where it used to ask twice, write once and read
 # the whole saved run back for its number, on every click.
+
+
+def _run_metrics(record: active_model.ActiveModelRecord) -> dict[str, float]:
+    return run_history.run_metrics(record.run_id) if record.run_id else {}
+
+
+def _holdout(metrics: Mapping[str, float]) -> dict[str, float] | None:
+    """A research model's pre-2016 hold-out, as its run recorded it, or ``None`` for a
+    model without one or a run recorded before hold-outs were kept."""
+    if "holdout_windows" not in metrics:
+        return None
+    return {
+        "signal_rank_ic": metrics["holdout_signal_rank_ic"],
+        "t": metrics["holdout_t"],
+        "windows": int(metrics["holdout_windows"]),
+    }
+
+
 saved_number: int | None = None
 try:
     saved_number = portfolio_runs.run_number(run_inputs.run_key, with_results=True)
@@ -459,11 +479,8 @@ try:
                     name,
                     record,
                     display_name=display_model_name(record.model_name),
-                    signal_t=(
-                        run_history.run_metrics(record.run_id).get("signal_t")
-                        if record.run_id
-                        else None
-                    ),
+                    signal_t=metrics.get("signal_t"),
+                    holdout=_holdout(metrics),
                     # By set_at: the models this page read, even if another session
                     # has set a newer one since.
                     function=active_model.get_active_function(
@@ -476,8 +493,19 @@ try:
                     target=target_columns[record.role],
                     columns=numeric_cols,
                 )
-                for name, record in ((equity_name, equity_active), (bond_name, bond_active))
+                for name, record, metrics in (
+                    (equity_name, equity_active, _run_metrics(equity_active)),
+                    (bond_name, bond_active, _run_metrics(bond_active)),
+                )
             ],
+            conditions=None
+            if latest_solve_inputs is None
+            else market_conditions(
+                breakdown,
+                latest_solve_inputs,
+                horizon=equity_active.horizon,
+                gate_shut=solved.forecasts_gated,
+            ),
         )
     )
     if saved_number is None:

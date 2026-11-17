@@ -4,9 +4,11 @@ import json
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.backtest import run_backtest
+from forecasting_engine.portfolio.optimize import SolveInputs, WeightBreakdown
 from forecasting_engine.reporting.portfolio_comparison import (
     NOT_RUN,
     comparison_rows,
@@ -14,6 +16,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
     tail_rows,
 )
 from forecasting_engine.reporting.run_results import (
+    market_conditions,
     run_results,
     simulation_results,
     tail_with_simulation,
@@ -148,3 +151,30 @@ def test_without_a_simulation_the_saved_rows_stand():
     tail = _results()["bases"]["net"]["tail"]
 
     assert tail_with_simulation(tail, None) == tail
+
+
+def test_the_latest_rebalances_market_conditions_are_annualised_from_its_covariance():
+    # 20-day variances: equity 0.002, bond 0.0002, covariance 0.0001.
+    roles = [EQUITY, BOND]
+    covariance = pd.DataFrame([[0.002, 0.0001], [0.0001, 0.0002]], index=roles, columns=roles)
+    inputs = SolveInputs(
+        date=pd.Timestamp("2026-10-30"),
+        signal=pd.Series({EQUITY: 0.0, BOND: 0.0}),
+        covariance=covariance,
+        premium=0.01,
+        trust=0.0,
+        risk_level=3,
+        bounds=(0.2, 0.8),
+    )
+    breakdown = WeightBreakdown(level_weight=0.5, forecast_tilt=0.0, equity=0.5)
+
+    conditions = market_conditions(breakdown, inputs, horizon=20, gate_shut=True)
+
+    per_year = 252 / 20
+    assert conditions["volatility"]["equity"] == pytest.approx((0.002 * per_year) ** 0.5)
+    assert conditions["volatility"]["bond"] == pytest.approx((0.0002 * per_year) ** 0.5)
+    variance = 0.25 * 0.002 + 0.25 * 0.0002 + 2 * 0.25 * 0.0001
+    assert conditions["target_volatility"] == pytest.approx((variance * per_year) ** 0.5)
+    assert conditions["gate_shut"] is True and conditions["trust"] == 0.0
+    assert conditions["level_weight"] == 0.5 and conditions["capped"] is False
+    json.dumps(conditions)  # saved as JSON with the run

@@ -116,13 +116,32 @@ own rows on both bases; its charts come from the saved daily returns through the
 functions as the page's charts, thinned to about 400 points a line, always keeping each
 line's highest and lowest day.
 
-Two things are saved with a run for it:
+It opens with a **Summary**, 5 to 7 sentences in plain language written from the run's
+own figures: the risk level and what it aims for, the latest weights and the date they
+apply from, what they rest on (whether the forecasts moved them at the latest rebalance
+or the trust gate kept the level's long-term mix, and each index's volatility), the
+return, Sharpe ratio and maximum drawdown against 50/50 after costs, the verdict of the
+test of whether the forecasts added value, and that the report explains past results
+and is not investment advice. Each active model then has a paragraph saying what it is
+and what it reads (`reporting/model_descriptions.py`); a research model also carries
+its "optimistic" caveat and its pre-2016 hold-out score. The tables follow, and the
+charts come last.
+
+Three things are saved with a run for it:
 
 - **The data quality summary and each active model**, when the run is first recorded:
-  gate results, the polynomial's terms and coefficients, and per-signal SHAP. SHAP is
-  stored with the model when it is set active (`active_model_attribution`). A model set
-  active before that says "not saved" rather than showing nothing or zero; setting it
-  active again saves it, which is a new active model and so a new run.
+  gate results, the polynomial's terms and coefficients, per-signal SHAP, and a research
+  model's pre-2016 hold-out (recorded with its fit in `run_metrics` as
+  `holdout_signal_rank_ic`, `holdout_t` and `holdout_windows`). SHAP is stored with the
+  model when it is set active (`active_model_attribution`). A model set active, or a
+  research model fitted, before these were kept says "not saved" rather than showing
+  nothing or zero; setting it active again saves it, which is a new active model and so
+  a new run.
+- **The latest rebalance's market conditions**, when the run is first recorded
+  (`reporting/run_results.market_conditions`): the risk level's own equity weight and
+  target volatility, how far the forecasts moved it and whether their record was
+  trusted, and each index's volatility over the training window. A run recorded before
+  these were kept says so in its summary.
 - **Monte Carlo**, when a simulation is run. From the Portfolio page the report includes
   only the simulation the page is showing, and otherwise says "Not run", so the two
   agree. From Run history it includes the run's most recent simulation.

@@ -10,7 +10,7 @@ import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.upload import accept_upload, frame_csv_bytes, frame_sha256
-from forecasting_engine.reporting.model_metrics import ModelRunResult
+from forecasting_engine.reporting.model_metrics import Holdout, ModelRunResult
 from forecasting_engine.store.runs import (
     DONE,
     FAILED,
@@ -275,3 +275,22 @@ def test_a_setting_never_run_has_no_latest_run(db):
     _record(db)
 
     assert latest_run("never", "a" * 64, db_path=db) is None
+
+
+def test_a_research_models_pre_2016_hold_out_is_recorded_with_its_metrics():
+    holdout = Holdout(
+        before=pd.Timestamp("2016-08-01"),
+        windows=12,
+        first=pd.Timestamp("2008-03-03"),
+        last_label_end=pd.Timestamp("2016-07-29"),
+        signal_rank_ic=0.041,
+        t=1.37,
+        rows_scored=240,
+    )
+
+    metrics = metrics_of(_result(holdout=holdout))
+
+    assert metrics["holdout_signal_rank_ic"] == 0.041
+    assert metrics["holdout_t"] == 1.37
+    assert metrics["holdout_windows"] == 12.0
+    assert not any(name.startswith("holdout") for name in metrics_of(_result()))

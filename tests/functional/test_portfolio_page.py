@@ -1628,3 +1628,24 @@ def test_active_models_set_on_a_same_shape_dataset_with_other_values_are_refused
         "different dataset or target than the one committed now" in w.value for w in app.warning
     )
     assert not app.metric
+
+
+def test_a_run_saves_its_latest_market_conditions_for_the_reports_summary():
+    app = _happy_page()
+    assert not app.exception
+
+    conditions = portfolio_runs.get_saved_run(_run_key()).results["conditions"]
+    assert set(conditions) == {
+        "level_weight",
+        "forecast_tilt",
+        "equity",
+        "capped",
+        "trust",
+        "gate_shut",
+        "target_volatility",
+        "volatility",
+    }
+    assert conditions["volatility"]["equity"] > 0 and conditions["volatility"]["bond"] > 0
+    summary = _report().split("<h2>Summary</h2>")[1].split("</section>")[0]
+    assert f"{conditions['level_weight']:.0%} in" in summary
+    assert "not saved" not in summary
