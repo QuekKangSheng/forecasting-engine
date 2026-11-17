@@ -588,3 +588,28 @@ def test_a_model_set_before_targets_were_recorded_is_judged_on_its_data_alone(db
     assert row.target_column is None
     assert row.fitted_on("fp-1", "anything")
     assert not row.fitted_on("fp-2", "anything")
+
+
+def test_a_model_the_page_no_longer_offers_is_fitted_on_nothing(db):
+    # The bond carry row, removed on 17 Nov 2026, may still be the saved active model.
+    # Whatever it was fitted on, no page may use its forecasts.
+    set_active_model(
+        TargetRole.BOND,
+        "Polynomial – fixed carry inputs (research)",
+        _result(),
+        high_risk=False,
+        db_path=db,
+        target_column="LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS",
+        **SETTINGS,
+    )
+    row = get_active_model(TargetRole.BOND, db_path=db)
+
+    assert row.retired
+    assert not row.fitted_on("fp-1", "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS")
+    assert not row.fitted_on("fp-1", None)
+
+
+def test_every_model_the_page_offers_is_not_retired():
+    from forecasting_engine.reporting.model_metrics import MODEL_ORDER, RETIRED_MODEL_NAMES
+
+    assert not RETIRED_MODEL_NAMES & set(MODEL_ORDER)

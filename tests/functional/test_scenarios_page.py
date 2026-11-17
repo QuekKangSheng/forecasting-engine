@@ -261,6 +261,27 @@ def test_an_index_without_a_polynomial_is_listed_with_the_reason():
     assert "has no stored polynomial function" in _table(app)
 
 
+def test_an_active_model_the_page_no_longer_offers_is_not_evaluated():
+    # The bond carry row (removed 17 Nov 2026) stored a real function; it must not be
+    # evaluated again even though it reads a signal in the committed data.
+    carry = active_model.ActiveFunction(
+        Origin.DERIVED,
+        ModelDescription(
+            name="CarryResearchPolynomial", terms=(RATE,), coefficients=(0.5,), intercept=0.002
+        ),
+        {RATE: Transform.LEVEL},
+    )
+    _set_active(EQUITY, function=LINEAR)
+    _set_active(BOND, "Polynomial – fixed carry inputs (research)", function=carry)
+    app = _run(_shock(_page(), VIX, "25"))
+
+    table = _table(app)
+    assert "Polynomial – fixed carry inputs (research), is no longer offered" in table
+    assert "so it is not used" in table
+    label = labeller([c for c in _committed().columns if c != "Date"])
+    assert app.multiselect[0].options == [label(VIX)]  # the carry function's rate is not offered
+
+
 def test_an_active_calendar_model_is_listed_with_why_a_scenario_cannot_move_it():
     # It is set active with no function, as machine learning is: its inputs are dates.
     _set_active(EQUITY, function=LINEAR)

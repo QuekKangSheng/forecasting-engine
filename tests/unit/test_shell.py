@@ -159,3 +159,15 @@ def test_an_allocation_is_stale_once_its_data_is_cleared():
     allocation = _cells(None, actives, summary)["Allocation"]
 
     assert allocation.tone == "warning" and "stale" in allocation.value
+
+
+def test_an_active_model_the_page_no_longer_offers_is_called_stale_on_its_own_data():
+    merged = _data()
+    fingerprint = str(dataset_fingerprint(merged))
+    carry = _record(BOND, "Polynomial – fixed carry inputs (research)", fingerprint)
+
+    cells = _cells(merged, {EQUITY: _record(EQUITY, "Polynomial", fingerprint), BOND: carry})
+
+    assert cells["Bond"].value == "Polynomial – fixed carry inputs (research) · stale"
+    assert cells["Bond"].tone == "warning"
+    assert cells["Equity"].tone == "success"

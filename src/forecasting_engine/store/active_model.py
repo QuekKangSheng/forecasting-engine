@@ -23,7 +23,7 @@ import pandas as pd
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import Transform
 from forecasting_engine.models.base import ModelDescription
-from forecasting_engine.reporting.model_metrics import ModelRunResult
+from forecasting_engine.reporting.model_metrics import RETIRED_MODEL_NAMES, ModelRunResult
 from forecasting_engine.reporting.polynomial_function import Origin
 from forecasting_engine.store._db import DEFAULT_DB_PATH, connect
 
@@ -131,6 +131,12 @@ class ActiveModelRecord:
     """The committed column the model forecast. ``None`` for a model set active
     before this column existed."""
 
+    @property
+    def retired(self) -> bool:
+        """Whether the model is one the Models page no longer offers
+        (``model_metrics.RETIRED_MODEL_NAMES``)."""
+        return self.model_name in RETIRED_MODEL_NAMES
+
     def fitted_on(self, dataset_fingerprint: str | None, target_column: str | None) -> bool:
         """Whether the model was fitted on the data ``dataset_fingerprint`` names and
         forecast ``target_column`` in it.
@@ -139,7 +145,11 @@ class ActiveModelRecord:
         target (a price index in place of a total return) or the two roles swapped:
         the fingerprint is unchanged, but a model fitted on the old target is not
         this target's model. A model set active before the target was recorded is
-        judged on the data alone, as it was then."""
+        judged on the data alone, as it was then. A retired model is never this
+        target's model, whatever it was fitted on: no page can rerun it or show its
+        fit, so every page that reads this treats it as stale."""
+        if self.retired:
+            return False
         if self.dataset_fingerprint != dataset_fingerprint:
             return False
         return self.target_column is None or self.target_column == target_column

@@ -1,11 +1,13 @@
 """The bond calendar model: a degree-1 polynomial in what kind of days a label window
 holds, month-ends above all, fitted as the derived polynomial's shrinkage candidate.
 
-Run on the Models page's Bond tab as its own row, "Polynomial – calendar inputs
-(research)". Its inputs were fixed from published research before any result was looked
-at, but its form was then picked from 98 runs whose results over Oct 2008 - Nov 2026
-were looked at (the November 2026 research, ``s14-bond-short``), so its scores there
-overstate it. See docs/methodology.md.
+The Models page's bond research row, "Polynomial – calendar inputs (research)". It
+replaced the carry model (``models/carry_research``) on 17 Nov 2026, under a comparison
+fixed in advance (``s15-bond-grids-honest``, part A): it passes the gate in both decades
+at h = 1 and 5, carry at no horizon. Its inputs were fixed from published research
+before any result was looked at, but its form was then picked from 98 runs whose results
+over Oct 2008 - Nov 2026 were looked at (the November 2026 research, ``s14-bond-short``),
+so its scores there overstate it. See docs/methodology.md.
 
 Why. Treasury returns are higher on the last trading day of a month, when index trackers
 extend duration to match their index's month-end rebalance (Hartley & Schwarz,

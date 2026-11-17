@@ -81,6 +81,11 @@ for role in ROLES:
         unavailable[role] = f"No {role.value} target is in the committed data."
     elif record is None:
         unavailable[role] = f"No active model is set for {name}."
+    elif record.retired:
+        unavailable[role] = (
+            f"The active {name} model, {record.model_name}, is no longer offered on the "
+            "Models page, so it is not used. Set another model active there."
+        )
     elif not record.fitted_on(fingerprint, target_columns[role]):
         unavailable[role] = (
             f"The active {name} model was set on another dataset or target. Run it on this "

@@ -164,8 +164,8 @@ date of the price each label reaches, which the splitter uses to purge.
 - **Windows.** Test windows of `DEFAULT_TEST_WINDOW` rows roll forward by that
   many rows. Each training window is the `TRAIN_WINDOW` rows ending `embargo` rows
   before its test window, and may reach back into the tuning period. Both windows
-  are the same for every model on both targets (the research models of §9.1 and
-  §9.2 alone train on every earlier row, on the same test windows; the calendar
+  are the same for every model on both targets (the equity research model, §9.1,
+  alone trains on every earlier row, on the same test windows; the bond research
   model, §9.3, trains on the same rolling window as the rest), and fixed rather than settings:
   trying windows until one scores well is overfitting that no single run can see.
   Every row of the results table is therefore scored on the same dates, and both
@@ -177,7 +177,7 @@ date of the price each label reaches, which the splitter uses to purge.
   than a standard error; on bond both scored below it. Folds of the expanding
   window trained on under five years scored +0.225, those on five years or more
   +0.075, so a longer history did not help. `splitters.expanding` remains only
-  for the research models (§9.1, §9.2).
+  for the equity research model (§9.1) and the former bond carry model (§9.2).
 - **Embargo.** `EMBARGO_DAYS`, the longest horizon (20 days), whichever horizon is
   chosen.
 - **Purge.** A training row is dropped if its label's price (`label_end`) is dated
@@ -198,7 +198,7 @@ window, 20-row embargo) by `docs/evidence/2026-11-15-history-2006.py`
 | Tuning period | First `TUNING_ROWS` (504) rows of each target's calendar, never scored | 31 Aug 2006 – 2 Sep 2008 (equity), – 4 Sep 2008 (bond) |
 | First test window | After the tuning rows and the embargo | 1 Oct 2008 (equity), 3 Oct 2008 (bond): the weeks after the Lehman collapse, kept as a stress test |
 | Model training (rolling models) | 504 rows before each test window, purged | From 31 Aug 2006: the first window is 31 Aug 2006 – 2 Sep 2008 |
-| Research models (§9.1, §9.2) | Expanding, every earlier row | From 31 Aug 2006 |
+| Equity research model (§9.1), and the bond carry model until 17 Nov 2026 (§9.2) | Expanding, every earlier row | From 31 Aug 2006 |
 | Equity research model's level | Mean of the first `LEVEL_ROWS` (252) training labels | Labels from 31 Aug 2006, the last ending 1 Oct 2007: the pre-crash rally. It moves only the raw forecast (Monte Carlo, long/cash), not the signal (§10) |
 | Machine-learning retuning | Every `RETUNE_EVERY` (252) rows, on a 252-row window | Unchanged |
 | Covariance | 504 rows before each rebalance | Unchanged |
@@ -237,8 +237,8 @@ family is optional; Run is disabled until one besides the naive baseline is
 ticked, and the naive baseline runs with every Run. The polynomial runs one
 source at a time, derived or the user's own function, each under its own row
 name, and switching source clears nothing. Each tab also offers its research
-model (equity §9.1, bond §9.2) under its own checkbox and row, beside whichever
-polynomial runs, and the Bond tab the calendar model (§9.3) besides. Each family chooses only among its own
+model (equity §9.1, bond §9.3; until 17 Nov 2026 bond's was §9.2) under its own
+checkbox and row, beside whichever polynomial runs. Each family chooses only among its own
 configurations, so which families run together never changes any family's
 result.
 
@@ -440,7 +440,7 @@ against +0.12 for the screened shrinkage candidate; its research notes say over
 half of that came from one quarter (the spring 2025 spread spike and rebound) and
 that the 1990–2016 history points the other way. Its fixed inputs also ignore any
 other signal in the data. The page therefore captions its row, as it does the
-bond research model's (§9.2), each with its own period: "Scores are optimistic:
+bond research model's (§9.3), each with its own wording: "Scores are optimistic:
 inputs chosen by looking at results over Aug 2016 – Sep 2024." The derived polynomial makes every such choice
 inside each fold instead.
 
@@ -453,14 +453,29 @@ first training labels, not its fold's training mean, so measured against that
 mean the gap between the two was scored as part of its signal: on the Sep 2026
 data its Signal Rank IC read 0.259 that way and is 0.237 against its own level.
 
-### 9.2 Polynomial – fixed carry inputs (research)
+### 9.2 Polynomial – fixed carry inputs (research), until 17 Nov 2026
+
+**No longer on the page.** This was the Bond tab's research row until 17 Nov 2026,
+when the calendar model (§9.3) replaced it under a comparison whose rule was fixed
+before it ran (the research's `s15-bond-grids-honest`, part A;
+[evidence](evidence/2026-11-17-bond-calendar.md)). On the data from 2006 the calendar
+model passes the gate with both decades above zero at h = 1 and 5; this model passes
+at no horizon (Signal Rank IC +0.003 to +0.062, t 0.16 to 0.93), and the calendar
+model is never more than 0.019 below it (h = 20), within the rule's 0.03. The rest of
+this section is kept as the record of what it was and how it scored.
+`models/carry_research.py` stays in the code, with its tests, so the evidence that
+cites its figures still runs. A model still set active under its row is never used:
+`reporting.model_metrics.RETIRED_MODEL_NAMES` lists it, `ActiveModelRecord.fitted_on`
+is false for it whatever data it was fitted on, so Home, the status bar, Portfolio and
+Scenarios treat it as stale and say it is no longer offered, and the Models page says
+to set another active.
 
 `models/carry_research.run_carry_research_polynomial`, the row "Polynomial – fixed
-carry inputs (research)", Bond tab only, with its own checkbox. It is the bond
+carry inputs (research)", Bond tab only, with its own checkbox. It was the bond
 counterpart of §9.1: a degree-1 lasso fit (`CarryResearchPolynomial`) on fixed
 inputs, run on an expanding window as the research ran it, gated like every other
-model and settable as the bond target's active model with no train window. It does
-not enter the derived polynomial's grid (§9), which is unchanged.
+model and settable as the bond target's active model with no train window. It did
+not enter the derived polynomial's grid (§9).
 
 **Why.** The October 2026 research found no bond input set that beat chance among
 the page's own signals (§9.1 is equity-only). A bond index's `h`-day return is, to
@@ -554,7 +569,7 @@ lag. And its inputs were chosen by looking at results on the Sep 2026 upload
 row "Scores are optimistic: inputs chosen by looking at results on the Sep 2026
 upload (Aug 2016 – Sep 2026)."
 
-**Pre-2016 hold-out (both research models).** Both research models' inputs were
+**Pre-2016 hold-out (the equity research model and this one).** Both models' inputs were
 chosen by looking at results from Aug 2016 on, so test windows that end before
 `HOLDOUT_BEFORE` (1 Aug 2016, `models/sign_ruled`) are out of sample for those
 choices. Each research run also reports its Signal Rank IC and t over those
@@ -571,21 +586,33 @@ has 96 or 97, from Oct 2008 to Jul 2016
 | Research model | Signal Rank IC, t: whole period | Pre-2016 hold-out | Windows |
 |---|---|---|---|
 | Equity (§9.1) | +0.071, t 1.10 | −0.032, t −0.30 | 97 |
-| Bond (§9.2) | +0.063, t 0.94 | −0.020, t −0.24 | 96 |
+| Bond carry model (§9.2) | +0.063, t 0.94 | −0.020, t −0.24 | 96 |
 
 Neither passes the gate on the longer history, and neither scores above zero on
 the windows its research never saw. These are reported as they came out; neither
-model was changed because of them.
+model was changed because of them. The bond carry model was then replaced (above).
 
 ### 9.3 Polynomial – calendar inputs (research)
 
 `models/calendar_research.run_calendar_research_polynomial`, the row "Polynomial –
-calendar inputs (research)", Bond tab only, with its own checkbox beside §9.2's. It is
-the bond model the November 2026 research picked (`s14-bond-short`, its run
-`cal / shrink / roll504`): the derived polynomial's shrinkage fit (§9) on columns that
-say what kind of days each label window holds. It is gated like every other model and
-can be set as the bond target's active model. It does not enter the derived
-polynomial's grid, which is unchanged.
+calendar inputs (research)", Bond tab only, with its own checkbox: the bond research
+model since 17 Nov 2026, replacing the carry model of §9.2. It is the bond model the
+November 2026 research picked (`s14-bond-short`, its run `cal / shrink / roll504`): the
+derived polynomial's shrinkage fit (§9) on columns that say what kind of days each
+label window holds. It is gated like every other model and can be set as the bond
+target's active model. It does not enter the derived polynomial's grid, which is
+unchanged.
+
+**Why it replaced the carry model.** Each tab has one research row: a better research
+model replaces the old one rather than adding a second row. The comparison was
+fixed before it ran (`s15-bond-grids-honest/RULE.md`, part A): of the carry model, this
+one, and carry plus calendar at 504 and 2,520 rows, the replacement is the one passing
+the gate with both decades above zero (t above 1) at the most horizons, ties broken by
+the higher smallest whole-period t and then the fewest parts, and it replaces carry
+unless it is more than 0.03 below carry's whole-period Signal Rank IC at some horizon.
+This model does so at h = 1 and 5; carry plus calendar at one horizon each, carry at
+none. It is at most 0.019 below carry (h = 20: +0.043 against +0.062). The whole
+table is in the [evidence](evidence/2026-11-17-bond-calendar.md).
 
 **Why.** Treasury returns are higher on the last trading day of a month, when index
 trackers extend duration to match their index's month-end rebalance (Hartley and
@@ -664,7 +691,7 @@ the next trading day from the holiday calendar. The same harness on the research
 own columns gives its figures exactly.
 
 **Pre-2016 score.** Its result carries the Signal Rank IC and t over the test windows
-whose every label ends before `HOLDOUT_BEFORE`, as the other research rows' do
+whose every label ends before `HOLDOUT_BEFORE`, as the equity research row's does
 (`harness.holdout`), and the page shows it under the row. For this model it is not a
 hold-out: its research looked at those years too, and the page says so ("before
 2016 … its research looked at these years too, so this is not a hold-out").
@@ -694,7 +721,7 @@ says why. It keeps the page's train window when set active (`train_window` is no
 ### 9.4 Feature attribution (SHAP) for polynomial models
 
 `reporting.shap_attribution.polynomial_shap`. Every polynomial-shaped row
-(derived, the three research rows, user-supplied, and Fama-French) gets a mean
+(derived, both research rows, user-supplied, and Fama-French) gets a mean
 |SHAP value| per signal, shown beside its fitted terms in the same table
 format the boosted models already use (§9's last bullet). Unlike a boosted
 model's sampled SHAP, a polynomial's is computed exactly, since its equation
@@ -1230,10 +1257,11 @@ stored function is evaluated again on shocked inputs.
    polynomial active (§11) also stores its most recent fold's fit
    (`store/active_model.ActiveFunction`): its terms, coefficients and intercept,
    and per input it reads the transform it was fitted on and its clipping bounds
-   and standardisation. The research models' inputs are stored as levels, as they
-   read them. It is written in the same DuckDB transaction as the active-model
+   and standardisation. The equity research model's inputs are stored as levels, as
+   it reads them. It is written in the same DuckDB transaction as the active-model
    row and its forecasts, so neither is ever visible without the other. Machine
-   learning and FF5 store none, so they can't be shocked.
+   learning, FF5 and the bond calendar model (§9.3), whose inputs are dates, store
+   none, so they can't be shocked.
 2. **Shocks.** A shock replaces a signal's last observed value, on or before the
    earliest last price of the indices evaluated, either with a new value or with a
    % change from it. Only signals the active functions read can be chosen.
@@ -1413,17 +1441,20 @@ current results.
 | Equity | Machine learning | +0.028, t 1.71 | +0.068, t 2.34, passes | +0.097, t 2.48, passes | +0.082, t 1.71 |
 | Equity | Fama-French 5 | −0.006, t −0.35 | +0.021, t 1.27 | −0.003, t −0.17 | −0.013, t −0.83 |
 | Bond | Polynomial (derived) | +0.029, t 1.84 | +0.030, t 1.00 | +0.021, t 0.48 | +0.031, t 0.49 |
-| Bond | Polynomial – fixed carry inputs (`VERSION` 2) | +0.004, t 0.26 | +0.021, t 0.62 | +0.039, t 0.79 | +0.063, t 0.94 |
+| Bond | Polynomial – calendar inputs (research), §9.3 | +0.051, t 3.25, passes | +0.084, t 3.27, passes | +0.053, t 1.73 | +0.043, t 0.92 |
 | Bond | Machine learning | +0.019, t 1.30 | +0.013, t 0.54 | −0.017, t −0.46 | +0.045, t 0.88 |
-| Bond | Polynomial – calendar inputs (research), added 17 Nov | +0.051, t 3.25, passes | +0.084, t 3.27, passes | +0.053, t 1.73 | +0.043, t 0.92 |
+| Bond | Polynomial – fixed carry inputs (`VERSION` 2), until 17 Nov, §9.2 | +0.004, t 0.26 | +0.021, t 0.62 | +0.039, t 0.79 | +0.063, t 0.94 |
 
-Of the bond models only the calendar model (§9.3), added on 17 Nov 2026 after this
-rerun, passes, at the 1- and 5-day horizons; its figures are from its own
-[evidence](evidence/2026-11-17-bond-calendar.md), on the same files. At the default
-20-day horizon no model passes for either index. Both research models of §9.1 and
-§9.2 score near zero on their pre-2016 hold-out at every horizon (t −0.44 to +0.65;
-§9.2 has the 20-day figures). The portfolio below was run before the calendar model
-existed and does not use it.
+The bond research model is the calendar model (§9.3), which replaced the carry model
+(§9.2) on 17 Nov 2026, after this rerun; its figures are from its own
+[evidence](evidence/2026-11-17-bond-calendar.md), on the same files, and the carry
+row is kept as the record. It is the only bond model that passes, at the 1- and 5-day
+horizons. At the default 20-day horizon no model passes for either index. The equity
+research model and the carry model score near zero on their pre-2016 hold-out at
+every horizon (t −0.44 to +0.65; §9.2 has the 20-day figures); the calendar model's
+pre-2016 figure is not a hold-out (§9.3). The portfolio below was run before the
+calendar model existed: its "Sprint 4 pair" and "derived for both" use neither
+research model.
 
 **Portfolio.** The main result uses the team's Sprint 4 default pair, the derived
 polynomial for equity and machine learning for bond. The derived polynomial for
@@ -1576,7 +1607,7 @@ them is [docs/evidence/2026-10-12-verify.py](evidence/2026-10-12-verify.py).
 
 | Decision | Ticket | Evidence |
 |---|---|---|
-| A rolling 504-day train window for every model on both targets but the research models, and a fixed 20-day test window (§7, §9.1) | FYP-217, FYP-161 | 1A, 1D, 1E |
+| A rolling 504-day train window for every model on both targets but the equity research model, and a fixed 20-day test window (§7, §9.1) | FYP-217, FYP-161 | 1A, 1D, 1E |
 | Machine learning tunes on 252-row mini folds inside its 504-row tuning period (§9) | FYP-217 | 1E |
 | Derived grid: Lasso at degrees 1–3 plus shrinkage; no elastic net, no degrees 4–5 (§9) | FYP-161 | 2B, run times |
 | No PBO; Rank IC within folds and Beyond 2 s.e. dropped from the table (§10, §11) | FYP-216 | 2A, 2C |
@@ -1587,8 +1618,9 @@ them is [docs/evidence/2026-10-12-verify.py](evidence/2026-10-12-verify.py).
 The bond derived grid was left as it is after 124 bond runs on 16 Nov 2026 varied the
 columns offered, the fit, the train window, the horizon and machine learning's search
 space, and none beat the page's grid beyond what chance gives ([evidence](evidence/2026-11-16-bond-grids.md)).
-The bond calendar model (§9.3) was added on 17 Nov 2026, as its own row rather than as
-columns in the derived grid: offered beside the page's whole panel, the shrinkage
+The bond calendar model (§9.3) replaced the bond carry model (§9.2) as the Bond tab's
+research row on 17 Nov 2026, under a comparison fixed in advance, and is its own row
+rather than columns in the derived grid: offered beside the page's whole panel, the shrinkage
 fit's top term (the 10-year yield) took both signs from fold to fold at h = 1, and at
 h = 5 it missed the gate (t 1.89)
 ([evidence](evidence/2026-11-17-bond-calendar.md)).

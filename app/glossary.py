@@ -47,21 +47,9 @@ TERMS: Mapping[str, str] = {
         "period, so treat its score as optimistic. The derived polynomial makes "
         "every such choice inside each fold instead."
     ),
-    "Polynomial – fixed carry inputs (research)": (
-        "The bond model from the November 2026 model research: a degree-1 "
-        "polynomial in the levels of the 10-year yield, the 10-year breakeven, the "
-        "2s10s slope, HY and IG OAS, VIX and FX implied volatility, which is where a "
-        "bond's carry shows. Each input's unexpected move over the horizon is taken "
-        "out before its level is fitted, so a level is credited with what it earns, "
-        "not with how it happened to move in that sample, and the forecast is an "
-        "expected return. It trains on every earlier date, as the research did, and "
-        "is gated like every other model. Its inputs were chosen by looking at "
-        "results on the Sep 2026 upload (Aug 2016 – Sep 2026), so treat its score "
-        "as optimistic."
-    ),
     "Polynomial – calendar inputs (research)": (
-        "The bond model from the November 2026 model research: a degree-1 polynomial "
-        "in how many of the forecast window's trading days are a month's last, a "
+        "The bond research model, from the November 2026 model research: a degree-1 "
+        "polynomial in how many of the forecast window's trading days are a month's last, a "
         "month's first or a jobs-report Friday, and at 1 day which weekday is next. "
         "Bond returns are a few basis points higher on a month's last trading day "
         "(Hartley and Schwarz), so it carries information at 1 and 5 days only. It "
@@ -96,8 +84,8 @@ TERMS: Mapping[str, str] = {
         "a setting: every model on both targets studies the latest 504 days (about "
         "two years), long enough to span more than one market episode but short "
         "enough to follow a change in how the markets behave. Trying windows until "
-        "one scores well would itself be a way to overfit. The research model is "
-        "the one exception: it trains on every earlier date, as its research did."
+        "one scores well would itself be a way to overfit. The equity research model "
+        "is the one exception: it trains on every earlier date, as its research did."
     ),
     "Walk-forward test window (days)": (
         "The days right after each training block, used only for grading: 20 "

@@ -248,6 +248,28 @@ def test_the_happy_path_shows_latest_weights_summing_to_one():
     assert sum(values) == pytest.approx(1.0, abs=1e-6)
 
 
+def test_an_active_model_the_page_no_longer_offers_is_not_used_even_on_its_own_data():
+    # The bond carry row was removed on 17 Nov 2026; one set active before then, on the
+    # data committed now, must not feed the portfolio.
+    committed = _committed()
+    _set_active(EQUITY, forecast=_forecast(committed, seed=1))
+    _set_active(
+        BOND,
+        forecast=_forecast(committed, seed=2),
+        name="Polynomial – fixed carry inputs (research)",
+        target_column=BOND_COL,
+    )
+    app = _page(committed)
+
+    assert not app.exception
+    assert any(
+        "The active bond model, Polynomial – fixed carry inputs (research), is no longer "
+        "offered on the Models page, so its saved forecasts are not used." in w.value
+        for w in app.warning
+    )
+    assert not app.metric
+
+
 def test_an_active_bond_calendar_model_feeds_the_portfolio_like_any_other():
     # It is saved with its forecasts and signal but no function, as machine learning is.
     calendar = "Polynomial – calendar inputs (research)"

@@ -2,8 +2,11 @@
 
 Asked for after the s13–s14 research rounds of 17 Nov: put the one bond model that held
 up into the app exactly as researched, and show that the app reproduces the research's
-numbers. This file records the research in brief, the model as the app now runs it
-("Polynomial – calendar inputs (research)", methodology §9.3), and the checks.
+numbers. Then, the same day, under the rule that a better research model replaces the
+old one rather than adding a second row: a comparison fixed in advance (s15, part A,
+below) picked it over the carry model, so it replaces carry as the Bond tab's research
+row. This file records the research in brief, the replacement, the model as the app now
+runs it ("Polynomial – calendar inputs (research)", methodology §9.3), and the checks.
 
 Produced by `docs/evidence/2026-11-17-bond-calendar.py` on this branch (main at
 `7a47c62` plus the model). It reads the 11 exports from 31 Aug 2006 to 11–12 Nov 2026
@@ -69,6 +72,65 @@ horizon. A 1-day label gives about 4,500, which is why s14 looked at short horiz
   h = 1 or 5, so the portfolio was the one without forecasts. Forced open as a
   diagnostic, the tilts did not pay after costs (t against no forecasts −1.11 to +0.38 at
   h = 5, −4.7 to −2.6 at h = 1).
+
+## It replaces the carry model (s15, part A)
+
+Asked for: bonds only; if better fixed inputs or formulas are found for the research
+model, replace the old one. The rule was written before any run
+(`s15-bond-grids-honest/RULE.md`, part A):
+
+- **Candidates**, one configuration each, no selection: carry (the Bond tab's research
+  row until now: the seven levels, the innovation-corrected lasso, every earlier row);
+  calendar (this model: the calendar columns, shrinkage, 504 rows); carry plus calendar
+  (rates and gauges as levels with the calendar columns, shrinkage) at 504 and at 2,520
+  rows.
+- **The replacement** is the candidate that passes the gate (Signal Rank IC above 0.02,
+  t above 2) with both decades above zero (t above 1) at the most horizons. Ties: the
+  higher smallest whole-period t across the four horizons, then the fewest parts.
+- **It replaces carry** unless it is below carry's whole-period Signal Rank IC by more
+  than 0.03 at some horizon.
+
+Results on the data from 2006 (`part_a.txt` there; the research harness on main's code,
+the model's own run of the calendar columns, so h = 5 shows the research's +0.083 where
+the app gives +0.084, below). "Pass, both" = the gate with both decades above zero:
+
+| Candidate | h | Whole period | Fresh | Later | Constant folds | |
+|---|---|---|---|---|---|---|
+| Carry, every earlier row | 1 | +0.003, t 0.16 | −0.006, t −0.25 | −0.002, t −0.12 | 49 | |
+| | 5 | +0.021, t 0.63 | +0.016, t 0.35 | +0.026, t 0.58 | 34 | |
+| | 10 | +0.038, t 0.78 | +0.030, t 0.47 | +0.046, t 0.71 | 34 | |
+| | 20 | +0.062, t 0.93 | −0.026, t −0.31 | +0.117, t 1.30 | 30 | |
+| Calendar, 504 rows | 1 | +0.051, t 3.25 | +0.064, t 2.52 | +0.044, t 2.11 | 0 | pass, both |
+| | 5 | +0.083, t 3.24 | +0.055, t 1.41 | +0.094, t 2.72 | 0 | pass, both |
+| | 10 | +0.053, t 1.73 | −0.044, t −0.97 | +0.100, t 2.52 | 5 | |
+| | 20 | +0.043, t 0.92 | −0.004, t −0.06 | +0.037, t 0.63 | 38 | |
+| Carry + calendar, 504 rows | 1 | +0.063, t 4.03 | +0.053, t 2.02 | +0.068, t 3.23 | 0 | pass, both |
+| | 5 | +0.074, t 2.32 | +0.029, t 0.65 | +0.097, t 2.25 | 0 | pass |
+| | 10 | +0.017, t 0.39 | −0.123, t −2.05 | +0.081, t 1.42 | 0 | |
+| | 20 | +0.014, t 0.25 | −0.060, t −0.75 | +0.074, t 0.99 | 0 | |
+| Carry + calendar, 2,520 rows | 1 | +0.038, t 2.31 | +0.048, t 1.77 | +0.020, t 0.96 | 0 | pass |
+| | 5 | +0.102, t 3.47 | +0.073, t 1.69 | +0.112, t 2.99 | 0 | pass, both |
+| | 10 | +0.093, t 2.34 | +0.006, t 0.09 | +0.122, t 2.48 | 0 | pass |
+| | 20 | +0.087, t 1.45 | +0.053, t 0.66 | +0.114, t 1.41 | 0 | |
+
+Of 228 folds each. **The calendar model wins**: it passes with both decades above zero
+at two horizons (h = 1 and 5), each carry-plus-calendar run at one, carry at none. Its
+largest shortfall against carry is 0.019, at h = 20 (+0.043 against +0.062), within the
+rule's 0.03, so it replaces carry. Carry plus calendar on 2,520 rows has the highest
+scores at h = 5, 10 and 20, but passes with both decades at h = 5 only.
+
+The carry figures here differ from methodology §20's (+0.004, t 0.26 at h = 1 to
++0.063, t 0.94 at h = 20) by at most 0.002 in Signal Rank IC and 0.10 in t. The
+research harness builds the same seven levels under other names and in another column
+order, which the lasso path can be sensitive to; this was not checked further, since on
+either figure carry passes nowhere.
+
+What changes in the app: the Bond tab has one research row, this model. The carry row
+is gone from the page; `models/carry_research.py` and its tests stay, so the evidence
+that cites its figures still runs. A model still set active under the carry row's name
+is never used: it is listed in `reporting.model_metrics.RETIRED_MODEL_NAMES`, so
+`ActiveModelRecord.fitted_on` is false for it whatever it was fitted on, and Home, the
+status bar, Portfolio and Scenarios treat it as stale and say it is no longer offered.
 
 ## The app reproduces it
 

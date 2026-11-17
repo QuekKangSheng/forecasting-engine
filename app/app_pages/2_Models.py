@@ -47,12 +47,6 @@ from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import BoostedConfigError, fits_tuning_period, run_boosted
 from forecasting_engine.models.calendar_research import VERSION as CALENDAR_RESEARCH_VERSION
 from forecasting_engine.models.calendar_research import run_calendar_research_polynomial
-from forecasting_engine.models.carry_research import VERSION as CARRY_RESEARCH_VERSION
-from forecasting_engine.models.carry_research import (
-    CarryResearchInputsError,
-    carry_inputs,
-    run_carry_research_polynomial,
-)
 from forecasting_engine.models.famafrench import (
     FACTOR_COLUMNS,
     FamaFrenchDataError,
@@ -129,26 +123,24 @@ from model_settings import (
 )
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
-NAIVE, FF5, DERIVED, RESEARCH, BOND_RESEARCH, CALENDAR, USER, ML = MODEL_ORDER
+NAIVE, FF5, DERIVED, RESEARCH, CALENDAR, USER, ML = MODEL_ORDER
 
-#: The two research models that train on every earlier date and read their inputs as
-#: levels: equity's and bond's, each on its own tab.
-RESEARCH_MODELS = (RESEARCH, BOND_RESEARCH)
+#: Each tab's research model: equity's fixed economic inputs, which train on every
+#: earlier date and are read as levels, and bond's calendar model, which trains on the
+#: page's own window and reads only the dates. Each is captioned and shows its pre-2016
+#: score.
+RESEARCH_MODELS = {TargetRole.EQUITY: RESEARCH, TargetRole.BOND: CALENDAR}
+RESEARCH_ROWS = tuple(RESEARCH_MODELS.values())
 
-#: Every research row: those two and the bond calendar model, which trains on the page's
-#: own window and reads only the dates. Each is captioned and shows its pre-2016 score.
-RESEARCH_ROWS = (*RESEARCH_MODELS, CALENDAR)
-
-ACTIVE_MODEL_CANDIDATES = (DERIVED, RESEARCH, BOND_RESEARCH, CALENDAR, USER, ML)
+ACTIVE_MODEL_CANDIDATES = (DERIVED, RESEARCH, CALENDAR, USER, ML)
 
 #: Every model but the naive baseline, which is the bar the others are read against.
-GATED = (FF5, DERIVED, RESEARCH, BOND_RESEARCH, CALENDAR, USER, ML)
+GATED = (FF5, DERIVED, RESEARCH, CALENDAR, USER, ML)
 
 #: Each research model's own setting: the version of its fit, so a saved result
 #: from an older fit is refitted rather than shown.
 RESEARCH_SETTINGS = {
     RESEARCH: f"sign-ruled v{SIGN_RULED_VERSION}",
-    BOND_RESEARCH: f"carry v{CARRY_RESEARCH_VERSION}",
     CALENDAR: f"calendar v{CALENDAR_RESEARCH_VERSION}",
 }
 
@@ -157,8 +149,6 @@ RESEARCH_SETTINGS = {
 RESEARCH_CAPTIONS = {
     RESEARCH: "Scores are optimistic: inputs chosen by looking at results over "
     "Aug 2016 – Sep 2024.",
-    BOND_RESEARCH: "Scores are optimistic: inputs chosen by looking at results on the "
-    "Sep 2026 upload (Aug 2016 – Sep 2026).",
     CALENDAR: "Scores are optimistic: the month-end idea was fixed from published research "
     "before looking, but this form of it was picked from 98 runs scored over Oct 2008 – "
     "Nov 2026. It carries information only at the 1- and 5-day horizons: at 10 and 20 "
@@ -279,8 +269,8 @@ with st.expander("Settings"):
     test = DEFAULT_TEST_WINDOW
     st.caption(
         f"The train window is fixed: every model on both targets trains on the latest "
-        f"{TRAIN_WINDOW} dates. The fixed economic and carry research models alone train "
-        "on every earlier date, as their research did.",
+        f"{TRAIN_WINDOW} dates. The equity research model alone trains on every earlier "
+        "date, as its research did.",
         help=glossary.term("Walk-forward train window (days)"),
     )
     st.caption(
@@ -541,35 +531,12 @@ def _run_research(
     return model_runs.ModelRun(result, description, function=fn, shap=shap)
 
 
-def _run_carry_research(
-    inputs: tuple[str, ...],
-    frame: pd.DataFrame,
-    price_col: str,
-    horizon: int,
-    splitter: PurgedWalkForward,
-) -> model_runs.ModelRun:
-    """The bond research model: its fixed inputs read as levels, on an expanding window
-    over ``splitter``'s test dates."""
-    result, description, panel = run_carry_research_polynomial(
-        frame, inputs, price_col, horizon, splitter
-    )
-    fn = from_description(
-        description,
-        origin=Origin.DERIVED,
-        target=price_col,
-        horizon=horizon,
-        columns=panel.signals,
-    )
-    training = panel.frame.loc[last_fold_train_window(panel, expanding(splitter))]
-    shap = polynomial_shap(fn, training, description.input_bounds)
-    return model_runs.ModelRun(result, description, function=fn, shap=shap)
-
-
 def _run_calendar_research(
     frame: pd.DataFrame, price_col: str, horizon: int, splitter: PurgedWalkForward
 ) -> model_runs.ModelRun:
-    """The bond calendar model: what kind of days each label window holds, screened and
-    fitted per fold by the shrinkage fit, on ``splitter``'s own train window."""
+    """The bond research model, on the calendar: what kind of days each label window
+    holds, screened and fitted per fold by the shrinkage fit, on ``splitter``'s own
+    train window."""
     result, description, panel = run_calendar_research_polynomial(
         frame, price_col, horizon, splitter
     )
@@ -586,37 +553,31 @@ def _run_calendar_research(
 
 
 def _research_inputs(role: TargetRole) -> tuple[object | None, str | None]:
-    """The research model's inputs for ``role`` (equity's with their signs, bond's as a
-    tuple), or why it can't run here."""
+    """The research model's inputs for ``role`` (equity's with their signs; bond's
+    calendar model reads only the target's dates, so it has none), or why it can't run
+    here."""
+    if role != TargetRole.EQUITY:
+        return None, None
     try:
-        if role == TargetRole.EQUITY:
-            return economic_signs(signal_cols, sources, role), None
-        return carry_inputs(signal_cols, sources, role), None
-    except (SignRuledInputsError, CarryResearchInputsError) as exc:
+        return economic_signs(signal_cols, sources, role), None
+    except SignRuledInputsError as exc:
         return None, str(exc)
 
 
 def _active_function(name: str, run: model_runs.ModelRun) -> active_model.ActiveFunction | None:
     """The fitted function a scenario evaluates again (FYP-32), for the polynomial
-    models only: their latest fold's fit, with each input's transform. The research
-    model reads its inputs as levels whatever the transform map says. Machine learning
-    has none, and nor has the calendar model: its inputs are the dates a label window
-    holds, which no scenario moves, and are not columns of the committed data."""
-    if name == CALENDAR:
-        return None
-    origin = {
-        DERIVED: Origin.DERIVED,
-        RESEARCH: Origin.DERIVED,
-        BOND_RESEARCH: Origin.DERIVED,
-        USER: Origin.USER_SUPPLIED,
-    }
+    models only: their latest fold's fit, with each input's transform. The equity
+    research model reads its inputs as levels whatever the transform map says. Machine
+    learning has none, and nor has the calendar model: its inputs are the dates a label
+    window holds, which no scenario moves, and are not columns of the committed data."""
+    origin = {DERIVED: Origin.DERIVED, RESEARCH: Origin.DERIVED, USER: Origin.USER_SUPPLIED}
     if name not in origin:
         return None
     inputs = function_inputs(run.description, origin[name], numeric_cols)
     return active_model.ActiveFunction(
         origin[name],
         run.description,
-        {s: Transform.LEVEL if name in RESEARCH_MODELS else transforms[s] for s in inputs},
+        {s: Transform.LEVEL if name == RESEARCH else transforms[s] for s in inputs},
     )
 
 
@@ -660,11 +621,11 @@ def _recorder(
 
 
 def _active_settings(role: TargetRole, name: str) -> dict[str, int | str | None]:
-    """What a model set active was run under, and the column it forecast. The two
-    research models that train on every earlier date have no train window; the
-    calendar model trains on the page's, like every other model."""
+    """What a model set active was run under, and the column it forecast. The equity
+    research model trains on every earlier date, so it has no train window; the bond
+    research model trains on the page's, like every other model."""
     settings = {**ACTIVE_SETTINGS, "target_column": target_columns[role]}
-    if name in RESEARCH_MODELS:
+    if name == RESEARCH:
         return {**settings, "train_window": None}
     return settings
 
@@ -1054,14 +1015,6 @@ def _show_polynomial_expander(
                 f"its test window, not the latest {TRAIN_WINDOW}, as the "
                 "research did. " + RESEARCH_CAPTIONS[RESEARCH]
             )
-        elif name == BOND_RESEARCH:
-            st.caption(
-                "The levels of the 10-year yield, the 10-year breakeven, the 2s10s slope, "
-                "HY and IG OAS, VIX and FX implied volatility, fixed by the research, with "
-                "each one's unexpected move over the horizon taken out. Each fold trains "
-                f"on every date before its test window, not the latest {TRAIN_WINDOW}, as "
-                "the research did. " + RESEARCH_CAPTIONS[BOND_RESEARCH]
-            )
         elif name == CALENDAR:
             st.caption(
                 "How many of each label window's trading days are a month's last, a "
@@ -1154,8 +1107,11 @@ def _show_active_status(
             f"No active model set yet for {target_name}.", help=glossary.term("Active model")
         )
         return
-    tone = "danger" if current.high_risk else "success"
+    tone = "danger" if current.high_risk or current.retired else "success"
     note = " · set despite failing both gates" if current.high_risk else ""
+    if current.retired:
+        # Its forecasts are not used anywhere (ActiveModelRecord.fitted_on).
+        note = " · no longer offered here, so not used: set another active"
     # Escaped: the target's name comes from a column in the uploaded file.
     st.markdown(
         ui.status_row(
@@ -1453,10 +1409,10 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     target_name = label(price_col)
     key = role.value
     # FF5 is an equity-factor benchmark, so only the Equity tab offers it. Each tab has
-    # its own research model, and the Bond tab the calendar model besides.
+    # its own research model.
     equity = role == TargetRole.EQUITY
-    research = RESEARCH if equity else BOND_RESEARCH
-    check_cols = st.columns([4, 4, 9, 5, 1] if equity else [4, 9, 8, 5, 1])
+    research = RESEARCH_MODELS[role]
+    check_cols = st.columns([4, 4, 9, 5, 1] if equity else [4, 9, 5, 1])
     run_poly = check_cols[0].checkbox("Polynomial", value=True, key=f"run_poly_{key}")
     run_ff5 = equity and check_cols[1].checkbox("Fama-French 5", value=True, key=f"run_ff5_{key}")
     research_ticked = check_cols[2 if equity else 1].checkbox(
@@ -1464,12 +1420,6 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         value=True,
         key=f"run_research_{key}",
         help=glossary.term(research),
-    )
-    run_calendar = not equity and check_cols[2].checkbox(
-        CALENDAR,
-        value=True,
-        key=f"run_calendar_{key}",
-        help=glossary.term(CALENDAR),
     )
     ml_fits = fits_tuning_period(int(train), int(test), EMBARGO_DAYS, TUNING_ROWS)
     ml_ticked = check_cols[-2].checkbox(
@@ -1495,12 +1445,10 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
 
     polynomial, settings = _polynomial_settings(key, panel, run_poly)
     research_inputs, unavailable = _research_inputs(role)
-    if research_ticked and not research_inputs:
+    if research_ticked and unavailable:
         st.caption(f"No research model for this target: {unavailable}")
-    run_research = research_ticked and bool(research_inputs)
+    run_research = research_ticked and not unavailable
     settings[research] = RESEARCH_SETTINGS[research]
-    if not equity:
-        settings[CALENDAR] = RESEARCH_SETTINGS[CALENDAR]
     tab_runs = model_runs.tab(stored, role, settings, inputs=_tab_inputs(role))
     models = [NAIVE]
     user_formula, user_bindings = settings[USER]
@@ -1508,8 +1456,6 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         models.append(polynomial)
     if run_research:
         models.append(research)
-    if run_calendar:
-        models.append(CALENDAR)
     if run_ff5:
         models.append(FF5)
     if run_ml:
@@ -1527,9 +1473,6 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
             DERIVED: functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter),
             RESEARCH: functools.partial(
                 _run_research, research_inputs, indexed, price_col, horizon, splitter
-            ),
-            BOND_RESEARCH: functools.partial(
-                _run_carry_research, research_inputs, indexed, price_col, horizon, splitter
             ),
             CALENDAR: functools.partial(
                 _run_calendar_research, indexed, price_col, horizon, splitter

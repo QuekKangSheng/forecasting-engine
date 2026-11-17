@@ -90,6 +90,22 @@ if missing:
     )
     st.stop()
 
+# A model the Models page no longer offers can be neither rerun nor inspected there, so
+# its saved forecasts are not used, whatever data they were fitted on.
+retired = [
+    f"{name} model, {record.model_name},"
+    for name, record in (("equity", equity_active), ("bond", bond_active))
+    if record.retired
+]
+if retired:
+    st.warning(
+        f"The active {' and the '.join(retired)} {'are' if len(retired) > 1 else 'is'} no "
+        "longer offered on the Models page, so its saved forecasts are not used. Set "
+        "another model active there.",
+        icon=":material/warning:",
+    )
+    st.stop()
+
 if not active_model.settings_match(equity_active, bond_active):
     st.warning(
         "The active equity and bond models were run under different settings — "

@@ -1,9 +1,17 @@
-"""The bond research model: a degree-1 polynomial in the levels of rates, spreads and
+"""The carry model: a degree-1 polynomial in the levels of rates, spreads and
 volatility gauges, fitted with each input's innovation over the label window taken out,
 so that its forecast is an expected return.
 
-Run on the Models page's Bond tab as its own row, "Polynomial – fixed carry inputs
-(research)". Its inputs were chosen in the November 2026 model research
+No longer on the Models page: it was the Bond tab's research row, "Polynomial – fixed
+carry inputs (research)", until 17 Nov 2026, when the calendar model
+(``models/calendar_research``) replaced it because, in a comparison fixed in advance on
+the data from 2006, the calendar model passed the gate in both decades at h = 1 and 5
+(Signal Rank IC +0.051, t 3.25; +0.083, t 3.24) where this one passed at no horizon
+(t 0.16 to 0.93), and was never more than 0.019 below it (h = 20). It stays, with its
+tests, so the evidence that cites its figures still runs; a model still set active
+under its row is stale (``reporting.model_metrics.RETIRED_MODEL_NAMES``).
+
+Its inputs were chosen in the November 2026 model research
 (``bond/nochange_levels``) by looking at results on the Sep 2026 upload (Aug 2016 - Sep
 2026), which overlaps the scored period, so its scores there overstate it. See docs/methodology.md.
 

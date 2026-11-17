@@ -65,9 +65,11 @@ expected return). Read as levels. No bond set beat chance in the research, so th
 method is equity-only."""
 
 HOLDOUT_BEFORE: pd.Timestamp = pd.Timestamp("2016-08-01")
-"""Both research models' inputs were chosen by looking at results from Aug 2016 on,
-so test windows whose every label ends before this date are out of sample for those
-choices: their pre-2016 hold-out (``validation.harness.holdout``)."""
+"""The equity research model's inputs, and the former carry model's, were chosen by
+looking at results from Aug 2016 on, so test windows whose every label ends before this
+date are out of sample for those choices: their pre-2016 hold-out
+(``validation.harness.holdout``). The bond calendar model reports the same figure, but
+its research looked at those years too, so for it this is not a hold-out."""
 
 LEVEL_ROWS: int = 252
 """The forecast's level is the mean of this many earliest training labels."""

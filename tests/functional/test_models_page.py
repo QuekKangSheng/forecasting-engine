@@ -64,7 +64,6 @@ DEFAULT_MODEL_SETTINGS = {
     POLY: 10,
     USER_POLY: ("", ()),
     "Polynomial – fixed economic inputs": "sign-ruled v1",
-    "Polynomial – fixed carry inputs (research)": "carry v2",
     "Polynomial – calendar inputs (research)": "calendar v1",
 }
 NAIVE = "Naive (training mean)"
@@ -1757,10 +1756,6 @@ RESEARCH = "Polynomial – fixed economic inputs"
 RESEARCH_CAPTION = (
     "Scores are optimistic: inputs chosen by looking at results over Aug 2016 – Sep 2024."
 )
-BOND_RESEARCH_CAPTION = (
-    "Scores are optimistic: inputs chosen by looking at results on the Sep 2026 upload "
-    "(Aug 2016 – Sep 2026)."
-)
 #: The research model's four inputs, by the ticker it finds each one by.
 RESEARCH_INPUTS = {
     "LF98OAS_Index_PX_LAST": "LF98OAS Index",
@@ -1862,28 +1857,10 @@ def test_the_research_model_can_be_set_active_with_its_signal_and_no_train_windo
     pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)
 
 
-# --- the bond research model (fixed carry inputs) --------------------------------------
+# --- the bond research model: the calendar model, which replaced carry -------------------
 
-BOND_RESEARCH = "Polynomial – fixed carry inputs (research)"
-#: The bond research model's seven inputs, by the ticker it finds each one by.
-CARRY_INPUTS = {
-    f"{ticker}_Index_PX_LAST": f"{ticker} Index"
-    for ticker in ("USGG10YR", "USGGBE10", "USYC2Y10", "LF98OAS", "LUACOAS", "VIX", "JPMVXYGL")
-}
-
-
-def _with_carry_inputs() -> tuple[pd.DataFrame, dict[str, ColumnSource]]:
-    committed = _committed(bond=True)
-    rng = np.random.default_rng(2)
-    for column in CARRY_INPUTS:
-        if column not in committed:
-            committed[column] = 2 + np.cumsum(rng.normal(scale=0.05, size=len(committed)))
-    sources = {
-        SPX: ColumnSource("SPX Index", "PX_LAST"),
-        AGG: ColumnSource("LBUSTRUU Index", "TOT_RETURN_INDEX_GROSS_DVDS"),
-    }
-    sources |= {col: ColumnSource(security, "PX_LAST") for col, security in CARRY_INPUTS.items()}
-    return committed, sources
+#: The bond research row until 17 Nov 2026, replaced by the calendar model.
+CARRY = "Polynomial – fixed carry inputs (research)"
 
 
 def _press_bond_run(app: AppTest) -> AppTest:
@@ -1891,71 +1868,42 @@ def _press_bond_run(app: AppTest) -> AppTest:
     return app
 
 
-def test_only_the_bond_tab_offers_the_bond_research_model():
-    app = _page(bond=True)
-
-    labels = [c.label for c in app.checkbox]
-    assert labels.count(BOND_RESEARCH) == 1
-    assert labels.count(RESEARCH) == 1
-    assert labels.index(RESEARCH) < labels.index(BOND_RESEARCH)  # the equity tab comes first
-
-
-def test_without_its_inputs_the_bond_research_model_says_so_and_runs_nothing(stub_ml):
-    app = _press_bond_run(_page(bond=True))
-
-    assert not app.exception
-    assert (
-        "No research model for this target: the bond research model needs USGG10YR, "
-        "USGGBE10, USYC2Y10, LF98OAS, LUACOAS, VIX, JPMVXYGL in the committed data."
-    ) in _captions(app)
-    assert BOND_RESEARCH not in _stored_runs(app, BOND)
-
-
-def test_the_bond_research_model_runs_beside_the_derived_polynomial_on_the_same_dates(stub_ml):
-    committed, sources = _with_carry_inputs()
-    app = _page(bond=True, committed=committed, sources=sources)
-    app = _press_bond_run(_untick(app, "Fama-French 5"))
-
-    assert not app.exception
-    runs = _stored_runs(app, BOND)
-    assert {NAIVE, POLY, BOND_RESEARCH} <= set(runs)
-    assert runs[BOND_RESEARCH].result.forecast.index[0] == runs[POLY].result.forecast.index[0]
-    assert runs[BOND_RESEARCH].result.forecast.index[-1] == runs[POLY].result.forecast.index[-1]
-    assert f"**{BOND_RESEARCH}**: gate" in _markdown(app)
-    assert f"{BOND_RESEARCH}: {BOND_RESEARCH_CAPTION}" in _captions(app)
-    assert any(label.startswith(f"{BOND_RESEARCH} · ") for label in _expander_labels(app))
-    assert set(runs[BOND_RESEARCH].shap.terms) <= set(CARRY_INPUTS)
-
-
-def test_the_bond_research_model_is_gated_and_captioned_under_its_row():
-    app = _page(
-        {BOND: {POLY: _polynomial_run(), BOND_RESEARCH: _polynomial_run(_result())}}, bond=True
+def _set_carry_active(fingerprint: str) -> None:
+    """The carry row set active for bond, as it could have been before 17 Nov 2026."""
+    active_model.set_active_model(
+        BOND,
+        CARRY,
+        _result(),
+        high_risk=False,
+        horizon=5,
+        train_window=None,
+        test_window=20,
+        dataset_fingerprint=fingerprint,
+        target_column=AGG,
     )
 
-    assert f"**{BOND_RESEARCH}**: gate met — Signal Rank IC above 0.02 and t above 2." in (
-        _markdown(app)
-    )
-    assert "Gate met" in _table(app).split(BOND_RESEARCH, 1)[1].split("</tr>", 1)[0]
-    assert f"{BOND_RESEARCH}: {BOND_RESEARCH_CAPTION}" in _captions(app)
+
+def test_the_bond_tab_no_longer_offers_the_carry_model(stub_ml):
+    committed = _committed(bond=True)
+    app = _press_bond_run(_page(bond=True, committed=committed))
+
+    assert not app.exception
+    assert CARRY not in [c.label for c in app.checkbox]
+    assert CARRY not in _stored_runs(app, BOND)
+    assert CARRY not in _markdown(app) + _captions(app)
 
 
-def test_the_bond_research_model_can_be_set_active_with_its_signal_and_no_train_window():
-    forecast = _oos([0.01, -0.01, 0.02, 0.0] * 10)
-    baseline = _oos([0.004] * 20 + [0.006] * 20)
-    result = replace(_result(), forecast=forecast, realised=_oos([0.0] * 40), baseline=baseline)
-    tabs = {BOND: {POLY: _polynomial_run(), BOND_RESEARCH: _polynomial_run(result)}}
-    app = _page(tabs, bond=True)
+def test_an_active_carry_model_is_said_to_be_no_longer_offered_and_not_preselected():
+    committed = _committed(bond=True)
+    _set_carry_active(str(dataset_fingerprint(committed)))
+    tabs = {BOND: {POLY: _polynomial_run(), CALENDAR: _polynomial_run()}}
+    app = _page(tabs, bond=True, committed=committed)
+
+    assert not app.exception
+    assert "no longer offered here, so not used: set another active" in _markdown(app)
     (select,) = [s for s in app.selectbox if s.label == "Model to set active"]
-    assert list(select.options) == [POLY, BOND_RESEARCH]
-    select.select(BOND_RESEARCH).run()
-    next(b for b in app.button if b.label == "Set as active").click().run()
-
-    assert not app.exception
-    record = active_model.get_active_model(BOND)
-    assert record.model_name == BOND_RESEARCH
-    assert record.train_window is None
-    signal = active_model.get_active_model_signal(BOND)
-    pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)
+    assert list(select.options) == [POLY, CALENDAR]
+    assert select.value == POLY
 
 
 # --- the bond calendar model ---------------------------------------------------------------
@@ -1985,18 +1933,16 @@ def test_only_the_bond_tab_offers_the_calendar_model():
 
     assert CALENDAR not in equity_only
     assert both.count(CALENDAR) == 1
-    assert both.index(BOND_RESEARCH) < both.index(CALENDAR)
+    assert both.index(RESEARCH) < both.index(CALENDAR)  # the equity tab comes first
 
 
 def test_the_calendar_model_runs_beside_the_derived_polynomial_on_the_same_dates(stub_ml):
-    # It needs nothing but the bond index: the committed data has none of the bond
-    # research model's inputs.
+    # It needs nothing but the bond index.
     app = _press_bond_run(_page(bond=True))
 
     assert not app.exception
     runs = _stored_runs(app, BOND)
     assert {NAIVE, POLY, CALENDAR} <= set(runs)
-    assert BOND_RESEARCH not in runs
     forecast = runs[CALENDAR].result.forecast
     assert forecast.index[0] == runs[POLY].result.forecast.index[0]
     assert forecast.index[-1] == runs[POLY].result.forecast.index[-1]
@@ -2104,12 +2050,10 @@ def test_a_research_row_shows_its_pre_2016_holdout_score():
         rows_scored=1920,
     )
     result = replace(_result(), holdout=held)
-    app = _page(
-        {BOND: {POLY: _polynomial_run(), BOND_RESEARCH: _polynomial_run(result)}}, bond=True
-    )
+    app = _page({EQUITY: {POLY: _polynomial_run(), RESEARCH: _polynomial_run(result)}})
 
     assert (
-        f"{BOND_RESEARCH}, pre-2016 hold-out: Signal Rank IC +0.041, t 1.37, over the 96 "
+        f"{RESEARCH}, pre-2016 hold-out: Signal Rank IC +0.041, t 1.37, over the 96 "
         "test windows from Sep 2008 whose every label ends before 1 Aug 2016: out of sample "
         "for its research's choices."
     ) in _captions(app)

@@ -19,7 +19,6 @@ MODEL_ORDER: tuple[str, ...] = (
     "FF5 Benchmark",
     "Polynomial (derived)",
     "Polynomial – fixed economic inputs",
-    "Polynomial – fixed carry inputs (research)",
     "Polynomial – calendar inputs (research)",
     "Polynomial (user-supplied)",
     "Machine Learning",
@@ -31,6 +30,12 @@ _LEGACY_MODEL_NAMES: Mapping[str, str] = {
 }
 """Old row names, mapped to their current one, for a ``model_name`` already
 saved to the database under a name since renamed."""
+
+RETIRED_MODEL_NAMES: frozenset[str] = frozenset({"Polynomial – fixed carry inputs (research)"})
+"""Rows the Models page no longer offers, not renamed but removed. A model saved active
+under one is never current, whatever data it was fitted on: no page can rerun it or show
+its fit, so its saved forecasts are not used (``ActiveModelRecord.fitted_on``). The carry
+model was the bond research row until 17 Nov 2026, when the calendar model replaced it."""
 
 
 def display_model_name(model_name: str) -> str:

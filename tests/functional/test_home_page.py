@@ -525,3 +525,34 @@ def test_a_model_fitted_on_other_data_is_not_counted_as_active():
     markdown = _markdown(_page(committed))
 
     assert "1 of 2 models active</span>" in markdown
+
+
+def test_an_active_model_the_page_no_longer_offers_is_flagged_and_replaced_first():
+    # The bond carry row was removed on 17 Nov 2026; one set active before then is
+    # never used, even on the data committed now.
+    committed = _committed()
+    fingerprint = str(dataset_fingerprint(committed))
+    for role, name, column in (
+        (EQUITY, DERIVED, SPX),
+        (BOND, "Polynomial – fixed carry inputs (research)", AGG),
+    ):
+        active_model.set_active_model(
+            role,
+            name,
+            _result(0.04),
+            high_risk=False,
+            horizon=20,
+            train_window=504,
+            test_window=20,
+            dataset_fingerprint=fingerprint,
+            target_column=column,
+        )
+    app = _page(committed, runs=_stored_runs(committed))
+
+    assert not app.exception
+    assert any(
+        "Polynomial – fixed carry inputs (research) is no longer offered on the Models page"
+        in w.value
+        for w in app.warning
+    )
+    assert _next_step(app).startswith("Set another bond model active on the")

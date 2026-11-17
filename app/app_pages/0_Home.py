@@ -92,7 +92,7 @@ def _stale(fingerprint_then: str | None) -> bool:
 
 def _active_stale(role: TargetRole) -> bool:
     """Whether ``role``'s active model was fitted on other data or another target
-    column than the ones committed now."""
+    column than the ones committed now, or is one the Models page no longer offers."""
     active = actives[role]
     return (
         active is not None
@@ -134,6 +134,12 @@ def _next_step() -> tuple[str, str] | None:
                 )
             return (
                 f"set an active {ROLE_NAMES[role].lower()} model on the **Models** page.",
+                "models",
+            )
+        if active.retired:
+            return (
+                f"set another {ROLE_NAMES[role].lower()} model active on the **Models** page: "
+                "the active one is no longer offered.",
                 "models",
             )
         if _active_stale(role):
@@ -360,6 +366,12 @@ def _models_card() -> None:
         active = actives[role]
         if active is None:
             st.caption("Active model: none set.")
+        elif active.retired:
+            st.warning(
+                f"Active model {active.model_name} is no longer offered on the Models page, "
+                "so its forecasts are not used. Set another model active there.",
+                icon=":material/warning:",
+            )
         elif _active_stale(role):
             st.warning(
                 f"Active model {display_model_name(active.model_name)} was fitted on "
