@@ -278,8 +278,9 @@
         <li><b>Model families.</b> A naive training-mean baseline, the Fama-French five-factor
           benchmark (equity only), the polynomial (user-supplied, or derived from lasso fits at
           degrees 1 to 3 and a shrinkage fit), a research model on each target (a polynomial on
-          fixed economic inputs for equity, one on fixed carry inputs for bond), and XGBoost and
-          LightGBM. There is no PySR.</li>
+          fixed economic inputs for equity, one on fixed carry inputs for bond), a bond model on
+          the calendar of the forecast window (month-ends), and XGBoost and LightGBM. There is
+          no PySR.</li>
         <li><b>Validation.</b> No PBO, DSR or CPCV: a model is promoted on its Signal Rank IC and
           its t-statistic. The windows are 504 training days, 20 test days and a 20-day embargo,
           not 756, 63 and 5 (the two research models alone train on every earlier day), and the

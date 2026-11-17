@@ -45,6 +45,8 @@ from forecasting_engine.ingest.fama_french import FactorFetchError
 from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import BoostedConfigError, fits_tuning_period, run_boosted
+from forecasting_engine.models.calendar_research import VERSION as CALENDAR_RESEARCH_VERSION
+from forecasting_engine.models.calendar_research import run_calendar_research_polynomial
 from forecasting_engine.models.carry_research import VERSION as CARRY_RESEARCH_VERSION
 from forecasting_engine.models.carry_research import (
     CarryResearchInputsError,
@@ -127,21 +129,27 @@ from model_settings import (
 )
 
 #: Model names as the comparison table knows them (``MODEL_ORDER``).
-NAIVE, FF5, DERIVED, RESEARCH, BOND_RESEARCH, USER, ML = MODEL_ORDER
+NAIVE, FF5, DERIVED, RESEARCH, BOND_RESEARCH, CALENDAR, USER, ML = MODEL_ORDER
 
-#: The two research models: equity's and bond's, each on its own tab.
+#: The two research models that train on every earlier date and read their inputs as
+#: levels: equity's and bond's, each on its own tab.
 RESEARCH_MODELS = (RESEARCH, BOND_RESEARCH)
 
-ACTIVE_MODEL_CANDIDATES = (DERIVED, RESEARCH, BOND_RESEARCH, USER, ML)
+#: Every research row: those two and the bond calendar model, which trains on the page's
+#: own window and reads only the dates. Each is captioned and shows its pre-2016 score.
+RESEARCH_ROWS = (*RESEARCH_MODELS, CALENDAR)
+
+ACTIVE_MODEL_CANDIDATES = (DERIVED, RESEARCH, BOND_RESEARCH, CALENDAR, USER, ML)
 
 #: Every model but the naive baseline, which is the bar the others are read against.
-GATED = (FF5, DERIVED, RESEARCH, BOND_RESEARCH, USER, ML)
+GATED = (FF5, DERIVED, RESEARCH, BOND_RESEARCH, CALENDAR, USER, ML)
 
 #: Each research model's own setting: the version of its fit, so a saved result
 #: from an older fit is refitted rather than shown.
 RESEARCH_SETTINGS = {
     RESEARCH: f"sign-ruled v{SIGN_RULED_VERSION}",
     BOND_RESEARCH: f"carry v{CARRY_RESEARCH_VERSION}",
+    CALENDAR: f"calendar v{CALENDAR_RESEARCH_VERSION}",
 }
 
 #: Shown under each research model's row wherever its score is: the period whose
@@ -151,7 +159,15 @@ RESEARCH_CAPTIONS = {
     "Aug 2016 – Sep 2024.",
     BOND_RESEARCH: "Scores are optimistic: inputs chosen by looking at results on the "
     "Sep 2026 upload (Aug 2016 – Sep 2026).",
+    CALENDAR: "Scores are optimistic: the month-end idea was fixed from published research "
+    "before looking, but this form of it was picked from 98 runs scored over Oct 2008 – "
+    "Nov 2026. It carries information only at the 1- and 5-day horizons: at 10 and 20 "
+    "days every window holds about the same number of month-ends.",
 }
+
+#: Research rows whose pre-2016 score is not a hold-out: their research looked at
+#: those years too.
+SEEN_BEFORE_2016 = (CALENDAR,)
 
 #: The polynomial's two sources; exactly one runs.
 DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
@@ -263,8 +279,8 @@ with st.expander("Settings"):
     test = DEFAULT_TEST_WINDOW
     st.caption(
         f"The train window is fixed: every model on both targets trains on the latest "
-        f"{TRAIN_WINDOW} dates. The research models alone train on every earlier date, "
-        "as their research did.",
+        f"{TRAIN_WINDOW} dates. The fixed economic and carry research models alone train "
+        "on every earlier date, as their research did.",
         help=glossary.term("Walk-forward train window (days)"),
     )
     st.caption(
@@ -549,6 +565,26 @@ def _run_carry_research(
     return model_runs.ModelRun(result, description, function=fn, shap=shap)
 
 
+def _run_calendar_research(
+    frame: pd.DataFrame, price_col: str, horizon: int, splitter: PurgedWalkForward
+) -> model_runs.ModelRun:
+    """The bond calendar model: what kind of days each label window holds, screened and
+    fitted per fold by the shrinkage fit, on ``splitter``'s own train window."""
+    result, description, panel = run_calendar_research_polynomial(
+        frame, price_col, horizon, splitter
+    )
+    fn = from_description(
+        description,
+        origin=Origin.DERIVED,
+        target=price_col,
+        horizon=horizon,
+        columns=panel.signals,
+    )
+    training = panel.frame.loc[last_fold_train_window(panel, splitter)]
+    shap = polynomial_shap(fn, training, description.input_bounds)
+    return model_runs.ModelRun(result, description, function=fn, shap=shap)
+
+
 def _research_inputs(role: TargetRole) -> tuple[object | None, str | None]:
     """The research model's inputs for ``role`` (equity's with their signs, bond's as a
     tuple), or why it can't run here."""
@@ -563,7 +599,11 @@ def _research_inputs(role: TargetRole) -> tuple[object | None, str | None]:
 def _active_function(name: str, run: model_runs.ModelRun) -> active_model.ActiveFunction | None:
     """The fitted function a scenario evaluates again (FYP-32), for the polynomial
     models only: their latest fold's fit, with each input's transform. The research
-    model reads its inputs as levels whatever the transform map says."""
+    model reads its inputs as levels whatever the transform map says. Machine learning
+    has none, and nor has the calendar model: its inputs are the dates a label window
+    holds, which no scenario moves, and are not columns of the committed data."""
+    if name == CALENDAR:
+        return None
     origin = {
         DERIVED: Origin.DERIVED,
         RESEARCH: Origin.DERIVED,
@@ -620,8 +660,9 @@ def _recorder(
 
 
 def _active_settings(role: TargetRole, name: str) -> dict[str, int | str | None]:
-    """What a model set active was run under, and the column it forecast. The
-    research models train on every earlier date, so they have no train window."""
+    """What a model set active was run under, and the column it forecast. The two
+    research models that train on every earlier date have no train window; the
+    calendar model trains on the page's, like every other model."""
     settings = {**ACTIVE_SETTINGS, "target_column": target_columns[role]}
     if name in RESEARCH_MODELS:
         return {**settings, "train_window": None}
@@ -983,15 +1024,22 @@ def _show_polynomial(run: model_runs.ModelRun) -> None:
 
 def _holdout_text(name: str, holdout: Holdout | None) -> str:
     """A research model's pre-2016 hold-out: its score on only the test windows its
-    research never looked at."""
+    research never looked at. For a model whose research looked at those years too
+    (``SEEN_BEFORE_2016``), the same score, said not to be a hold-out."""
     before = f"{HOLDOUT_BEFORE.day} {HOLDOUT_BEFORE:%b %Y}"
+    seen = name in SEEN_BEFORE_2016
+    heading = f"{name}, {'before 2016' if seen else 'pre-2016 hold-out'}"
     if holdout is None:
-        return f"{name}, pre-2016 hold-out: no test window in this data ends before {before}."
+        return f"{heading}: no test window in this data ends before {before}."
+    verdict = (
+        "its research looked at these years too, so this is not a hold-out."
+        if seen
+        else "out of sample for its research's choices."
+    )
     return (
-        f"{name}, pre-2016 hold-out: Signal Rank IC {holdout.signal_rank_ic:+.3f}, "
+        f"{heading}: Signal Rank IC {holdout.signal_rank_ic:+.3f}, "
         f"t {holdout.t:.2f}, over the {holdout.windows} test windows from "
-        f"{holdout.first:%b %Y} whose every label ends before {before}: out of sample "
-        "for its research's choices."
+        f"{holdout.first:%b %Y} whose every label ends before {before}: {verdict}"
     )
 
 
@@ -1013,6 +1061,17 @@ def _show_polynomial_expander(
                 "each one's unexpected move over the horizon taken out. Each fold trains "
                 f"on every date before its test window, not the latest {TRAIN_WINDOW}, as "
                 "the research did. " + RESEARCH_CAPTIONS[BOND_RESEARCH]
+            )
+        elif name == CALENDAR:
+            st.caption(
+                "How many of each label window's trading days are a month's last, a "
+                "month's first, or a jobs-report Friday (a Friday in a month's first seven "
+                "days), and at the 1-day horizon which weekday the next one is: fixed by "
+                "the research, and known in advance, so not lagged. Past the data's last "
+                "date the coming trading days are the US bond market's (SIFMA's) calendar. "
+                "Each fold screens them and fits the kept ones by the shrinkage fit, on "
+                f"the latest {TRAIN_WINDOW} dates like every other model. "
+                + RESEARCH_CAPTIONS[CALENDAR]
             )
         _show_polynomial(run)
 
@@ -1394,10 +1453,10 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     target_name = label(price_col)
     key = role.value
     # FF5 is an equity-factor benchmark, so only the Equity tab offers it. Each tab has
-    # its own research model.
+    # its own research model, and the Bond tab the calendar model besides.
     equity = role == TargetRole.EQUITY
     research = RESEARCH if equity else BOND_RESEARCH
-    check_cols = st.columns([4, 4, 9, 5, 1] if equity else [4, 9, 5, 1])
+    check_cols = st.columns([4, 4, 9, 5, 1] if equity else [4, 9, 8, 5, 1])
     run_poly = check_cols[0].checkbox("Polynomial", value=True, key=f"run_poly_{key}")
     run_ff5 = equity and check_cols[1].checkbox("Fama-French 5", value=True, key=f"run_ff5_{key}")
     research_ticked = check_cols[2 if equity else 1].checkbox(
@@ -1405,6 +1464,12 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         value=True,
         key=f"run_research_{key}",
         help=glossary.term(research),
+    )
+    run_calendar = not equity and check_cols[2].checkbox(
+        CALENDAR,
+        value=True,
+        key=f"run_calendar_{key}",
+        help=glossary.term(CALENDAR),
     )
     ml_fits = fits_tuning_period(int(train), int(test), EMBARGO_DAYS, TUNING_ROWS)
     ml_ticked = check_cols[-2].checkbox(
@@ -1434,6 +1499,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         st.caption(f"No research model for this target: {unavailable}")
     run_research = research_ticked and bool(research_inputs)
     settings[research] = RESEARCH_SETTINGS[research]
+    if not equity:
+        settings[CALENDAR] = RESEARCH_SETTINGS[CALENDAR]
     tab_runs = model_runs.tab(stored, role, settings, inputs=_tab_inputs(role))
     models = [NAIVE]
     user_formula, user_bindings = settings[USER]
@@ -1441,6 +1508,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         models.append(polynomial)
     if run_research:
         models.append(research)
+    if run_calendar:
+        models.append(CALENDAR)
     if run_ff5:
         models.append(FF5)
     if run_ml:
@@ -1461,6 +1530,9 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
             ),
             BOND_RESEARCH: functools.partial(
                 _run_carry_research, research_inputs, indexed, price_col, horizon, splitter
+            ),
+            CALENDAR: functools.partial(
+                _run_calendar_research, indexed, price_col, horizon, splitter
             ),
             USER: functools.partial(_run_user, settings[USER], panel, price_col, splitter),
             FF5: functools.partial(_run_famafrench, merged, price_col, horizon, splitter),
@@ -1500,7 +1572,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         if name in runs:
             st.markdown(_gate_line(name, runs[name].result))
     _show_table({name: run.result for name, run in runs.items()})
-    for name in RESEARCH_MODELS:
+    for name in RESEARCH_ROWS:
         if name in runs:
             st.caption(f"{name}: {RESEARCH_CAPTIONS[name]}")
             st.caption(_holdout_text(name, runs[name].result.holdout))
@@ -1510,7 +1582,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     # that matters (the active polynomial, else the derived one) is the one open. The
     # others sit closed beside it rather than further down, past the chart and the
     # picker, where a reader had to go looking for the rest of the set.
-    polynomials = [name for name in (DERIVED, *RESEARCH_MODELS, USER) if name in runs]
+    polynomials = [name for name in (DERIVED, *RESEARCH_ROWS, USER) if name in runs]
     featured = (
         current.model_name
         if current is not None and current.model_name in polynomials

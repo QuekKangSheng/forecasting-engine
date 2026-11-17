@@ -112,13 +112,17 @@ hosting step is needed.
     inputs (HY OAS, IG OAS, VIX and the 2s10s slope), and for bond one on fixed
     carry inputs (the 10-year yield and breakeven, the 2s10s slope, HY and IG OAS,
     VIX and FX implied volatility);
+  - on the Bond tab, a second research model on the calendar of each forecast
+    window (how many month-ends, month starts and jobs-report Fridays it holds),
+    since bond returns are higher on a month's last trading day; it carries
+    information at the 1- and 5-day horizons only;
   - machine learning: XGBoost and LightGBM, tuned with Optuna on a rolling
     schedule, with SHAP feature attribution.
 - **Walk-forward validation** — every model on both targets is trained on the
   latest 504 trading days and scored on the next 20, with a 20-day embargo
   between the two, under one shared set of settings that the results table states.
-  The two research models alone train on every earlier day, on the same test
-  windows.
+  The two fixed-input research models alone train on every earlier day, on the
+  same test windows.
 - **Overfitting checks** — Signal Rank IC (what a model adds to its own average
   forecast, out of sample) with its t-statistic, crash-day diagnostics, and a
   promotion gate on both: Signal Rank IC above 0.02 and t above 2.
@@ -219,7 +223,7 @@ src/forecasting_engine/     core library, never imports Streamlit
   ingest/                   upload checks, Fama-French factors, lag-safe alignment
   features/                 signal screening
   models/                   naive, Fama-French, polynomial (lasso and shrinkage
-                            fits, user-supplied, the two research models) and
+                            fits, user-supplied, the three research models) and
                             boosted forecasters
   validation/               walk-forward splitter, metrics, crash checks, gates
   portfolio/                optimiser, backtest, performance, directional P&L

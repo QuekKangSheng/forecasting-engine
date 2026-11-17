@@ -59,6 +59,17 @@ TERMS: Mapping[str, str] = {
         "results on the Sep 2026 upload (Aug 2016 – Sep 2026), so treat its score "
         "as optimistic."
     ),
+    "Polynomial – calendar inputs (research)": (
+        "The bond model from the November 2026 model research: a degree-1 polynomial "
+        "in how many of the forecast window's trading days are a month's last, a "
+        "month's first or a jobs-report Friday, and at 1 day which weekday is next. "
+        "Bond returns are a few basis points higher on a month's last trading day "
+        "(Hartley and Schwarz), so it carries information at 1 and 5 days only. It "
+        "needs no market data, and is screened and fitted like the derived "
+        "polynomial's shrinkage fit, on the latest 504 dates. The idea was fixed from "
+        "published research before looking, but this form of it was picked from 98 "
+        "runs scored over 2008–2026, so treat its score as optimistic."
+    ),
     "Max terms": (
         "The most terms the derived equation may keep. The cap works through the "
         "regularization itself: only penalty strengths whose fit keeps this many "

@@ -65,6 +65,7 @@ DEFAULT_MODEL_SETTINGS = {
     USER_POLY: ("", ()),
     "Polynomial – fixed economic inputs": "sign-ruled v1",
     "Polynomial – fixed carry inputs (research)": "carry v2",
+    "Polynomial – calendar inputs (research)": "calendar v1",
 }
 NAIVE = "Naive (training mean)"
 
@@ -1060,7 +1061,12 @@ def test_ff5_never_runs_on_the_bond_tab(monkeypatch, stub_ml):
     bond_run.click().run()
 
     assert not app.exception
-    assert set(_stored_runs(app, BOND)) == {NAIVE, USER_POLY, "Machine Learning"}
+    assert set(_stored_runs(app, BOND)) == {
+        NAIVE,
+        USER_POLY,
+        "Polynomial – calendar inputs (research)",
+        "Machine Learning",
+    }
 
 
 def test_ff5_shows_a_fallback_warning_and_the_factor_coverage(monkeypatch, stub_ml):
@@ -1522,7 +1528,11 @@ def test_run_all_targets_queues_every_tabs_ticked_models(stub_ml):
 
     assert not app.exception
     assert set(_stored_runs(app, EQUITY)) == {NAIVE, "Machine Learning"}
-    assert set(_stored_runs(app, BOND)) == {NAIVE, "Machine Learning"}
+    assert set(_stored_runs(app, BOND)) == {
+        NAIVE,
+        "Polynomial – calendar inputs (research)",
+        "Machine Learning",
+    }
     assert len(stub_ml) == 2
 
 
@@ -1946,6 +1956,130 @@ def test_the_bond_research_model_can_be_set_active_with_its_signal_and_no_train_
     assert record.train_window is None
     signal = active_model.get_active_model_signal(BOND)
     pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)
+
+
+# --- the bond calendar model ---------------------------------------------------------------
+
+CALENDAR = "Polynomial – calendar inputs (research)"
+CALENDAR_CAPTION = (
+    "Scores are optimistic: the month-end idea was fixed from published research before "
+    "looking, but this form of it was picked from 98 runs scored over Oct 2008 – Nov 2026. "
+    "It carries information only at the 1- and 5-day horizons: at 10 and 20 days every "
+    "window holds about the same number of month-ends."
+)
+#: Every column the calendar model can be offered, at any horizon.
+CALENDAR_COLUMNS = {
+    "CAL_MONTH_END",
+    "CAL_MONTH_START",
+    "CAL_JOBS_FRIDAY",
+    "CAL_MON",
+    "CAL_TUE",
+    "CAL_WED",
+    "CAL_THU",
+}
+
+
+def test_only_the_bond_tab_offers_the_calendar_model():
+    equity_only = [c.label for c in _page().checkbox]
+    both = [c.label for c in _page(bond=True).checkbox]
+
+    assert CALENDAR not in equity_only
+    assert both.count(CALENDAR) == 1
+    assert both.index(BOND_RESEARCH) < both.index(CALENDAR)
+
+
+def test_the_calendar_model_runs_beside_the_derived_polynomial_on_the_same_dates(stub_ml):
+    # It needs nothing but the bond index: the committed data has none of the bond
+    # research model's inputs.
+    app = _press_bond_run(_page(bond=True))
+
+    assert not app.exception
+    runs = _stored_runs(app, BOND)
+    assert {NAIVE, POLY, CALENDAR} <= set(runs)
+    assert BOND_RESEARCH not in runs
+    forecast = runs[CALENDAR].result.forecast
+    assert forecast.index[0] == runs[POLY].result.forecast.index[0]
+    assert forecast.index[-1] == runs[POLY].result.forecast.index[-1]
+    # The latest rows' label windows run past the data and come from the holiday calendar,
+    # so every test row has a forecast.
+    assert forecast.notna().all()
+    assert f"**{CALENDAR}**: gate" in _markdown(app)
+    assert f"{CALENDAR}: {CALENDAR_CAPTION}" in _captions(app)
+    assert any(label.startswith(f"{CALENDAR} · ") for label in _expander_labels(app))
+    assert set(runs[CALENDAR].description.terms) <= CALENDAR_COLUMNS
+
+
+def test_unticking_the_calendar_model_runs_it_not(stub_ml):
+    app = _press_bond_run(_untick(_page(bond=True), CALENDAR))
+
+    assert not app.exception
+    assert CALENDAR not in _stored_runs(app, BOND)
+    assert POLY in _stored_runs(app, BOND)
+
+
+def test_the_calendar_model_is_gated_captioned_and_its_equation_in_words():
+    description = ModelDescription(
+        name="ShrinkagePolynomial",
+        terms=("CAL_MONTH_END", "CAL_JOBS_FRIDAY"),
+        coefficients=(0.000648, -0.000653),
+        intercept=0.000334,
+    )
+    tabs = {BOND: {CALENDAR: _polynomial_run(_result(), description)}}
+    app = _page(tabs, bond=True)
+
+    assert not app.exception
+    assert f"**{CALENDAR}**: gate met — Signal Rank IC above 0.02 and t above 2." in (
+        _markdown(app)
+    )
+    assert "Gate met" in _table(app).split(CALENDAR, 1)[1].split("</tr>", 1)[0]
+    assert f"{CALENDAR}: {CALENDAR_CAPTION}" in _captions(app)
+    assert "the coming trading days are the US bond market's (SIFMA's) calendar" in (
+        _captions(app)
+    )
+    (equation,) = [e.value for e in app.latex]
+    assert "Month-ends ahead" in equation and "Jobs Fridays ahead" in equation
+
+
+def test_the_calendar_models_pre_2016_score_is_not_called_a_hold_out():
+    held = Holdout(
+        before=pd.Timestamp("2016-08-01"),
+        windows=97,
+        first=pd.Timestamp("2008-10-03"),
+        last_label_end=pd.Timestamp("2016-07-29"),
+        signal_rank_ic=0.0637,
+        t=2.52,
+        rows_scored=1940,
+    )
+    app = _page({BOND: {CALENDAR: _polynomial_run(replace(_result(), holdout=held))}}, bond=True)
+
+    assert (
+        f"{CALENDAR}, before 2016: Signal Rank IC +0.064, t 2.52, over the 97 test windows "
+        "from Oct 2008 whose every label ends before 1 Aug 2016: its research looked at "
+        "these years too, so this is not a hold-out."
+    ) in _captions(app)
+    assert f"{CALENDAR}, pre-2016 hold-out" not in _captions(app)
+
+
+def test_the_calendar_model_can_be_set_active_with_its_train_window_and_no_function():
+    forecast = _oos([0.01, -0.01, 0.02, 0.0] * 10)
+    baseline = _oos([0.004] * 20 + [0.006] * 20)
+    result = replace(_result(), forecast=forecast, realised=_oos([0.0] * 40), baseline=baseline)
+    tabs = {BOND: {POLY: _polynomial_run(), CALENDAR: _polynomial_run(result)}}
+    app = _page(tabs, bond=True)
+    (select,) = [s for s in app.selectbox if s.label == "Model to set active"]
+    assert list(select.options) == [POLY, CALENDAR]
+    select.select(CALENDAR).run()
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    assert not app.exception
+    record = active_model.get_active_model(BOND)
+    assert record.model_name == CALENDAR
+    assert record.train_window == 120  # the page's window, as every other model
+    assert record.target_column == AGG
+    # Its saved forecasts feed the portfolio; a scenario has nothing of it to move.
+    signal = active_model.get_active_model_signal(BOND)
+    pd.testing.assert_series_equal(signal, forecast - baseline, check_names=False, check_freq=False)
+    assert active_model.get_active_function(BOND) is None
 
 
 # --- the research models' pre-2016 hold-out ---------------------------------------------

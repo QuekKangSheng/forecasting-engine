@@ -20,6 +20,7 @@ MODEL_ORDER: tuple[str, ...] = (
     "Polynomial (derived)",
     "Polynomial – fixed economic inputs",
     "Polynomial – fixed carry inputs (research)",
+    "Polynomial – calendar inputs (research)",
     "Polynomial (user-supplied)",
     "Machine Learning",
 )

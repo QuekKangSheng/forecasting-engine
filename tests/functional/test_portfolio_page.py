@@ -248,6 +248,20 @@ def test_the_happy_path_shows_latest_weights_summing_to_one():
     assert sum(values) == pytest.approx(1.0, abs=1e-6)
 
 
+def test_an_active_bond_calendar_model_feeds_the_portfolio_like_any_other():
+    # It is saved with its forecasts and signal but no function, as machine learning is.
+    calendar = "Polynomial – calendar inputs (research)"
+    committed = _committed()
+    _set_active(EQUITY, forecast=_forecast(committed, seed=1))
+    _set_active(BOND, forecast=_forecast(committed, seed=2), name=calendar)
+    app = _page(committed)
+
+    assert not app.exception
+    assert active_model.get_active_function(BOND) is None
+    assert len(app.metric) == 2
+    assert calendar in " ".join(m.value for m in app.markdown)
+
+
 def test_the_latest_rebalance_inputs_are_shared_for_re_optimising_under_a_shock():
     """FYP-246: the Scenarios page re-solves from these, so they must be the latest
     rebalance's, at the page's own risk level and limits."""

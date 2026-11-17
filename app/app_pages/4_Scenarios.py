@@ -91,8 +91,10 @@ for role in ROLES:
         if function is None:
             unavailable[role] = (
                 f"The active {name} model, {display_model_name(record.model_name)}, has no "
-                "stored polynomial function: a scenario can re-evaluate a polynomial only. "
-                "Set a polynomial active on the Models page (setting one again stores its "
+                "stored polynomial function: a scenario moves market signals and "
+                "re-evaluates a polynomial in them. Machine learning has none, and the "
+                "calendar model's reads only dates, which no scenario moves. Set another "
+                "polynomial active on the Models page (setting one again stores its "
                 "function)."
             )
         else:

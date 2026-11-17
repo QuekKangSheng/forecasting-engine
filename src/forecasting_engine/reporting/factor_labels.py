@@ -40,6 +40,18 @@ FIELD_LABELS: Mapping[str, str] = {
     "TOT_RETURN_INDEX_GROSS_DVDS": "total return",
 }
 
+#: Columns the app builds itself rather than reads from an export: the bond calendar
+#: model's (``models/calendar_research``), each a count over a forecast's label window.
+BUILT_LABELS: Mapping[str, str] = {
+    "CAL_MONTH_END": "Month-ends ahead",
+    "CAL_MONTH_START": "Month starts ahead",
+    "CAL_JOBS_FRIDAY": "Jobs Fridays ahead",
+    "CAL_MON": "Next day a Monday",
+    "CAL_TUE": "Next day a Tuesday",
+    "CAL_WED": "Next day a Wednesday",
+    "CAL_THU": "Next day a Thursday",
+}
+
 #: Bloomberg's market-sector "yellow keys". A ticker ends in one, so the first of
 #: them in a column name marks where the security ends and the field begins.
 #: Matched by case: Bloomberg writes ``Index``, and the ``INDEX`` inside
@@ -61,7 +73,7 @@ def labeller(columns: Iterable[str]) -> Callable[[str], str]:
     def label(column: str) -> str:
         security, field = _split(column)
         if security is None:
-            return column.replace("_", " ")
+            return BUILT_LABELS.get(column, column.replace("_", " "))
         known = SECURITY_LABELS.get(security)
         if known is None:
             return f"{security} ({_field_label(field)})" if field else security

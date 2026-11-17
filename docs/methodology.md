@@ -164,8 +164,9 @@ date of the price each label reaches, which the splitter uses to purge.
 - **Windows.** Test windows of `DEFAULT_TEST_WINDOW` rows roll forward by that
   many rows. Each training window is the `TRAIN_WINDOW` rows ending `embargo` rows
   before its test window, and may reach back into the tuning period. Both windows
-  are the same for every model on both targets (the research models, §9.1 and
-  §9.2, alone train on every earlier row, on the same test windows), and fixed rather than settings:
+  are the same for every model on both targets (the research models of §9.1 and
+  §9.2 alone train on every earlier row, on the same test windows; the calendar
+  model, §9.3, trains on the same rolling window as the rest), and fixed rather than settings:
   trying windows until one scores well is overfitting that no single run can see.
   Every row of the results table is therefore scored on the same dates, and both
   targets forecast the same rebalance days.
@@ -212,8 +213,9 @@ from any fold.
 
 ## 8. Per-fold screening
 
-For the derived polynomial and machine learning, each fold screens every
-candidate signal on its own training window only (`features/screening.py`). A
+For the derived polynomial, machine learning and the calendar model (§9.3), each
+fold screens every candidate signal on its own training window only
+(`features/screening.py`). A
 signal is kept when the absolute rank IC of the signal against the target is
 greater than `INCLUSION_THRESHOLD` (strictly). If a fold keeps no signal, no
 model is fitted on it: the fold forecasts its training window's mean target for
@@ -236,7 +238,7 @@ ticked, and the naive baseline runs with every Run. The polynomial runs one
 source at a time, derived or the user's own function, each under its own row
 name, and switching source clears nothing. Each tab also offers its research
 model (equity §9.1, bond §9.2) under its own checkbox and row, beside whichever
-polynomial runs. Each family chooses only among its own
+polynomial runs, and the Bond tab the calendar model (§9.3) besides. Each family chooses only among its own
 configurations, so which families run together never changes any family's
 result.
 
@@ -575,10 +577,124 @@ Neither passes the gate on the longer history, and neither scores above zero on
 the windows its research never saw. These are reported as they came out; neither
 model was changed because of them.
 
-### 9.3 Feature attribution (SHAP) for polynomial models
+### 9.3 Polynomial – calendar inputs (research)
+
+`models/calendar_research.run_calendar_research_polynomial`, the row "Polynomial –
+calendar inputs (research)", Bond tab only, with its own checkbox beside §9.2's. It is
+the bond model the November 2026 research picked (`s14-bond-short`, its run
+`cal / shrink / roll504`): the derived polynomial's shrinkage fit (§9) on columns that
+say what kind of days each label window holds. It is gated like every other model and
+can be set as the bond target's active model. It does not enter the derived
+polynomial's grid, which is unchanged.
+
+**Why.** Treasury returns are higher on the last trading day of a month, when index
+trackers extend duration to match their index's month-end rebalance (Hartley and
+Schwarz, "Predictable end-of-month Treasury returns"). On the data from 31 Aug 2006
+the bond index's mean 1-day return is +7.4 bp on a month's last trading day against
++0.9 bp on other days (Oct 2008 – Jul 2016: +8.5 against +1.7; Aug 2016 – Sep 2026:
++6.2 against +0.2), higher in each of the 21 calendar years 2006–2026. On those days
+the 10-year yield falls 0.8–1.8 bp more than on other days, which at the index's
+duration is most of the extra return, so it is a market move and not index
+bookkeeping. Moving the flag to other days of the month removes it. A 1-day label
+gives about 4,500 independent periods over 2008–2026 where a 20-day one gives about
+225, which is why so small and steady an effect reaches the gate only at short
+horizons.
+
+**Inputs.** Per row `t`, counts over the label window's trading days `t+1 … t+h`
+(`label_window_calendar`): `CALENDAR_INPUTS`, the days that are a month's last
+trading day, a month's first, and a Friday in a month's first seven days (when the US
+jobs report is usually published); and at `h = 1` only, `WEEKDAY_INPUTS`, whether the
+next trading day is a Monday, Tuesday, Wednesday or Thursday. They describe the label
+window, which is known in advance, so they are not lagged like signals (§5). The
+trading days are the target's own calendar, the dates it has a price (§2), so a
+month's last trading day is the month's last row. The latest `h` rows' windows run past the
+data's last date; their coming trading days are taken from `HOLIDAY_CALENDAR`, the US
+bond market's calendar in `pandas_market_calendars` (`coming_sessions`), so those
+rows get a forecast too. `h + 1` are taken, the last to tell whether the day before it
+ends its month. `exchange_calendars` is not a declared dependency;
+`pandas_market_calendars` is (it already labels gaps, `extraction/bloomberg_csv`), and
+of its calendars and pandas' own US federal holidays, the bond market's matches the
+bond index's dates best
+([evidence](evidence/2026-11-17-bond-calendar.md)): 43 dates differ over 2006–2026,
+against 52 for federal holidays (Good Friday), 74 for the NYSE (Columbus and
+Veterans Days) and 181 for every weekday. Most of the 43 are rows the exports hold on
+bond-market holidays, nearly all with the price unchanged: every holiday since Nov
+2023, and nine before. In five months (31 May 2010, 29 Mar 2013, 30 Mar 2018, 31 May
+2021, 29 Mar 2024) such a row is the data's last of the month, so the month-end flag
+sits on it, as it did in the research.
+
+**Fit,** exactly as the derived polynomial's shrinkage candidate (§9): per fold, the
+columns are screened on the training rows (§8) and the kept ones fitted by
+`ShrinkagePolynomial`, on the page's own splitter, the latest `TRAIN_WINDOW` rows
+with the same test windows and embargo as every other model. One configuration. Its
+level is its training mean (§10).
+
+**Choice of the inputs.** The month-end idea and its sign were fixed from the
+literature before looking, and so was the jobs-Friday idea (Savor and Wilson 2013,
+announcement days), which then went the wrong way: its slope is negative in most
+folds. The research's rule, written before any of its 98 runs, asked for the gate
+over the whole period, a Signal Rank IC above zero with t above 1 in both decades, at
+most a quarter of folds constant, and a top term of one sign in at least 90% of the
+folds keeping it; 14 runs passed, all with the calendar columns, and the tie-break
+(fewest moving parts) picked this one. With nothing fitted, "a month-end in the next
+5 days" scored +0.067, t 2.48 at `h = 5`. But every result over Oct 2008 – Nov 2026
+was looked at in choosing it, so the page captions its row: "Scores are optimistic:
+the month-end idea was fixed from published research before looking, but this form
+of it was picked from 98 runs scored over Oct 2008 – Nov 2026. It carries
+information only at the 1- and 5-day horizons: at 10 and 20 days every window holds
+about the same number of month-ends."
+
+**Results** on the data from 31 Aug 2006, at the page's defaults
+([evidence](evidence/2026-11-17-bond-calendar.md)):
+
+| h | Signal Rank IC, t: whole period | Oct 2008 – Jul 2016 | Aug 2016 – Sep 2026 | Constant folds | Gate |
+|---|---|---|---|---|---|
+| 1 | +0.051, t 3.25 | +0.064, t 2.52 | +0.044, t 2.11 | 0 of 228 | passes |
+| 5 | +0.084, t 3.27 | +0.055, t 1.41 | +0.094, t 2.72 | 0 of 228 | passes |
+| 10 | +0.053, t 1.73 | −0.044, t −0.97 | +0.100, t 2.52 | 5 of 228 | fails on t |
+| 20 | +0.043, t 0.92 | −0.004, t −0.06 | +0.037, t 0.63 | 38 of 228 | fails on t |
+
+The month-end column is the most often kept term: in 85% of folds at `h = 1`, 99% of
+them with a positive slope, and in 94% at `h = 5`, 91% positive. The app reproduces
+the research's figures exactly at `h = 1`, and at `h = 5` in both decades; over the
+whole period at `h = 5` it scores +0.084, t 3.27 against the research's +0.083,
+t 3.24. That is one forecast, 4 Nov 2026's: the research's columns counted the data's
+last row (11 Nov 2026) as a month-end, since no row followed it, where the app takes
+the next trading day from the holiday calendar. The same harness on the research's
+own columns gives its figures exactly.
+
+**Pre-2016 score.** Its result carries the Signal Rank IC and t over the test windows
+whose every label ends before `HOLDOUT_BEFORE`, as the other research rows' do
+(`harness.holdout`), and the page shows it under the row. For this model it is not a
+hold-out: its research looked at those years too, and the page says so ("before
+2016 … its research looked at these years too, so this is not a hold-out").
+
+**It is set active without a function.** Its saved forecasts and signal feed the
+portfolio like any model's. A scenario (§18) moves market signals and re-evaluates a
+polynomial in them; this model's inputs are dates, not columns of the committed data,
+so, as for machine learning, `_active_function` stores none and the Scenarios page
+says why. It keeps the page's train window when set active (`train_window` is not
+`None`).
+
+**Known limits.**
+- It carries information at `h = 1` and `h = 5` only. Every 10- or 20-day window holds
+  one month-end or close to it, so at the page's default `h = 20` the columns barely
+  vary and it fails the gate.
+- The effect is a few basis points once a month. This evidence scores the forecast,
+  not a portfolio. The research's own backtest (`s14-bond-short/portfolio14.py`, not
+  rerun here) found the optimiser's trust gate never opened for it, at `h = 1` or 5,
+  paired with the derived equity polynomial, so the portfolio was the one without
+  forecasts; forced open as a diagnostic, its tilts did not pay after costs (t
+  against no forecasts −1.11 to +0.38 at `h = 5`, −4.7 to −2.6 at `h = 1`). That a
+  portfolio can earn it after costs is not shown.
+- About 400 bond runs were tried across the November 2026 research rounds. The
+  protection is that the idea was fixed from the literature first, scored with
+  nothing fitted, holds in each decade and in every year, and is gone in the placebo.
+
+### 9.4 Feature attribution (SHAP) for polynomial models
 
 `reporting.shap_attribution.polynomial_shap`. Every polynomial-shaped row
-(derived, fixed-economic-inputs, user-supplied, and Fama-French) gets a mean
+(derived, the three research rows, user-supplied, and Fama-French) gets a mean
 |SHAP value| per signal, shown beside its fitted terms in the same table
 format the boosted models already use (§9's last bullet). Unlike a boosted
 model's sampled SHAP, a polynomial's is computed exactly, since its equation
@@ -1299,10 +1415,15 @@ current results.
 | Bond | Polynomial (derived) | +0.029, t 1.84 | +0.030, t 1.00 | +0.021, t 0.48 | +0.031, t 0.49 |
 | Bond | Polynomial – fixed carry inputs (`VERSION` 2) | +0.004, t 0.26 | +0.021, t 0.62 | +0.039, t 0.79 | +0.063, t 0.94 |
 | Bond | Machine learning | +0.019, t 1.30 | +0.013, t 0.54 | −0.017, t −0.46 | +0.045, t 0.88 |
+| Bond | Polynomial – calendar inputs (research), added 17 Nov | +0.051, t 3.25, passes | +0.084, t 3.27, passes | +0.053, t 1.73 | +0.043, t 0.92 |
 
-No bond model passes at any horizon, and at the default 20-day horizon no model
-passes for either index. Both research models score near zero on their pre-2016
-hold-out at every horizon (t −0.44 to +0.65; §9.2 has the 20-day figures).
+Of the bond models only the calendar model (§9.3), added on 17 Nov 2026 after this
+rerun, passes, at the 1- and 5-day horizons; its figures are from its own
+[evidence](evidence/2026-11-17-bond-calendar.md), on the same files. At the default
+20-day horizon no model passes for either index. Both research models of §9.1 and
+§9.2 score near zero on their pre-2016 hold-out at every horizon (t −0.44 to +0.65;
+§9.2 has the 20-day figures). The portfolio below was run before the calendar model
+existed and does not use it.
 
 **Portfolio.** The main result uses the team's Sprint 4 default pair, the derived
 polynomial for equity and machine learning for bond. The derived polynomial for
@@ -1393,6 +1514,9 @@ Values are Python literals as the code holds them.
 | `CARRY_INPUTS` | `forecasting_engine.models.carry_research` | `{"bond": ("USGG10YR", "USGGBE10", "USYC2Y10", "LF98OAS", "LUACOAS", "VIX", "JPMVXYGL")}` |
 | `RHO_CAP` | `forecasting_engine.models.carry_research` | `0.9999` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.carry_research` | `30` |
+| `CALENDAR_INPUTS` | `forecasting_engine.models.calendar_research` | `("CAL_MONTH_END", "CAL_MONTH_START", "CAL_JOBS_FRIDAY")` |
+| `WEEKDAY_INPUTS` | `forecasting_engine.models.calendar_research` | `("CAL_MON", "CAL_TUE", "CAL_WED", "CAL_THU")` |
+| `HOLIDAY_CALENDAR` | `forecasting_engine.models.calendar_research` | `"SIFMA_US"` |
 | `CANDIDATE_REGULARIZERS` | `forecasting_engine.models.polynomial` | `("lasso",)` |
 | `CLIP_SD` | `forecasting_engine.models.polynomial` | `4.0` |
 | `INNER_CV_SPLITS` | `forecasting_engine.models.polynomial` | `5` |
@@ -1463,3 +1587,8 @@ them is [docs/evidence/2026-10-12-verify.py](evidence/2026-10-12-verify.py).
 The bond derived grid was left as it is after 124 bond runs on 16 Nov 2026 varied the
 columns offered, the fit, the train window, the horizon and machine learning's search
 space, and none beat the page's grid beyond what chance gives ([evidence](evidence/2026-11-16-bond-grids.md)).
+The bond calendar model (§9.3) was added on 17 Nov 2026, as its own row rather than as
+columns in the derived grid: offered beside the page's whole panel, the shrinkage
+fit's top term (the 10-year yield) took both signs from fold to fold at h = 1, and at
+h = 5 it missed the gate (t 1.89)
+([evidence](evidence/2026-11-17-bond-calendar.md)).

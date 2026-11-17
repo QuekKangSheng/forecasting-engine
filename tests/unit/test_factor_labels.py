@@ -80,3 +80,12 @@ def test_a_column_the_labeller_was_not_built_with_still_gets_a_label():
 
 def test_a_bare_security_with_no_field_is_labelled():
     assert labeller(["VIX_Index"])("VIX_Index") == "VIX"
+
+
+def test_the_calendar_models_columns_read_as_words():
+    # Built by the app, not read from an export, so there is no committed column to
+    # build the labeller from.
+    label = labeller(["LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"])
+    assert label("CAL_MONTH_END") == "Month-ends ahead"
+    assert label("CAL_JOBS_FRIDAY") == "Jobs Fridays ahead"
+    assert label("CAL_MON") == "Next day a Monday"

@@ -261,6 +261,17 @@ def test_an_index_without_a_polynomial_is_listed_with_the_reason():
     assert "has no stored polynomial function" in _table(app)
 
 
+def test_an_active_calendar_model_is_listed_with_why_a_scenario_cannot_move_it():
+    # It is set active with no function, as machine learning is: its inputs are dates.
+    _set_active(EQUITY, function=LINEAR)
+    _set_active(BOND, "Polynomial – calendar inputs (research)")
+    app = _run(_shock(_page(), VIX, "25"))
+
+    table = _table(app)
+    assert "Polynomial – calendar inputs (research), has no stored polynomial function" in table
+    assert html.escape("the calendar model's reads only dates, which no scenario moves") in table
+
+
 def test_a_user_function_saved_before_the_caps_is_evaluated_or_its_row_says_why():
     # Both were set active before the caps on a new function. The degree-6 one
     # still evaluates; the one with a plain number too large for a float, which
