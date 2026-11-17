@@ -16,8 +16,10 @@ from forecasting_engine.reporting.polynomial_function import Origin
 from forecasting_engine.scenario.shock import evaluate as evaluate_function
 from forecasting_engine.store.active_model import (
     ActiveFunction,
+    ActiveML,
     get_active_attribution,
     get_active_function,
+    get_active_ml,
     get_active_model,
     get_active_model_baseline,
     get_active_model_forecast,
@@ -588,3 +590,29 @@ def test_a_model_set_before_targets_were_recorded_is_judged_on_its_data_alone(db
     assert row.target_column is None
     assert row.fitted_on("fp-1", "anything")
     assert not row.fitted_on("fp-2", "anything")
+
+
+def test_what_an_ml_models_latest_fold_was_fitted_on_reads_back_as_stored(db):
+    ml = ActiveML(
+        "lightgbm",
+        {"n_estimators": 120, "learning_rate": 0.0371234567890123, "subsample_freq": 1},
+        {"VIX": Transform.LEVEL, "USGG10YR": Transform.DIFFERENCE},
+        pd.Timestamp("2024-01-02"),
+        pd.Timestamp("2025-12-31"),
+        504,
+    )
+    set_active_model(
+        TargetRole.BOND, "Machine Learning", _result(), high_risk=False, ml=ml, db_path=db,
+        **SETTINGS,
+    )
+
+    assert get_active_ml(TargetRole.BOND, db_path=db) == ml
+    assert get_active_function(TargetRole.BOND, db_path=db) is None
+
+
+def test_an_ml_model_set_before_its_fit_was_stored_has_none(db):
+    set_active_model(
+        TargetRole.BOND, "Machine Learning", _result(), high_risk=False, db_path=db, **SETTINGS
+    )
+
+    assert get_active_ml(TargetRole.BOND, db_path=db) is None

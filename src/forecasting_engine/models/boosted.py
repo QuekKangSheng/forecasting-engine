@@ -16,6 +16,13 @@ the rows the reported metrics are computed on.
 **FYP-149's SHAP feature attribution** reuses ``ModelDescription``'s existing
 terms/coefficients shape (feature name -> mean |SHAP value|) rather than extending the
 contract.
+
+**The latest fold, kept for a scenario.** A run also reports what its latest fold
+was fitted on (``LatestFit``): the library, its hyperparameters, the screened
+signals and the training dates. A scenario refits that fold from them and predicts
+on shocked inputs. Neither library is given a seed: each fit is deterministic on
+its defaults, with one thread, so the refit is the same fit for the same library
+versions.
 """
 
 from __future__ import annotations
@@ -46,6 +53,7 @@ from forecasting_engine.validation.splitters import PurgedWalkForward
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 _LIBRARIES: dict[str, type] = {"xgboost": XGBRegressor, "lightgbm": LGBMRegressor}
+LIBRARY_NAMES: dict[str, str] = {"xgboost": "XGBoost", "lightgbm": "LightGBM"}
 
 #: Fixed, non-tuned settings per library. ``subsample_freq`` is what makes
 #: LightGBM honour the tuned ``subsample`` at all — without it the fraction is
@@ -122,12 +130,29 @@ class Tune:
 
 
 @dataclass(frozen=True)
+class LatestFit:
+    """What the reported library's latest fold was fitted on, enough to fit it again."""
+
+    library: str
+    params: Mapping[str, object]
+    """The hyperparameters the fold was fitted with, fixed settings included."""
+    signals: tuple[str, ...]
+    """The signals its screening kept. Empty if it kept none, and the fold then
+    forecast its training mean."""
+    train_first: pd.Timestamp
+    train_last: pd.Timestamp
+    train_rows: int
+    """Rows from ``train_first`` to ``train_last`` on the target's calendar."""
+
+
+@dataclass(frozen=True)
 class TuningLog:
     tunes: tuple[Tune, ...]
     fold_tunes: tuple[int, ...]
     """For each walk-forward fold, the index in ``tunes`` of the tune it used."""
     library: str
     """The library the run reports."""
+    latest: LatestFit | None = None
 
 
 def _search_space(trial: optuna.Trial, library: str) -> dict:
@@ -231,6 +256,12 @@ class BoostedForecaster:
         predicted.loc[raw.index] = self._model.predict(raw)
         return predicted
 
+    def predict_inputs(self, rows: pd.DataFrame) -> np.ndarray:
+        """Forecasts for ``rows``, one column per signal the model was fitted on,
+        each complete."""
+        self._require_fit("predict_inputs")
+        return self._model.predict(rows[self._signals])
+
     def describe(self) -> ModelDescription:
         """The library's own feature importances — cheap enough to run every fold.
 
@@ -316,8 +347,18 @@ def run_boosted(
     best_name = select_best_candidate(per_candidate)
     result, _description = summarize(per_candidate[best_name])
     latest = _fitted_params(best_name, tunes[fold_tunes[-1]])
-    description = _explain_last_fold(panel, per_candidate[best_name][-1], best_name, latest)
-    return result, description, TuningLog(tuple(tunes), tuple(fold_tunes), best_name)
+    last_fold = per_candidate[best_name][-1]
+    description = _explain_last_fold(panel, last_fold, best_name, latest)
+    signals = last_fold.screening.fitted if last_fold.screening is not None else panel.signals
+    fit = LatestFit(
+        best_name,
+        latest,
+        tuple(signals),
+        last_fold.train[0],
+        last_fold.train[-1],
+        len(last_fold.train),
+    )
+    return result, description, TuningLog(tuple(tunes), tuple(fold_tunes), best_name, fit)
 
 
 def _tune_and_evaluate(

@@ -6,13 +6,16 @@ the active model for a role is simply its most recent row.
 A polynomial set active also stores its fitted function (FYP-32): the most
 recent fold's terms and coefficients, and per input its transform, clipping
 bounds and standardisation. A scenario can then evaluate the function again on
-shocked inputs without refitting. A model set active also stores its per-signal
+shocked inputs without refitting. A machine-learning model set active stores what
+its latest fold was fitted on (``ActiveML``), so a scenario can fit that fold again
+and predict on shocked inputs. A model set active also stores its per-signal
 SHAP attribution, if it has one, so a run's report can show it (FYP-270). Every row
 of one setting is written in a single transaction, keyed by role and ``set_at``.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -76,6 +79,22 @@ CREATE TABLE IF NOT EXISTS active_model_inputs (
     mean      DOUBLE,
     sd        DOUBLE
 );
+CREATE TABLE IF NOT EXISTS active_model_ml (
+    role        TEXT      NOT NULL,
+    set_at      TIMESTAMP NOT NULL,
+    library     TEXT      NOT NULL,
+    params      TEXT      NOT NULL,
+    train_first TIMESTAMP NOT NULL,
+    train_last  TIMESTAMP NOT NULL,
+    train_rows  INTEGER   NOT NULL
+);
+CREATE TABLE IF NOT EXISTS active_model_ml_inputs (
+    role      TEXT      NOT NULL,
+    set_at    TIMESTAMP NOT NULL,
+    position  INTEGER   NOT NULL,
+    signal    TEXT      NOT NULL,
+    transform TEXT      NOT NULL
+);
 CREATE TABLE IF NOT EXISTS active_model_attribution (
     role          TEXT      NOT NULL,
     set_at        TIMESTAMP NOT NULL,
@@ -98,6 +117,25 @@ class ActiveFunction:
     """Each input the function reads -> the transform it was fitted on. The
     research model reads its inputs as levels whatever the page's map says, so
     this is the run's own, not the page's."""
+
+    @property
+    def inputs(self) -> tuple[str, ...]:
+        return tuple(self.transforms)
+
+
+@dataclass(frozen=True)
+class ActiveML:
+    """What an active machine-learning model's latest fold was fitted on
+    (``models.boosted.LatestFit``), with each input's transform."""
+
+    library: str
+    params: Mapping[str, object]
+    transforms: Mapping[str, Transform]
+    """Each signal the latest fold's screening kept -> its transform. Empty if it
+    kept none."""
+    train_first: pd.Timestamp
+    train_last: pd.Timestamp
+    train_rows: int
 
     @property
     def inputs(self) -> tuple[str, ...]:
@@ -156,6 +194,7 @@ def set_active_model(
     test_window: int,
     dataset_fingerprint: str,
     function: ActiveFunction | None = None,
+    ml: ActiveML | None = None,
     attribution: ModelDescription | None = None,
     run_id: str | None = None,
     target_column: str | None = None,
@@ -168,7 +207,8 @@ def set_active_model(
     date's ``result.baseline`` (its fold's level), so a later
     reader never has to re-run the model to get its predicted values or their
     signal back; ``function``, for a polynomial, so a scenario can evaluate it
-    again; and ``attribution``, its mean |SHAP value| per signal, in the terms and
+    again; ``ml``, for a machine-learning model, so a scenario can refit it; and
+    ``attribution``, its mean |SHAP value| per signal, in the terms and
     coefficients of a ``ModelDescription``. All of it is one transaction: a reader
     never sees a model active without its forecasts or function.
     """
@@ -237,6 +277,8 @@ def set_active_model(
             )
         if function is not None:
             _insert_function(conn, record, function)
+        if ml is not None:
+            _insert_ml(conn, record, ml)
         if attribution is not None and attribution.terms:
             conn.executemany(
                 "INSERT INTO active_model_attribution VALUES (?, ?, ?, ?, ?)",
@@ -288,6 +330,68 @@ def _insert_function(conn, record: ActiveModelRecord, function: ActiveFunction) 
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             inputs,
         )
+
+
+def _insert_ml(conn, record: ActiveModelRecord, ml: ActiveML) -> None:
+    key = (record.role.value, record.set_at)
+    conn.execute(
+        "INSERT INTO active_model_ml "
+        "(role, set_at, library, params, train_first, train_last, train_rows) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+            *key,
+            ml.library,
+            json.dumps(dict(ml.params)),
+            ml.train_first.to_pydatetime(),
+            ml.train_last.to_pydatetime(),
+            ml.train_rows,
+        ],
+    )
+    inputs = [
+        (*key, position, signal, transform.value)
+        for position, (signal, transform) in enumerate(ml.transforms.items())
+    ]
+    if inputs:
+        conn.executemany(
+            "INSERT INTO active_model_ml_inputs (role, set_at, position, signal, transform) "
+            "VALUES (?, ?, ?, ?, ?)",
+            inputs,
+        )
+
+
+def get_active_ml(
+    role: TargetRole, *, set_at: datetime | None = None, db_path: Path = DEFAULT_DB_PATH
+) -> ActiveML | None:
+    """What the active machine-learning model's latest fold was fitted on, or
+    ``None`` if there is no active model, it is not machine learning, or it was set
+    active before this was stored. ``set_at`` picks the model set at that time, as
+    for ``get_active_function``."""
+    set_at = _set_at(role, set_at, db_path)
+    if set_at is None:
+        return None
+    key = [role.value, set_at]
+    with connect(db_path, _CREATE_TABLES) as conn:
+        head = conn.execute(
+            "SELECT library, params, train_first, train_last, train_rows FROM active_model_ml "
+            "WHERE role = ? AND set_at = ?",
+            key,
+        ).fetchone()
+        if head is None:
+            return None
+        inputs = conn.execute(
+            "SELECT signal, transform FROM active_model_ml_inputs "
+            "WHERE role = ? AND set_at = ? ORDER BY position",
+            key,
+        ).fetchall()
+    library, params, first, last, rows = head
+    return ActiveML(
+        library=library,
+        params=json.loads(params),
+        transforms={s: Transform(t) for s, t in inputs},
+        train_first=pd.Timestamp(first),
+        train_last=pd.Timestamp(last),
+        train_rows=rows,
+    )
 
 
 def get_active_function(

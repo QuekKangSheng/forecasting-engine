@@ -1,16 +1,21 @@
-"""Shock a signal and see what the active polynomials forecast (FYP-32).
+"""Shock a signal and see what the active models forecast (FYP-32).
 
 A shock replaces a signal's last observed value, either with a value entered
 directly or with a % change from it. The shocked frame then goes through the
 same alignment, transform and one-day lag as the fit (``ingest.align``), so the
-model reads the shock exactly as it would read a real day; and the active
-model's stored function (``store.active_model.ActiveFunction``) is evaluated on
-those inputs, with the clipping and standardisation it was fitted with. Nothing
-is refitted.
+model reads the shock exactly as it would read a real day.
 
-The base case is the same function on the unshocked inputs: the forecast the
-active model would make for the next ``horizon`` days from the latest data, so a
-zero shock reproduces it exactly.
+An active polynomial's stored function (``store.active_model.ActiveFunction``) is
+evaluated on those inputs, with the clipping and standardisation it was fitted
+with; nothing is refitted. An active machine-learning model stores what its latest
+fold was fitted on (``store.active_model.ActiveML``), so that fold is fitted again,
+exactly as the run fitted it, and predicts on the inputs. Trees can't extrapolate:
+beyond the range an input was trained on, the forecast is the one at the range's
+edge, which is reported as that input being held at the edge.
+
+The base case is the same model on the unshocked inputs: the forecast the active
+model would make for the next ``horizon`` days from the latest data, so a zero
+shock reproduces it exactly.
 
 Before a scenario runs, every shock is validated (``validate``): it must be a
 number, a series that is always above zero (a volatility index, a spread, a
@@ -28,15 +33,16 @@ from enum import StrEnum
 
 import pandas as pd
 
-from forecasting_engine.ingest.align import Transform, align_and_lag
+from forecasting_engine.ingest.align import FeaturePanel, Transform, align_and_lag
 from forecasting_engine.models.base import ModelDescription
+from forecasting_engine.models.boosted import BoostedForecaster
 from forecasting_engine.models.polynomial import (
     PolynomialConfigError,
     evaluate_formula,
     placeholders,
 )
 from forecasting_engine.reporting.polynomial_function import Origin, from_description
-from forecasting_engine.store.active_model import ActiveFunction
+from forecasting_engine.store.active_model import ActiveFunction, ActiveML
 from forecasting_engine.validation.splitters import PurgedWalkForward
 
 MAX_RANGE_MULTIPLE: float = 10.0
@@ -82,7 +88,8 @@ class InputChange:
     """The lowest and highest value of the input in the latest fold's training rows."""
     clipped_to: float | None
     """The bound a clipped model holds the shocked input at, or ``None`` if it is
-    within the bounds or the model doesn't clip."""
+    within the bounds or the model doesn't clip. For a machine-learning model, the
+    edge of the training range a shocked input beyond it is read as."""
 
     @property
     def extrapolated(self) -> bool:
@@ -324,6 +331,91 @@ def run_scenario(
     return ScenarioResult(
         base=evaluate(function, base_inputs),
         shocked=evaluate(function, shocked_inputs),
+        changes=tuple(changes),
+        as_of=as_of,
+    )
+
+
+@dataclass(frozen=True)
+class RefitFold:
+    """An active machine-learning model's latest fold, fitted again."""
+
+    forecaster: BoostedForecaster | None
+    """``None`` when the fold's screening kept no signal: it forecasts
+    ``training_mean`` whatever its inputs."""
+    training_mean: float
+    ranges: Mapping[str, tuple[float, float]]
+    """Each input's lowest and highest value over the rows the fold was fitted on."""
+
+    def predict(self, inputs: Mapping[str, float]) -> float:
+        if self.forecaster is None:
+            return self.training_mean
+        missing = [s for s in self.ranges if not math.isfinite(inputs.get(s, float("nan")))]
+        if missing:
+            raise ScenarioError(
+                f"{', '.join(missing)} {'has' if len(missing) == 1 else 'have'} no value on "
+                "the last day of data, so the model can't forecast."
+            )
+        row = pd.DataFrame([{s: float(inputs[s]) for s in self.ranges}])
+        return float(self.forecaster.predict_inputs(row)[0])
+
+
+def ml_panel(ml: ActiveML, frame: pd.DataFrame, price_col: str, *, horizon: int) -> FeaturePanel:
+    """The panel the model's latest fold was fitted on, its screened signals only.
+    ``ingest.align`` works each signal out on its own, so they read exactly as in
+    the run's panel of every signal."""
+    return align_and_lag(
+        frame, list(ml.transforms), price_col, horizon=horizon, transforms=ml.transforms
+    )
+
+
+def refit_latest_fold(ml: ActiveML, panel: FeaturePanel) -> RefitFold:
+    """The model's latest fold fitted again on ``panel`` (``ml_panel``), with the
+    hyperparameters and signals it was fitted with. Each fit is deterministic, so
+    the refit forecasts what the run's fold forecast."""
+    train = panel.frame.loc[ml.train_first : ml.train_last].index
+    if len(train) != ml.train_rows:
+        raise ScenarioError(
+            "The data no longer has the rows the machine-learning model was fitted on. "
+            "Re-run machine learning and set it active again to stress it."
+        )
+    training_mean = float(panel.frame.loc[train, panel.targets[0]].mean())
+    if not ml.inputs:
+        return RefitFold(None, training_mean, {})
+    forecaster = BoostedForecaster(ml.library, ml.params)
+    forecaster.fit(panel, train)
+    rows = panel.frame.loc[train, [*ml.inputs, panel.targets[0]]].dropna()
+    ranges = {s: (float(rows[s].min()), float(rows[s].max())) for s in ml.inputs}
+    return RefitFold(forecaster, training_mean, ranges)
+
+
+def run_ml_scenario(
+    ml: ActiveML,
+    frame: pd.DataFrame,
+    price_col: str,
+    levels: Mapping[str, float],
+    *,
+    horizon: int,
+) -> ScenarioResult:
+    """The machine-learning model's base and shocked forecasts, its latest fold
+    fitted again, with what the shocks did to each input it reads."""
+    as_of = frame[price_col].dropna().index[-1]
+    fold = refit_latest_fold(ml, ml_panel(ml, frame, price_col, horizon=horizon))
+    base_inputs = next_inputs(frame, price_col, ml.transforms, horizon=horizon)
+    shocked_inputs = next_inputs(
+        shocked_frame(frame, levels, as_of), price_col, ml.transforms, horizon=horizon
+    )
+    changes = []
+    for signal in ml.inputs:
+        base, shocked = float(base_inputs[signal]), float(shocked_inputs[signal])
+        if base == shocked or (math.isnan(base) and math.isnan(shocked)):
+            continue
+        low, high = fold.ranges[signal]
+        edge = None if low <= shocked <= high else min(max(shocked, low), high)
+        changes.append(InputChange(signal, base, shocked, (low, high), edge))
+    return ScenarioResult(
+        base=fold.predict(base_inputs),
+        shocked=fold.predict(shocked_inputs),
         changes=tuple(changes),
         as_of=as_of,
     )

@@ -580,6 +580,22 @@ def _active_function(name: str, run: model_runs.ModelRun) -> active_model.Active
     )
 
 
+def _active_ml(name: str, run: model_runs.ModelRun) -> active_model.ActiveML | None:
+    """What the machine-learning model's latest fold was fitted on, so a scenario can
+    fit it again and stress it, with each input's transform."""
+    if name != ML or run.tuning is None or run.tuning.latest is None:
+        return None
+    latest = run.tuning.latest
+    return active_model.ActiveML(
+        latest.library,
+        latest.params,
+        {s: transforms[s] for s in latest.signals},
+        latest.train_first,
+        latest.train_last,
+        latest.train_rows,
+    )
+
+
 def _active_attribution(name: str, run: model_runs.ModelRun) -> ModelDescription | None:
     """Mean |SHAP value| per signal, for a run report (FYP-270). The machine-learning
     model's description already is its attribution, as its results table shows."""
@@ -1116,6 +1132,7 @@ def _confirm_high_risk(
     failed: tuple[str, ...],
     target_name: str,
     function: active_model.ActiveFunction | None,
+    ml: active_model.ActiveML | None,
     attribution: ModelDescription | None,
     run_id: str | None,
 ) -> None:
@@ -1135,6 +1152,7 @@ def _confirm_high_risk(
             result,
             high_risk=True,
             function=function,
+            ml=ml,
             attribution=attribution,
             run_id=run_id,
             **_active_settings(role, model_name),
@@ -1202,6 +1220,7 @@ def _show_active_picker(
                 result,
                 high_risk=False,
                 function=_active_function(selected, runs[selected]),
+                ml=_active_ml(selected, runs[selected]),
                 attribution=_active_attribution(selected, runs[selected]),
                 run_id=_run_id(role, selected, settings),
                 **_active_settings(role, selected),
@@ -1218,6 +1237,7 @@ def _show_active_picker(
             outcome.failed_gates,
             target_name,
             _active_function(pending, runs[pending]),
+            _active_ml(pending, runs[pending]),
             _active_attribution(pending, runs[pending]),
             _run_id(role, pending, settings),
         )
