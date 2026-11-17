@@ -131,7 +131,9 @@ def _saved_bond_function(db_path) -> tuple[pd.DataFrame, ActiveFunction]:
         frame, list(CARRY_TICKERS), BOND_PRICE, horizon=HORIZON, transforms=transforms
     )
     model = CarryResearchPolynomial()
-    model.fit(panel, panel.frame.index[50:350])
+    # One row past 350: the fit drops its last training row, whose move is read past
+    # every training label, so its regression uses rows 50-349, as before VERSION 2.
+    model.fit(panel, panel.frame.index[50:351])
     description = model.describe()
     inputs = function_inputs(description, Origin.DERIVED, list(CARRY_TICKERS))
     function = ActiveFunction(Origin.DERIVED, description, {s: Transform.LEVEL for s in inputs})
