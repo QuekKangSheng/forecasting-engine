@@ -12,6 +12,7 @@ import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import Transform, align_and_lag
+from forecasting_engine.models.boosted import run_boosted
 from forecasting_engine.models.carry_research import CarryResearchPolynomial
 from forecasting_engine.models.polynomial import DerivedPolynomial
 from forecasting_engine.portfolio.optimize import solve_inputs_at
@@ -25,13 +26,18 @@ from forecasting_engine.scenario.shock import (
     evaluate,
     function_inputs,
     last_observed,
+    ml_panel,
     next_inputs,
+    refit_latest_fold,
+    run_ml_scenario,
     run_scenario,
     validate,
 )
 from forecasting_engine.store.active_model import (
     ActiveFunction,
+    ActiveML,
     get_active_function,
+    get_active_ml,
     set_active_model,
 )
 from forecasting_engine.validation.crash import CrashDiagnostics
@@ -340,3 +346,116 @@ def test_a_shock_to_the_bond_research_models_own_signal_flows_through_to_portfol
 
     assert impact.weights.to_dict() == pytest.approx(weights)
     assert impact.return_change != 0.0
+
+
+# --- a machine-learning model: its latest fold fitted again ---------------------------
+
+
+def _ml_splitter() -> PurgedWalkForward:
+    return PurgedWalkForward(train=60, test=10, embargo=HORIZON, tuning_rows=100)
+
+
+def _saved_ml(db_path, role=EQUITY) -> tuple[pd.DataFrame, ModelRunResult, ActiveML]:
+    """Run machine learning for real, set it active as the Models page does, and
+    read back what its latest fold was fitted on."""
+    frame = _frame()
+    panel = align_and_lag(frame, list(TRANSFORMS), PRICE, horizon=HORIZON, transforms=TRANSFORMS)
+    result, _description, tuning = run_boosted(
+        panel, _ml_splitter(), n_trials=3, retune_trials=3
+    )
+    latest = tuning.latest
+    set_active_model(
+        role,
+        "Machine Learning",
+        result,
+        high_risk=False,
+        horizon=HORIZON,
+        train_window=60,
+        test_window=10,
+        dataset_fingerprint="fp",
+        ml=ActiveML(
+            latest.library,
+            latest.params,
+            {s: TRANSFORMS[s] for s in latest.signals},
+            latest.train_first,
+            latest.train_last,
+            latest.train_rows,
+        ),
+        db_path=db_path,
+    )
+    return frame, result, get_active_ml(role, db_path=db_path)
+
+
+def test_an_ml_refit_of_the_latest_fold_reproduces_the_saved_latest_forecast(tmp_path):
+    frame, result, ml = _saved_ml(tmp_path / "active.duckdb")
+    assert ml is not None and ml.inputs
+
+    panel = ml_panel(ml, frame, PRICE, horizon=HORIZON)
+    fold = refit_latest_fold(ml, panel)
+    saved = result.forecast.dropna()
+    date = saved.index[-1]
+
+    assert fold.predict(panel.frame.loc[date, list(ml.inputs)]) == saved.iloc[-1]
+
+
+def test_a_zero_shock_to_an_ml_model_reproduces_its_base_case(tmp_path):
+    frame, _result, ml = _saved_ml(tmp_path / "active.duckdb")
+    signal = ml.inputs[0]
+    _, level = last_observed(frame, signal)
+
+    scenario = run_ml_scenario(ml, frame, PRICE, {signal: level}, horizon=HORIZON)
+
+    assert scenario.shocked == scenario.base
+    assert scenario.changes == ()
+
+
+def test_a_shock_to_a_signal_an_ml_model_reads_moves_its_forecast_and_the_portfolio(tmp_path):
+    frame, _result, ml = _saved_ml(tmp_path / "active.duckdb", role=BOND)
+    assert VIX in ml.inputs
+    low, high = frame[VIX].min(), frame[VIX].max()
+    # Across the whole range VIX has covered, some level moves the trees' forecast.
+    scenarios = [
+        run_ml_scenario(ml, frame, PRICE, {VIX: level}, horizon=HORIZON)
+        for level in np.linspace(low, high, 9)
+    ]
+    moved = next(s for s in scenarios if s.shocked != s.base)
+
+    solve_inputs, prices, _ = _real_solve_inputs(frame)
+    breakdown = solve_inputs.solve()
+    weights = {EQUITY: breakdown.equity, BOND: 1 - breakdown.equity}
+    impact = portfolio_impact(
+        _daily_returns(prices),
+        {EQUITY: 0.0, BOND: moved.base},
+        {EQUITY: 0.0, BOND: moved.shocked},
+        weights,
+        horizon=HORIZON,
+        paths=2_000,
+    )
+
+    assert impact.return_change != 0.0
+
+
+def test_beyond_its_training_range_an_ml_model_forecasts_as_at_the_edge(tmp_path):
+    frame, _result, ml = _saved_ml(tmp_path / "active.duckdb")
+    panel = ml_panel(ml, frame, PRICE, horizon=HORIZON)
+    fold = refit_latest_fold(ml, panel)
+    signal = ml.inputs[0]
+    low, high = fold.ranges[signal]
+    base = next_inputs(frame, PRICE, ml.transforms, horizon=HORIZON)
+
+    at_edge = fold.predict({**base, signal: high})
+    beyond = fold.predict({**base, signal: high + 10 * (high - low)})
+
+    assert beyond == at_edge
+
+
+def test_an_ml_shock_beyond_the_training_range_is_reported_as_held_at_the_edge(tmp_path):
+    frame, _result, ml = _saved_ml(tmp_path / "active.duckdb")
+    assert VIX in ml.inputs
+    _, last = last_observed(frame, VIX)
+
+    scenario = run_ml_scenario(ml, frame, PRICE, {VIX: last + 200}, horizon=HORIZON)
+
+    (change,) = [c for c in scenario.changes if c.signal == VIX]
+    assert change.extrapolated
+    assert change.clipped_to == change.trained_on[1]

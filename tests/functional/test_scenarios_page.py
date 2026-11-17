@@ -1,6 +1,7 @@
 """The Scenarios page, driven through the real Streamlit page script (FYP-32)."""
 
 import html
+import re
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -160,14 +161,14 @@ def test_with_no_committed_data_shows_a_guiding_message():
     assert any("visit the Data page" in i.value for i in app.info)
 
 
-def test_with_no_active_polynomial_says_why_for_each_index():
-    _set_active(EQUITY, "Machine Learning")
+def test_with_no_model_a_scenario_can_stress_says_why_for_each_index():
+    _set_active(EQUITY, "Machine Learning")  # set active before its fit was stored
     app = _page()
 
     assert not app.exception
     (info,) = app.info
-    assert "needs an active polynomial" in info.value
-    assert "Machine Learning, has no stored polynomial function" in info.value
+    assert "needs an active polynomial or machine-learning model" in info.value
+    assert "Re-run machine learning and set it active again to stress it." in info.value
     assert "No active model is set for" in info.value
 
 
@@ -181,14 +182,32 @@ def test_a_model_set_on_other_data_is_not_used():
 # --- shocks and validation ------------------------------------------------------------
 
 
-def test_only_the_signals_the_active_functions_read_can_be_shocked():
+def test_only_the_signals_the_active_functions_read_can_be_shocked_each_saying_who_reads_it():
     _set_active(EQUITY, function=LINEAR)
     _set_active(BOND, "Polynomial (user-supplied)", function=BOND_FN)
     app = _page()
 
     label = labeller([c for c in _committed().columns if c != "Date"])
     # Not SPX or the bond index (targets), and nothing the two functions don't read.
-    assert app.multiselect[0].options == [label(VIX), label(RATE)]
+    assert app.multiselect[0].options == [
+        f"{label(VIX)} (read by: Equity)",
+        f"{label(RATE)} (read by: Bond)",
+    ]
+
+
+def test_a_signal_both_models_read_says_both():
+    _set_active(EQUITY, function=LINEAR)
+    both = replace(
+        BOND_FN,
+        description=replace(BOND_FN.description, terms=(f"{{{VIX}}} * {{{RATE}}}",)),
+        transforms={VIX: Transform.LEVEL, RATE: Transform.DIFFERENCE},
+    )
+    _set_active(BOND, "Polynomial (user-supplied)", function=both)
+    app = _page()
+
+    assert app.multiselect[0].options[0].endswith("(read by: Equity, Bond)")
+    app.multiselect[0].set_value([VIX]).run()
+    assert any("Read by: Equity, Bond." in m.value for m in app.markdown)
 
 
 def test_run_waits_for_a_value_for_each_chosen_signal():
@@ -240,9 +259,16 @@ def test_a_scenario_shows_base_and_shocked_forecasts_for_both_indices():
     # Equity: 1% base; VIX 20 → 25 is z +1, so 1% − 0.2% = 0.8%.
     assert "+1.00%" in table and "+0.80%" in table and "-0.20 pts" in table
     assert "-20.00%" in table
-    # Bond reads only the rate, which was not shocked, so it does not move.
-    assert table.count("+0.00 pts") == 1
-    assert "Polynomial (user-supplied)" in table
+    # Bond reads only the rate, which was not shocked: the row says so, in place
+    # of a bare 0.00, and keeps its base and shocked figures.
+    assert "+0.00 pts" not in table
+    bond_row = table.split("Global Aggregate Bond", 1)[1].split("</tr>")[0]
+    base, shocked = re.findall(r"<td>([^<]+%)</td>", bond_row)
+    assert base == shocked
+    assert (
+        "Unchanged: the active Global Aggregate Bond model, Polynomial (user-supplied), "
+        "doesn&#x27;t read VIX. Its latest fit uses: US 10y Treasury yield."
+    ) in bond_row
     assert any("Returns over the next 5 trading days" in c.value for c in app.caption)
 
 
@@ -253,12 +279,29 @@ def test_a_percent_shock_is_applied_to_the_last_observed_value():
     assert "+0.80%" in _table(app)  # 20 × 1.25 = 25
 
 
-def test_an_index_without_a_polynomial_is_listed_with_the_reason():
+def test_an_ml_model_set_before_its_fit_was_stored_is_listed_with_the_reason():
     _set_active(EQUITY, function=LINEAR)
     _set_active(BOND, "Machine Learning")
     app = _run(_shock(_page(), VIX, "25"))
 
-    assert "has no stored polynomial function" in _table(app)
+    assert "Re-run machine learning and set it active again to stress it." in _table(app)
+
+
+def test_an_intercept_only_polynomial_says_it_uses_no_signals():
+    _set_active(EQUITY, function=LINEAR)
+    intercept_only = active_model.ActiveFunction(
+        Origin.DERIVED,
+        ModelDescription(name="DerivedPolynomial", terms=(), coefficients=(), intercept=0.003),
+        {},
+    )
+    _set_active(BOND, function=intercept_only)
+    app = _run(_shock(_page(), VIX, "25"))
+
+    bond_row = _table(app).split("Global Aggregate Bond", 1)[1].split("</tr>")[0]
+    assert bond_row.count("<td>+0.30%</td>") == 2
+    assert (
+        "doesn&#x27;t read VIX: its latest fit uses no signals, so no shock can move it."
+    ) in bond_row
 
 
 def test_a_user_function_saved_before_the_caps_is_evaluated_or_its_row_says_why():
@@ -344,7 +387,7 @@ def test_changing_a_shock_after_a_run_hides_the_old_result():
 
 
 def _impact_table(app) -> str | None:
-    return next((m.value for m in app.markdown if ">Return<span" in m.value), None)
+    return next((m.value for m in app.markdown if ">Portfolio return<span" in m.value), None)
 
 
 def _active_set_at() -> dict:
@@ -456,7 +499,12 @@ def test_the_shocked_portfolio_is_shown_beside_the_base_case():
     assert table is not None
     for heading in ("Base case", "Shocked, weights held", "Change"):
         assert f"<th>{heading}</th>" in table
-    for metric in ("Return", "Volatility", "Max drawdown 95%", "Max drawdown 99%"):
+    for metric in (
+        "Portfolio return",
+        "Portfolio volatility",
+        "Portfolio max drawdown 95%",
+        "Portfolio max drawdown 99%",
+    ):
         assert f">{metric}<span" in table
     # The equity forecast fell from 1% to 0.8% at a 60% weight: the portfolio's
     # return falls, and the change column says by how much in points.
@@ -475,12 +523,26 @@ def test_a_zero_shock_shows_no_change_in_any_portfolio_metric():
     app = _impact_page(shock_value="20")  # VIX's last observed value
 
     table = _impact_table(app)
-    # The equity weight's row, held, and the four metrics.
-    assert table.count("+0.00 pts") == 5
+    # Both weights, held; both forecasts; and the four metrics.
+    assert table.count("+0.00 pts") == 8
+
+
+def test_the_impact_shows_both_weights_and_both_forecasts():
+    table = _impact_table(_impact_page())
+
+    assert ">S&amp;P 500 weight</th><td>60.00%</td><td>60.00%</td><td>+0.00 pts</td>" in table
+    assert (
+        ">Global Aggregate Bond weight</th><td>40.00%</td><td>40.00%</td><td>+0.00 pts</td>"
+    ) in table
+    # Equity's forecast falls from 1% to 0.8%; bond's is unshocked.
+    assert ">S&amp;P 500 forecast<span" in table
+    equity = table.split(">S&amp;P 500 forecast<span")[1].split("</tr>")[0]
+    assert "<td>+1.00%</td><td>+0.80%</td><td>-0.20 pts</td>" in equity
+    assert ">Global Aggregate Bond forecast<span" in table
 
 
 def test_an_index_without_a_scenario_result_still_lets_the_portfolio_be_simulated():
-    """Bond is active without a stored function: its saved forecast stands in."""
+    """Bond is active without a stored function or fit: its saved forecast stands in."""
     import portfolio_summary
 
     committed = _long_committed()
@@ -597,3 +659,83 @@ def test_without_the_latest_rebalance_inputs_re_optimise_is_disabled():
 
     assert app.toggle(key="scenario_reoptimise").disabled
     assert any("can't be re-optimised" in c.value for c in app.caption)
+
+
+# --- a machine-learning model, refitted ------------------------------------------------
+
+
+def _ml_bond(committed: pd.DataFrame) -> active_model.ActiveML:
+    """A small XGBoost fit of the bond index on VIX, over rows 300-499 of ``committed``."""
+    dates = pd.DatetimeIndex(committed["Date"])
+    return active_model.ActiveML(
+        "xgboost",
+        {"n_estimators": 30, "max_depth": 2, "verbosity": 0, "n_jobs": 1},
+        {VIX: Transform.LEVEL},
+        dates[300],
+        dates[499],
+        200,
+    )
+
+
+def _ml_impact_page(shock_value: str):
+    """Equity's polynomial and bond's machine-learning model active, VIX shocked, the
+    latest weights known."""
+    import portfolio_summary
+
+    committed = _long_committed()
+    fingerprint = str(dataset_fingerprint(committed))
+    _set_active(EQUITY, function=LINEAR, fingerprint=fingerprint)
+    active_model.set_active_model(
+        BOND,
+        "Machine Learning",
+        _result(),
+        high_risk=False,
+        horizon=5,
+        train_window=60,
+        test_window=10,
+        dataset_fingerprint=fingerprint,
+        ml=_ml_bond(committed),
+    )
+    app = AppTest.from_file(str(PAGE), default_timeout=120)
+    app.session_state[bloomberg_extraction_panel.COMMITTED_KEY] = committed
+    app.session_state[bloomberg_extraction_panel.COMMITTED_TARGETS_KEY] = {EQUITY: SPX, BOND: AGG}
+    app.session_state[bloomberg_extraction_panel.COMMITTED_SOURCES_KEY] = SOURCES
+    app.session_state[portfolio_summary.SUMMARY_KEY] = portfolio_summary.PortfolioSummary(
+        dataset_fingerprint=fingerprint,
+        as_of=pd.Timestamp(committed["Date"].iloc[-1]),
+        equity_weight=0.6,
+        bond_weight=0.4,
+        net_sharpe=0.9,
+        baseline_net_sharpe=0.8,
+        active_set_at=_active_set_at(),
+    )
+    app.session_state["monte_carlo_paths"] = 2_000
+    app.run()
+    return _run(_shock(app, VIX, shock_value))
+
+
+def _bond_cells(table: str, after: str) -> list[str]:
+    row = table.split(after, 1)[1].split("</tr>")[0]
+    return re.findall(r"<td>([^<]*)</td>", row)
+
+
+def test_shocking_a_signal_an_ml_bond_model_reads_moves_its_forecast_and_the_portfolio():
+    app = _ml_impact_page("25")
+
+    assert app.multiselect[0].options == ["VIX (read by: Equity, Bond)"]
+    table = _table(app)
+    assert "Machine Learning, XGBoost" in table
+    base, shocked, change, _ = _bond_cells(table, "Machine Learning, XGBoost</span></td>")
+    assert base != shocked and change != "+0.00 pts"
+    # The portfolio is simulated on that same shocked bond forecast.
+    impact = _impact_table(app)
+    forecast = _bond_cells(impact, ">Global Aggregate Bond forecast<span")
+    assert forecast[:2] == [base, shocked]
+
+
+def test_an_ml_shock_beyond_its_training_range_says_trees_cant_extrapolate():
+    app = _ml_impact_page("80")
+
+    warnings = " ".join(w.value for w in app.warning)
+    assert "Extrapolation: VIX enters the Global Aggregate Bond model" in warnings
+    assert "Trees can't extrapolate: beyond" in warnings
