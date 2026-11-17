@@ -5,11 +5,15 @@ the portfolio, without re-running the optimiser or the backtest.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
 import pandas as pd
 
+from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.portfolio.optimize import SolveInputs
+from forecasting_engine.store.active_model import ActiveModelRecord
 
 #: Session-state key the Portfolio page writes and Home and Scenarios read.
 SUMMARY_KEY = "portfolio_summary"
@@ -37,3 +41,13 @@ class PortfolioSummary:
     solve_inputs: SolveInputs | None = None
     """What the latest rebalance's target was solved from, so the Scenarios page can
     re-solve it on shocked forecasts (FYP-246). ``None`` where it couldn't be rebuilt."""
+    active_set_at: Mapping[TargetRole, datetime] | None = None
+    """When each active model the run combined was set active, the key every
+    active-model row is stored under. Setting another active since leaves these
+    weights and Sharpe ratios out of date, as new data does. ``None`` if not
+    recorded, which matches no active models."""
+
+    def models_match(self, actives: Mapping[TargetRole, ActiveModelRecord | None]) -> bool:
+        """Whether ``actives``, the models active now, are the ones the run combined."""
+        now = {role: record.set_at for role, record in actives.items() if record is not None}
+        return self.active_set_at is not None and now == dict(self.active_set_at)

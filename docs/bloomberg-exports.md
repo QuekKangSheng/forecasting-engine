@@ -72,11 +72,12 @@ day reads as a real trading day and turns into a return that never happened.
 
 ## Converting
 
-On the **Data** page, drop every export (CSV or `.xlsx`, mixed together is
-fine) into the one multi-file uploader. The page joins them on date, labels
-fields by security, validates their generic shape and reports gaps and
-statistically unusual moves. Nothing needs a command line and no temporary
-signal CSV is produced.
+On the **Data** page, drop the two target exports into the target uploader and
+every other export into the signal uploader (CSV or `.xlsx`, mixed together is
+fine). The page guesses each target's role from the security named in its file,
+for you to confirm. It joins all of them on date, labels fields by security,
+validates their generic shape and reports gaps and statistically unusual moves.
+Nothing needs a command line and no temporary signal CSV is produced.
 
 **Dates in a CSV export** are `m/d/yyyy` or `d/m/yyyy` depending on the
 terminal's locale, and for any day up to the 12th the two look the same. The
@@ -106,7 +107,12 @@ takes its last value on or before each of those dates, for at most 3 rows
 **Target columns are never filled, at any gap length.** See "Target indices"
 above.
 
-**Range breaches are flagged, not corrected.** If almost every value in a column
-falls outside its documented range, the converter says so — that pattern means
-the wrong field was exported. A handful of breaches is left alone, because a
+**An impossible value leaves its file out; nothing is corrected.** Each export is
+checked on its own before the merge (`extraction/validation.py`): a total-return
+field (`TOT_RETURN…`) must be above zero, a `PX_` field only has to be a number,
+and any other field must lie within a loose sanity range, −300 to 10,000
+(`SANE_RANGE`), wide enough for a deep 2s10s inversion quoted in basis points.
+A file with a value outside its check is left out of the merge, with the
+column, the check and the value named; the other files still merge. Large
+day-over-day moves are only flagged on the Data page, never altered, because a
 genuine market dislocation looks a lot like an outlier.

@@ -1,5 +1,6 @@
 """What the status bar says about the data, the active models and the allocation."""
 
+from dataclasses import replace
 from datetime import datetime
 
 import pandas as pd
@@ -89,8 +90,13 @@ def test_an_active_model_fitted_on_other_data_is_called_stale_in_words():
 
 def test_the_last_allocation_is_shown_with_its_level_weights_and_date():
     merged = _data()
+    fingerprint = str(dataset_fingerprint(merged))
+    actives = {role: _record(role, "Machine Learning", fingerprint) for role in (EQUITY, BOND)}
+    solved_from = {role: record.set_at for role, record in actives.items()}
 
-    allocation = _cells(merged, summary=_summary(str(dataset_fingerprint(merged))))["Allocation"]
+    allocation = _cells(merged, actives, _summary(fingerprint, active_set_at=solved_from))[
+        "Allocation"
+    ]
 
     assert allocation.value == "level 3 · 23% / 77% · 11 Aug 2026"
     assert allocation.tone == "success"
@@ -114,3 +120,42 @@ def test_an_unknown_tone_falls_back_to_neutral():
     bar = shell.status_bar([shell.StatusCell("Data", "x", tone="not a tone")])
 
     assert "var(--fe-neutral-fg)" in bar
+
+
+def test_a_model_fitted_on_another_target_column_of_the_same_data_is_stale():
+    data = _data()
+    fingerprint = str(dataset_fingerprint(data))
+    record = replace(_record(EQUITY, "Machine Learning", fingerprint), target_column="SPX_PX")
+    actives = {EQUITY: record, BOND: None}
+
+    on_it = shell.status_cells(data, actives, None, {EQUITY: "SPX_PX"})
+    other = shell.status_cells(data, actives, None, {EQUITY: "SPX_TR"})
+
+    assert on_it[1].tone == "success"
+    assert other[1].value == "Machine Learning · stale" and other[1].tone == "warning"
+
+
+def test_an_allocation_solved_from_models_since_replaced_is_stale():
+    data = _data()
+    fingerprint = str(dataset_fingerprint(data))
+    actives = {
+        EQUITY: _record(EQUITY, "Machine Learning", fingerprint),
+        BOND: _record(BOND, "Machine Learning", fingerprint),
+    }
+    solved_then = {EQUITY: datetime(2026, 11, 1), BOND: datetime(2026, 11, 1)}
+    summary = _summary(fingerprint, active_set_at=solved_then)
+
+    allocation = _cells(data, actives, summary)["Allocation"]
+
+    assert allocation.value == "other models · stale" and allocation.tone == "warning"
+
+
+def test_an_allocation_is_stale_once_its_data_is_cleared():
+    fingerprint = str(dataset_fingerprint(_data()))
+    record = _record(EQUITY, "Machine Learning", fingerprint)
+    actives = {EQUITY: record, BOND: replace(record, role=BOND)}
+    summary = _summary(fingerprint, active_set_at={EQUITY: record.set_at, BOND: record.set_at})
+
+    allocation = _cells(None, actives, summary)["Allocation"]
+
+    assert allocation.tone == "warning" and "stale" in allocation.value

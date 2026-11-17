@@ -53,9 +53,12 @@ def status_cells(
     merged: pd.DataFrame | None,
     actives: Mapping[TargetRole, active_model.ActiveModelRecord | None],
     summary: portfolio_summary.PortfolioSummary | None,
+    targets: Mapping[TargetRole, str] | None = None,
 ) -> list[StatusCell]:
     """What the bar says, given the committed data (or ``None``), each role's active
-    model (or ``None``) and the Portfolio page's last result (or ``None``)."""
+    model (or ``None``), the Portfolio page's last result (or ``None``) and the
+    committed target column of each role."""
+    targets = targets or {}
     fingerprint = None if merged is None else str(dataset_fingerprint(merged))
     if merged is None:
         cells = [StatusCell("Data", "none committed", "warning")]
@@ -70,8 +73,8 @@ def status_cells(
         record = actives.get(role)
         if record is None:
             cells.append(StatusCell(name, "not set"))
-        elif fingerprint is not None and record.dataset_fingerprint != fingerprint:
-            # Fitted on data that has since been replaced: its forecasts are not used.
+        elif fingerprint is not None and not record.fitted_on(fingerprint, targets.get(role)):
+            # Fitted on data or a target since replaced: its forecasts are not used.
             cells.append(
                 StatusCell(name, f"{display_model_name(record.model_name)} · stale", "warning")
             )
@@ -79,8 +82,11 @@ def status_cells(
             cells.append(StatusCell(name, display_model_name(record.model_name), "success"))
     if summary is None:
         cells.append(StatusCell("Allocation", "not solved yet"))
-    elif fingerprint is not None and summary.dataset_fingerprint != fingerprint:
+    elif merged is None or summary.dataset_fingerprint != fingerprint:
         cells.append(StatusCell("Allocation", "other data · stale", "warning"))
+    elif not summary.models_match(actives):
+        # Solved from models since replaced: not the allocation the models now give.
+        cells.append(StatusCell("Allocation", "other models · stale", "warning"))
     else:
         level = "" if summary.risk_level is None else f"level {summary.risk_level} · "
         cells.append(
@@ -145,9 +151,10 @@ def render(slot: DeltaGenerator | None = None) -> None:
     merged = st.session_state.get(bloomberg_extraction_panel.COMMITTED_KEY)
     actives = {role: active_model.get_active_model(role) for role in ROLE_NAMES}
     summary = st.session_state.get(portfolio_summary.SUMMARY_KEY)
+    targets = st.session_state.get(bloomberg_extraction_panel.COMMITTED_TARGETS_KEY, {})
     # With the stylesheet in the same element: one of its own would be an empty row
     # above the bar, holding it off the top of the window.
     (slot or st).markdown(
-        ui.stylesheet() + status_bar(status_cells(merged, actives, summary)),
+        ui.stylesheet() + status_bar(status_cells(merged, actives, summary, targets)),
         unsafe_allow_html=True,
     )

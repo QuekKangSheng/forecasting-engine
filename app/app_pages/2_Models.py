@@ -617,12 +617,13 @@ def _recorder(
     return record
 
 
-def _active_settings(name: str) -> dict[str, int | str | None]:
-    """What a model set active was run under. The research models train on every
-    earlier date, so they have no train window."""
+def _active_settings(role: TargetRole, name: str) -> dict[str, int | str | None]:
+    """What a model set active was run under, and the column it forecast. The
+    research models train on every earlier date, so they have no train window."""
+    settings = {**ACTIVE_SETTINGS, "target_column": target_columns[role]}
     if name in RESEARCH_MODELS:
-        return {**ACTIVE_SETTINGS, "train_window": None}
-    return ACTIVE_SETTINGS
+        return {**settings, "train_window": None}
+    return settings
 
 
 def _run_user(
@@ -1094,10 +1095,11 @@ def _show_active_status(
         return
     tone = "danger" if current.high_risk else "success"
     note = " · set despite failing both gates" if current.high_risk else ""
+    # Escaped: the target's name comes from a column in the uploaded file.
     st.markdown(
         ui.status_row(
-            f"Active model · {target_name}",
-            ui.lozenge(current.model_name, tone),
+            html.escape(f"Active model · {target_name}"),
+            ui.lozenge(html.escape(current.model_name), tone),
             f"set {current.set_at:%d %b %Y}{note}",
         ),
         unsafe_allow_html=True,
@@ -1133,7 +1135,7 @@ def _confirm_high_risk(
             function=function,
             attribution=attribution,
             run_id=run_id,
-            **_active_settings(model_name),
+            **_active_settings(role, model_name),
         )
         st.session_state.pop(pending_key, None)
         st.rerun()
@@ -1200,7 +1202,7 @@ def _show_active_picker(
                 function=_active_function(selected, runs[selected]),
                 attribution=_active_attribution(selected, runs[selected]),
                 run_id=_run_id(role, selected, settings),
-                **_active_settings(selected),
+                **_active_settings(role, selected),
             )
             st.rerun()
     pending = st.session_state.get(pending_key)
@@ -1298,14 +1300,20 @@ def _show_directional(
     # a reader does to pan it, and every chart event reruns the page, which
     # silently cuts short any Run still in progress.
     first, last = whole.strategy.index[0].date(), whole.strategy.index[-1].date()
-    start, end = st.slider(
-        "Window",
-        min_value=first,
-        max_value=last,
-        value=(first, last),
-        format="DD/MM/YYYY",
-        key=f"pnl_window_{key}_{name}",
-        help=glossary.term("P&L window"),
+    # A single call is a single date, which leaves no window to narrow: Streamlit
+    # refuses a slider whose two ends are the same.
+    start, end = (
+        st.slider(
+            "Window",
+            min_value=first,
+            max_value=last,
+            value=(first, last),
+            format="DD/MM/YYYY",
+            key=f"pnl_window_{key}_{name}",
+            help=glossary.term("P&L window"),
+        )
+        if first < last
+        else (first, last)
     )
     window = None if (start, end) == (first, last) else (pd.Timestamp(start), pd.Timestamp(end))
     pnl = whole

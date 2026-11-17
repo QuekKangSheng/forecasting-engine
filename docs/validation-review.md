@@ -1,5 +1,30 @@
 # Validation review — 18 Sep 2026
 
+> **Status, 16 Nov 2026.** The gates and PBO this review measured, and the 1 Oct
+> note below, are out of date. The current gates are in `validation/gates.py` and
+> `docs/methodology.md` §12. The findings are kept as they were.
+>
+> - *Open item 1, and the 1 Oct note's gate:* `OOS_RANK_IC_GATE` no longer
+>   exists. Since 12 Oct a model is promoted only if its Signal Rank IC is above
+>   `SIGNAL_RANK_IC_GATE` (0.02) and its t is above `SIGNIFICANCE_T_GATE` (2.0).
+>   The Signal Rank IC is the pooled rank IC of each forecast less the model's own
+>   level for its fold, its mean in-sample forecast (until 11 Nov, the fold's
+>   training-mean target); t is that figure over the larger of its two standard
+>   errors (methodology §10). That is close to option 3, without asking two
+>   horizons to agree. The "Beyond 2 s.e." and "Rank IC within folds" columns are
+>   gone; the table shows Signal Rank IC and t.
+> - *PBO* was removed on 12 Oct (methodology §11). The PBO row in the table of
+>   checks and the CSCV fix under "Fixed in this pass" describe code that no
+>   longer exists.
+> - *Open item 2 (screening):* the threshold is still `INCLUSION_THRESHOLD = 0.02`,
+>   but each fold now screens on its 504-row training window, not 120 rows, so the
+>   84% pass rate and the 0.09 standard error do not describe the current window.
+> - *Open item 3 (Fama-French in percent):* still open. `ingest/fama_french.py`
+>   reads the factors as published.
+> - *Settings and pages:* the review ran at a 120-row train window and 5-day
+>   labels; the defaults are now a fixed 504-row train window and a 20-day horizon
+>   (methodology §7). The Model Metrics page was merged into the Models page.
+
 > **Status, 1 Oct 2026.** Several findings below have since been acted on; read
 > this as the record of what was measured on 18 Sep, and `docs/methodology.md`
 > for how the pipeline works now.

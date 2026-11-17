@@ -105,6 +105,32 @@ def test_a_database_deleted_while_the_app_runs_has_its_tables_made_again(db):
     assert list_portfolio_runs(db_path=db) == []
 
 
+def test_sessions_opening_the_file_as_another_closes_it_do_not_fail_each_other(db):
+    """Closing the last connection closes the file, once what was written is written
+    back to it, which takes a while after a large write. An open from another thread
+    in that time starts a second database on the file, which Windows refuses ("being
+    used by another process")."""
+    create = "CREATE TABLE IF NOT EXISTS written (x BIGINT)"
+    writes, rows = 10, 50_000
+    written = threading.Event()
+
+    def session(i: int) -> None:
+        if i == 0:
+            try:
+                for _ in range(writes):
+                    with _db.connect(db, create) as conn:
+                        conn.execute(f"INSERT INTO written SELECT range FROM range({rows})")
+            finally:
+                written.set()
+        while not written.is_set():
+            with _db.connect(db, create) as conn:
+                conn.execute("SELECT count(*) FROM written").fetchone()
+
+    assert _all_at_once(session) == []
+    with _db.connect(db, create) as conn:
+        assert conn.execute("SELECT count(*) FROM written").fetchone() == (writes * rows,)
+
+
 # --- the app holds the database open between uses ---------------------------------------
 
 

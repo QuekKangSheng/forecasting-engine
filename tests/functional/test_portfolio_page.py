@@ -180,7 +180,26 @@ def test_active_models_set_on_another_dataset_are_refused():
     app = _page(committed)
 
     assert not app.exception
-    assert any("different dataset than the one committed now" in w.value for w in app.warning)
+    assert any(
+        "different dataset or target than the one committed now" in w.value for w in app.warning
+    )
+    assert not app.metric
+
+
+def test_an_active_model_fitted_on_another_field_of_the_same_data_is_refused():
+    """The same exports committed again with another field as the target leave the
+    data's fingerprint as it was; the model fitted on the old field is still refused."""
+    committed = _committed()
+    fingerprint = SETTINGS["dataset_fingerprint"]
+    other_field = "SPX_Index_TOT_RETURN_INDEX_GROSS_DVDS"
+    assert other_field != EQUITY_COL
+    _set_active(EQUITY, forecast=_forecast(committed), target_column=other_field)
+    _set_active(BOND, forecast=_forecast(committed), target_column=BOND_COL)
+    app = _page(committed)
+
+    assert fingerprint == str(dataset_fingerprint(committed))  # the data alone matches
+    assert not app.exception
+    assert any("active equity model was set" in w.value for w in app.warning)
     assert not app.metric
 
 
@@ -245,6 +264,23 @@ def test_the_latest_rebalance_inputs_are_shared_for_re_optimising_under_a_shock(
     assert inputs.date == summary.as_of
     assert inputs.risk_level == 3
     assert inputs.bounds == pytest.approx((0.2, 0.8))
+
+
+def test_the_summary_records_the_data_and_the_active_models_it_was_computed_from():
+    """Home and Scenarios check these against what is committed and active when they
+    read the summary, so weights from models since replaced aren't shown as current."""
+    import portfolio_summary
+
+    committed = _committed()
+    _set_active(EQUITY, forecast=_forecast(committed, seed=1))
+    _set_active(BOND, forecast=_forecast(committed, seed=2))
+    app = _page(committed)
+
+    summary = app.session_state[portfolio_summary.SUMMARY_KEY]
+    actives = {role: active_model.get_active_model(role) for role in (EQUITY, BOND)}
+    assert summary.dataset_fingerprint == str(dataset_fingerprint(committed))
+    assert summary.active_set_at == {role: record.set_at for role, record in actives.items()}
+    assert summary.models_match(actives)
 
 
 # --- FYP-19: performance against the equal-weight benchmark -------------------------
@@ -1588,5 +1624,7 @@ def test_active_models_set_on_a_same_shape_dataset_with_other_values_are_refused
     app = _page(corrected)
 
     assert not app.exception
-    assert any("different dataset than the one committed now" in w.value for w in app.warning)
+    assert any(
+        "different dataset or target than the one committed now" in w.value for w in app.warning
+    )
     assert not app.metric

@@ -1,6 +1,7 @@
 """The Scenarios page, driven through the real Streamlit page script (FYP-32)."""
 
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -299,8 +300,18 @@ def _impact_table(app) -> str | None:
     return next((m.value for m in app.markdown if ">Return<span" in m.value), None)
 
 
-def _with_weights(app, equity=0.6, bond=0.4, fingerprint=None):
-    """The latest optimised weights, as the Portfolio page leaves them for Home."""
+def _active_set_at() -> dict:
+    """When each model active now was set: what a Portfolio run on them records."""
+    return {
+        role: record.set_at
+        for role in (EQUITY, BOND)
+        if (record := active_model.get_active_model(role)) is not None
+    }
+
+
+def _with_weights(app, equity=0.6, bond=0.4, fingerprint=None, active_set_at=None):
+    """The latest optimised weights, as the Portfolio page leaves them for Home:
+    by default, solved from the models active now."""
     import portfolio_summary
 
     committed = _committed()
@@ -311,6 +322,7 @@ def _with_weights(app, equity=0.6, bond=0.4, fingerprint=None):
         bond_weight=bond,
         net_sharpe=0.9,
         baseline_net_sharpe=0.8,
+        active_set_at=_active_set_at() if active_set_at is None else active_set_at,
     )
     return app
 
@@ -331,9 +343,10 @@ def _long_committed(n: int = 540) -> pd.DataFrame:
     )
 
 
-def _impact_page(shock_value="25", small_paths=True, solve_inputs=None):
+def _impact_page(shock_value="25", small_paths=True, solve_inputs=None, active_set_at=None):
     """Both indices active, the equity shocked, the latest weights known, and the
-    latest rebalance's solve inputs if given."""
+    latest rebalance's solve inputs if given. The weights were solved from the
+    models active now, unless ``active_set_at`` says which they were."""
     import portfolio_summary
 
     committed = _long_committed()
@@ -352,6 +365,7 @@ def _impact_page(shock_value="25", small_paths=True, solve_inputs=None):
         net_sharpe=0.9,
         baseline_net_sharpe=0.8,
         solve_inputs=solve_inputs,
+        active_set_at=_active_set_at() if active_set_at is None else active_set_at,
     )
     if small_paths:
         app.session_state["monte_carlo_paths"] = 2_000
@@ -374,6 +388,18 @@ def test_weights_from_another_dataset_are_not_used():
 
     assert _impact_table(app) is None
     assert any("Open the Portfolio Optimizer page first" in i.value for i in app.info)
+
+
+def test_weights_from_an_active_model_since_replaced_are_not_used():
+    # Solved from an equity model that the one set active now has replaced.
+    replaced = {EQUITY: datetime(2025, 1, 2, 9, 30), BOND: datetime(2025, 1, 2, 9, 31)}
+    app = _impact_page(active_set_at=replaced)
+
+    assert not app.exception
+    assert _impact_table(app) is None
+    infos = " ".join(i.value for i in app.info)
+    assert "solved from other active models than the ones set now" in infos
+    assert "Open the Portfolio Optimizer page again" in infos
 
 
 def test_the_shocked_portfolio_is_shown_beside_the_base_case():
@@ -435,6 +461,7 @@ def test_an_index_without_a_scenario_result_still_lets_the_portfolio_be_simulate
         bond_weight=0.4,
         net_sharpe=0.9,
         baseline_net_sharpe=0.8,
+        active_set_at=_active_set_at(),
     )
     app.session_state["monte_carlo_paths"] = 2_000
     app.run()

@@ -8,7 +8,8 @@ that is backtested against a 50/50 benchmark. Built for Alpha Norm by Finlytics
 ## Getting started
 
 Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/). On macOS:
-`brew install uv`.
+`brew install uv`. `.python-version` pins 3.13, the version CI runs on; uv uses
+it, and downloads it if it isn't installed.
 
 ```bash
 uv sync --all-extras
@@ -32,21 +33,32 @@ pages quick to open and to respond:
 A Run spreads independent work over up to
 4 processes; on a machine with more cores, set `FORECASTING_WORKERS` (for
 example `FORECASTING_WORKERS=8`) before starting it. The results are the same
-either way. The pages follow the order a portfolio
-manager works in, and **Home** says where the pipeline stands and what to do next:
+either way. `app/Home.py` is the entry file: it builds the sidebar navigation
+over the six pages in `app/app_pages/`, which follow the order a portfolio
+manager works in:
 
-1. **Data** — upload the terminal's original Bloomberg history exports (CSV or
+1. **Home** — where the pipeline stands (data, models, portfolio) and what to do
+   next. It only reads what the other pages left and the active models; it never
+   fits a model or runs a backtest.
+2. **Data** — upload the terminal's original Bloomberg history exports (CSV or
    XLSX), with the equity and bond target indices in one box and every other
    signal in another. The page accepts their fields as exported, joins them on
    date, reports data-quality findings and offers the merged data for download. Each input file may be up to 25 MB. Click **Use
    Updated Data** to hand the data to the other pages.
-2. **Models** — one tab per target index. **Run** fits every model family under
-   the same settings and compares them in one table, with pass/fail promotion
-   gates. Set the model to carry forward as the target's **active model**, and
-   check whether its forecast direction would have paid.
-3. **Portfolio Optimizer** — once an equity and a bond model are active, splits
+3. **Models** — one tab per target index. **Run** fits the ticked model families
+   (all of them by default) in the background, under the same settings, and
+   compares them in one table, with pass/fail promotion gates; **Run all
+   targets** does both tabs at once. Set the model to carry forward as the
+   target's **active model**, and check whether its forecast direction would
+   have paid.
+4. **Portfolio Optimizer** — once an equity and a bond model are active, splits
    between the two indices at each rebalance and backtests that allocation
    against an equal-weight benchmark.
+5. **Scenarios** — shock signals the active polynomials read and see each index's
+   forecast, and the optimised portfolio, beside the base case, without refitting.
+6. **Run history** — every model fit and every distinct Portfolio result recorded
+   in DuckDB, newest first; open one to see its settings, results and the data it
+   was fitted on.
 
 ## Checks
 
@@ -95,11 +107,18 @@ hosting step is needed.
     lasso fits at degrees 1 to 3 and a shrinkage fit, chosen per run),
     or the user's own shape (placeholders pointed at signals) with only a scale and
     intercept fitted;
+  - each tab's research model, run as the model research ran it, with a caption
+    saying its score is optimistic: for equity a polynomial on fixed economic
+    inputs (HY OAS, IG OAS, VIX and the 2s10s slope), and for bond one on fixed
+    carry inputs (the 10-year yield and breakeven, the 2s10s slope, HY and IG OAS,
+    VIX and FX implied volatility);
   - machine learning: XGBoost and LightGBM, tuned with Optuna on a rolling
     schedule, with SHAP feature attribution.
 - **Walk-forward validation** — every model on both targets is trained on the
   latest 504 trading days and scored on the next 20, with a 20-day embargo
   between the two, under one shared set of settings that the results table states.
+  The two research models alone train on every earlier day, on the same test
+  windows.
 - **Overfitting checks** — Signal Rank IC (what a model adds to its own average
   forecast, out of sample) with its t-statistic, crash-day diagnostics, and a
   promotion gate on both: Signal Rank IC above 0.02 and t above 2.
@@ -151,7 +170,8 @@ hosting step is needed.
   flagged as an extrapolation. The active polynomial's fitted function is saved in
   DuckDB with the active model for this.
 - **Portfolio impact** — the shocked forecasts carried through to the optimised
-  portfolio at its latest weights, held as they are: return, volatility and
+  portfolio at its latest weights, held as they are (the Portfolio page's last
+  result on the committed data and the models active now): return, volatility and
   max drawdown over the next horizon beside the base case, from the same Monte
   Carlo paths, so the difference is the shock's alone.
 - **Re-optimise under shock** — an optional switch that solves the latest
@@ -178,9 +198,12 @@ See [methodology §20](docs/methodology.md) and
 
 ## Interface
 
-The dashboard uses a restrained GitHub Primer-style light/dark palette. Semantic
-green, amber and red are reserved for status. Both themes are defined in
-`.streamlit/config.toml`.
+The dashboard is styled as an operations console: one dark theme, designed as
+such rather than flipped from a light one, with one blue for whatever can be
+acted on. The theme is in `.streamlit/config.toml`; every colour is also in
+`app/tokens.py`, which the stylesheet and the charts draw from, and
+`tests/unit/test_tokens.py` fails if the two drift apart. Both typefaces, IBM Plex
+Sans and IBM Plex Mono, are served by the app from `app/static`.
 
 Status appears as a lozenge — a short uppercase badge — rather than a coloured
 word or a symbol, because it reads at a glance in a list. `app/ui.py` holds that
@@ -195,13 +218,21 @@ src/forecasting_engine/     core library, never imports Streamlit
   extraction/               active generic Bloomberg merge and validation
   ingest/                   upload checks, Fama-French factors, lag-safe alignment
   features/                 signal screening
-  models/                   naive, Fama-French, polynomial and boosted forecasters
+  models/                   naive, Fama-French, polynomial (lasso and shrinkage
+                            fits, user-supplied, the two research models) and
+                            boosted forecasters
   validation/               walk-forward splitter, metrics, crash checks, gates
   portfolio/                optimiser, backtest, performance, directional P&L
-  reporting/                tables and labels the dashboard shows
-  store/                    DuckDB upload and active-model history
+  risk/                     historical VaR and CVaR, Monte Carlo simulation
+  scenario/                 signal shocks and their portfolio impact
+  reporting/                tables and labels the dashboard shows, the run report
+  store/                    DuckDB run history, uploads and lineage, active
+                            models, portfolio runs
 app/                        Streamlit dashboard, no maths
-  app_pages/                Home, Data, Models, Portfolio Optimizer
+  Home.py                   entry file: the sidebar navigation
+  app_pages/                Home, Data, Models, Portfolio Optimizer, Scenarios,
+                            Run history
+  model_jobs.py             the background queue a Run is fitted on
   ui.py                     lozenges, status rows, shared presentation
   glossary.py               the plain-language explanations shown on hover
 docs/                       data specification, design, decisions
@@ -212,8 +243,11 @@ tests/                      unit, integration, functional
 
 - [Methodology](docs/methodology.md) — every step from export to score, and every
   parameter, checked against the code by the test suite
-- [Validation review](docs/validation-review.md) — decisions behind the
-  validation metrics and gates
+- [Validation review](docs/validation-review.md) — the 18 Sep 2026 review of the
+  validation pipeline, kept as a record; a note at the top lists what has since
+  been superseded
+- [Run history](docs/run-history.md) — the DuckDB tables, their guarantees and
+  example queries
 - [Bloomberg exports](docs/bloomberg-exports.md) — accepted export shape and merge
 - [Data specification](docs/data-specification.md) — archived temporary signal-CSV contract
 - [Quality report contract](docs/quality-report-contract.md) — cross-ticket
@@ -225,4 +259,6 @@ tests/                      unit, integration, functional
 - [Ingestion consolidation](docs/ingestion-consolidation.md) — historical decision record;
   superseded for the active dashboard by the generic Bloomberg-only workflow
 - [Architecture design](docs/superpowers/specs/2026-07-29-forecasting-engine-architecture-design.md)
+  and its [team guide](docs/architecture.html) — the July 2026 design, before the
+  build; a note at the top of each lists where the built app differs
 - [Phase 0 plan](docs/superpowers/plans/2026-07-29-phase-0-scaffold-and-ingestion.md)

@@ -81,6 +81,29 @@ def _stale(fingerprint_then: str | None) -> bool:
     return fingerprint is not None and fingerprint_then != fingerprint
 
 
+def _active_stale(role: TargetRole) -> bool:
+    """Whether ``role``'s active model was fitted on other data or another target
+    column than the ones committed now."""
+    active = actives[role]
+    return (
+        active is not None
+        and fingerprint is not None
+        and not active.fitted_on(fingerprint, targets.get(role))
+    )
+
+
+def _portfolio_current() -> bool:
+    """Whether the last Portfolio run used the committed data and the models active
+    now: its weights and Sharpe ratios are out of date once either is replaced, and
+    once the data is cleared."""
+    return (
+        summary is not None
+        and merged is not None
+        and not _stale(summary.dataset_fingerprint)
+        and summary.models_match(actives)
+    )
+
+
 def _next_step() -> tuple[str, str] | None:
     """The first thing left to do, in pipeline order, and the page it is done on (as
     the entry point names it), or ``None`` when every step is up to date."""
@@ -104,13 +127,13 @@ def _next_step() -> tuple[str, str] | None:
                 f"set an active {ROLE_NAMES[role].lower()} model on the **Models** page.",
                 "models",
             )
-        if _stale(active.dataset_fingerprint):
+        if _active_stale(role):
             return (
                 f"re-run the {ROLE_NAMES[role].lower()} models on the committed data and set "
                 "one active on the **Models** page.",
                 "models",
             )
-    if summary is None or _stale(summary.dataset_fingerprint):
+    if not _portfolio_current():
         return (
             "open the **Portfolio Optimizer** to allocate between the active models.",
             "portfolio",
@@ -176,8 +199,10 @@ def _models_card() -> None:
     for role in ROLES:
         if role not in targets:
             continue
+        # Escaped: the target's name comes from a column in the uploaded file.
         st.markdown(
-            ui.eyebrow(f"{ROLE_NAMES[role]} · {label(targets[role])}"), unsafe_allow_html=True
+            ui.eyebrow(html.escape(f"{ROLE_NAMES[role]} · {label(targets[role])}")),
+            unsafe_allow_html=True,
         )
         runs = _runs(role)
         screening = next(
@@ -196,7 +221,7 @@ def _models_card() -> None:
         active = actives[role]
         if active is None:
             st.caption("Active model: none set.")
-        elif _stale(active.dataset_fingerprint):
+        elif _active_stale(role):
             st.warning(
                 f"Active model {display_model_name(active.model_name)} was fitted on "
                 "different data from the one committed now.",
@@ -223,6 +248,12 @@ def _portfolio_card() -> None:
             "The last run used different data from the one committed now.",
             icon=":material/warning:",
         )
+    elif not summary.models_match(actives):
+        st.warning(
+            "The last run used different active models from the ones set now. Open the "
+            "**Portfolio Optimizer** to recompute its weights and Sharpe ratio.",
+            icon=":material/warning:",
+        )
     st.caption(
         f"Net Sharpe {summary.net_sharpe:.2f} against {summary.baseline_net_sharpe:.2f} "
         "for 50/50."
@@ -236,7 +267,7 @@ def _portfolio_card() -> None:
 
 def _headline() -> None:
     """The latest portfolio result, first, for anyone who opens the app to see it."""
-    if summary is None or _stale(summary.dataset_fingerprint):
+    if not _portfolio_current():
         return
     cells = [
         (

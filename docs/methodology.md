@@ -1127,7 +1127,8 @@ base case.
    them (`app/portfolio_summary`), held as they are: they are not re-solved for
    the shock. Re-optimising under the shock is a separate, explicit action
    (FYP-246, below). The Portfolio page must have been opened on the committed data
-   for the weights to be known.
+   and the models active now for the weights to be known: weights solved from a
+   model since replaced are not used, and Home flags them as out of date.
 3. **Forecasts.** An index the scenario evaluated contributes its own base-case
    and shocked forecasts (`ScenarioResult`). An index it could not evaluate (no
    stored function, or no active polynomial) contributes its active model's

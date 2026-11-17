@@ -5,6 +5,41 @@
 **Date:** 2026-07-29
 **Status:** Approved — pending answers to the open questions in §11
 
+> **Note added 16 Nov 2026: the original design, not the built app.** This is the
+> design drafted on 29 Jul 2026, before the build, and is kept as that record. The
+> app as built differs from it in these main ways:
+>
+> - **Pages.** `app/Home.py` builds the navigation over six pages in
+>   `app/app_pages/`: Home, Data, Models, Portfolio Optimizer, Scenarios and Run
+>   history. There is no `app/pages/` folder.
+> - **Data.** The Data page takes Bloomberg's original CSV and XLSX exports and
+>   merges them on date (`extraction/`). The authored CSV contract was retired for
+>   an open schema.
+> - **How a Run runs.** There is no `RunConfig` or `pipeline.py`. The Models page
+>   queues a Run for one background worker thread in the Streamlit server
+>   (`app/model_jobs.py`), which fits the ticked models in turn and spreads
+>   independent parts of a fit over up to four processes by default
+>   (`parallel.py`). Each result is cached under `data/model_runs/`, keyed by a
+>   hash of the data and settings it depends on.
+> - **Store.** One DuckDB file, `data/forecasting.duckdb`, holds an append-only log
+>   of model runs, each with a random run id rather than a config hash, and also the
+>   uploads and their lineage, each target's active model and every distinct
+>   Portfolio result ([run history](../../run-history.md)).
+> - **Model families.** A naive training-mean baseline, the Fama-French
+>   five-factor benchmark (equity only), the polynomial (user-supplied, or derived
+>   from lasso fits at degrees 1 to 3 and a shrinkage fit), a research model on
+>   each target (a polynomial on fixed economic inputs for equity, one on fixed
+>   carry inputs for bond), and XGBoost and LightGBM. There is no PySR.
+> - **Validation.** No PBO, DSR or CPCV: a model is promoted on its Signal Rank IC
+>   and its t-statistic. The windows are 504 training days, 20 test days and a
+>   20-day embargo, not 756, 63 and 5 (the two research models alone train on
+>   every earlier day), and the default horizon is 20 days, not 5.
+> - **Portfolio.** The optimiser is a two-asset Markowitz rule in
+>   `portfolio/optimize.py`, not PyPortfolioOpt.
+>
+> For the app as it is now, read [the methodology](../../methodology.md) and
+> [the README](../../../README.md).
+
 ---
 
 ## 1. Purpose

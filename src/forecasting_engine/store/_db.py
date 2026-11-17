@@ -114,7 +114,12 @@ def connect(db_path: Path, create_sql: str) -> Iterator[duckdb.DuckDBPyConnectio
     try:
         yield conn
     finally:
-        conn.close()
+        # Under the lock it was opened under. Closing the last connection closes the
+        # file, once what was written is written back, which can take a while; an
+        # open from another session in that time starts a second database on the
+        # file, and Windows refuses it ("being used by another process").
+        with _created_lock:
+            conn.close()
 
 
 def retry_on_conflict(write: Callable[[], T]) -> T:

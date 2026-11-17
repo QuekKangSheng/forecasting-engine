@@ -395,7 +395,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.11" },
     { name = "shap", specifier = ">=0.45" },
     { name = "statsmodels", specifier = ">=0.14" },
-    { name = "streamlit", specifier = ">=1.40" },
+    { name = "streamlit", specifier = ">=1.61" },
     { name = "xgboost", specifier = ">=2.0" },
 ]
 provides-extras = ["dev"]
