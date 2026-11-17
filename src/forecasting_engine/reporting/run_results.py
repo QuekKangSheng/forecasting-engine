@@ -10,6 +10,7 @@ Everything is JSON-safe, for ``store/portfolio_runs``.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import asdict
 
@@ -18,6 +19,8 @@ import pandas as pd
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.extraction.validation import ValidationReport
 from forecasting_engine.portfolio.backtest import BASES, BacktestResult
+from forecasting_engine.portfolio.optimize import SolveInputs, WeightBreakdown
+from forecasting_engine.portfolio.performance import TRADING_DAYS_PER_YEAR
 from forecasting_engine.reporting.polynomial_function import (
     from_description,
     standardisation_lines,
@@ -51,13 +54,15 @@ def run_results(
     windows: Mapping[str, int],
     data_quality: Mapping[str, object] | None = None,
     models: Sequence[Mapping[str, object]] = (),
+    conditions: Mapping[str, object] | None = None,
 ) -> dict:
     """Everything an opened run or its report shows that its daily returns can't give
     back.
 
     ``windows`` are the rolling charts' windows, so a run's charts keep the windows it
     was shown with. ``data_quality`` is ``data_quality_summary`` and ``models`` one
-    ``model_summary`` per active model."""
+    ``model_summary`` per active model, and ``conditions`` is ``market_conditions`` for
+    the latest rebalance."""
     return {
         "data_quality": None if data_quality is None else dict(data_quality),
         "models": list(models),
@@ -68,6 +73,7 @@ def run_results(
             "weights": {role.value: float(weight) for role, weight in latest_weights.items()},
         },
         "how_set": list(how_set),
+        "conditions": None if conditions is None else dict(conditions),
         "active_models": list(backtest.active_models),
         "backtest": {
             "start": backtest.start.date().isoformat(),
@@ -75,6 +81,38 @@ def run_results(
         },
         "windows": dict(windows),
         "bases": {basis: _basis_results(backtest, no_forecast, basis) for basis in BASES},
+    }
+
+
+def market_conditions(
+    breakdown: WeightBreakdown, inputs: SolveInputs, *, horizon: int, gate_shut: bool
+) -> dict:
+    """What the latest rebalance's weights rest on, for a report to put in words: the
+    risk level's own equity weight and the volatility it targets, how far the forecasts
+    moved it and whether their record was trusted, and each index's volatility over
+    the training window. Volatilities are annualised from the solve's ``horizon``-day
+    covariance."""
+    per_year = TRADING_DAYS_PER_YEAR / horizon
+    covariance = inputs.covariance
+    equity, bond = covariance.index
+    w = breakdown.level_weight
+    variance = (
+        w**2 * covariance.loc[equity, equity]
+        + (1 - w) ** 2 * covariance.loc[bond, bond]
+        + 2 * w * (1 - w) * covariance.loc[equity, bond]
+    )
+    return {
+        "level_weight": float(w),
+        "forecast_tilt": float(breakdown.forecast_tilt),
+        "equity": float(breakdown.equity),
+        "capped": bool(breakdown.capped),
+        "trust": float(inputs.trust),
+        "gate_shut": bool(gate_shut),
+        "target_volatility": math.sqrt(max(float(variance), 0.0) * per_year),
+        "volatility": {
+            TargetRole(role).value: math.sqrt(float(covariance.loc[role, role]) * per_year)
+            for role in covariance.index
+        },
     }
 
 
@@ -108,12 +146,14 @@ def model_summary(
     signal_t: float | None,
     function: ActiveFunction | None,
     attribution: Mapping[str, float] | None,
+    holdout: Mapping[str, float] | None = None,
     label: Callable[[str], str],
     target: str,
     columns: Collection[str],
 ) -> dict:
     """One active model as a report shows it: its gate results, its polynomial function
-    if it is one, and its per-signal SHAP if that was saved. ``None`` for what the
+    if it is one, its per-signal SHAP if that was saved, and a research model's pre-2016
+    hold-out (``signal_rank_ic``, ``t``, ``windows``) if its run recorded one. ``None`` for what the
     model doesn't have or an older record didn't keep, so nothing is passed off as zero.
     """
     fn = (
@@ -145,6 +185,7 @@ def model_summary(
         "attribution": None
         if attribution is None
         else {label(signal): float(value) for signal, value in attribution.items()},
+        "holdout": None if holdout is None else dict(holdout),
     }
 
 

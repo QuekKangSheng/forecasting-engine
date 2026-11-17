@@ -6,6 +6,12 @@ that page's own rows and the charts are drawn from the same daily returns by the
 functions. HTML because it needs nothing beyond the Python this app already has, opens
 in any browser with no connection, and prints to PDF. The charts are inline SVG for the
 same reason: the page's interactive charts need scripts from the internet.
+
+It opens with a summary in plain language, written from the run's own figures, for a
+reader who never opens the methodology: the risk level and what it aims for, the latest
+weights and what they rest on, how the portfolio did against 50/50, and whether the
+forecasts added value. Each active model is described in a paragraph of its own. The
+charts come last.
 """
 
 from __future__ import annotations
@@ -17,7 +23,9 @@ import numpy as np
 import pandas as pd
 
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.models.sign_ruled import HOLDOUT_BEFORE
 from forecasting_engine.portfolio.backtest import BacktestResult
+from forecasting_engine.reporting.model_descriptions import RESEARCH_CAVEATS, describe
 from forecasting_engine.reporting.portfolio_comparison import (
     NOT_RUN,
     PORTFOLIO_LABELS,
@@ -64,14 +72,15 @@ def report_html(
     results = run.results
     title = f"Run {run.run_number}" + (f": {run.name}" if run.name else "")
     sections = [
+        _summary(results),
         _data_quality(results.get("data_quality")),
         _models(results.get("models")),
         _optimiser(results),
         _backtest(results),
         _significance(results),
-        _charts(results, paths),
         _tail_risk(results, simulation),
         _monte_carlo(simulation),
+        _charts(results, paths),
     ]
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
@@ -111,6 +120,130 @@ def _header(run: SavedRun) -> str:
 
 def _date(iso: str) -> str:
     return f"{pd.Timestamp(iso):%d %b %Y}"
+
+
+def summary_sentences(results: Mapping[str, object]) -> list[str]:
+    """The run in a few plain sentences, every figure its own: what the risk level aims
+    for and why, the latest weights and what they rest on, the result against 50/50
+    after costs, whether the forecasts added value, and what the report is not."""
+    settings, names, latest = results["settings"], results["names"], results["latest"]
+    equity, bond = names[TargetRole.EQUITY.value], names[TargetRole.BOND.value]
+    weights = latest["weights"]
+    conditions = results.get("conditions")
+    return [
+        _risk_level_sentence(settings, equity, conditions),
+        f"The latest weights, which apply from {_date(latest['date'])}, are "
+        f"{weights[TargetRole.EQUITY.value]:.0%} {equity} and "
+        f"{weights[TargetRole.BOND.value]:.0%} {bond}; they are set again every "
+        f"{settings['horizon']} trading days.",
+        *_conditions_sentences(settings, equity, bond, conditions),
+        _performance_sentence(results),
+        _forecast_value_sentence(results),
+        "This report explains how the portfolio was built for the risk level chosen and "
+        "how it did in the past; it is not investment advice.",
+    ]
+
+
+def _risk_level_sentence(
+    settings: Mapping[str, object], equity: str, conditions: Mapping[str, object] | None
+) -> str:
+    level = settings["risk_level"]
+    lower, upper = settings["bounds"]
+    if level == 1:
+        where = "the highest volatility"
+    elif level == 5:
+        where = "the lowest volatility"
+    else:
+        where = (
+            f"a volatility {(5 - level) / 4:.0%} of the way from the lowest-risk to the "
+            "highest-risk mix"
+        )
+    opening = (
+        f"This run uses risk level {level} of 5, where 1 is the most risk-loving and 5 the "
+        f"most risk-averse: it aims for {where} that holding between {lower:.0%} and "
+        f"{upper:.0%} in each index allows, so the portfolio swings about as much as an "
+        "investor at this level is willing to accept"
+    )
+    if conditions is None:
+        return f"{opening}."
+    return (
+        f"{opening}; at the latest rebalance that meant about "
+        f"{conditions['target_volatility']:.1%} a year, or {conditions['level_weight']:.0%} "
+        f"in {equity} before any forecast."
+    )
+
+
+def _conditions_sentences(
+    settings: Mapping[str, object],
+    equity: str,
+    bond: str,
+    conditions: Mapping[str, object] | None,
+) -> list[str]:
+    if conditions is None:
+        return [
+            "Whether the forecasts moved the latest weights, and the volatility they rest "
+            "on, were not saved for this run."
+        ]
+    volatility = conditions["volatility"]
+    market = (
+        f"That mix rests on how the two indices have moved recently: {equity} at about "
+        f"{volatility[TargetRole.EQUITY.value]:.1%} a year volatility and {bond} at about "
+        f"{volatility[TargetRole.BOND.value]:.1%}, over the {settings['train_window']} "
+        "trading days before the rebalance."
+    )
+    tilt = conditions["forecast_tilt"]
+    if settings["risk_level"] == 5:
+        forecasts = (
+            "Level 5 ignores the forecasts, so the weights are the level's long-term mix."
+        )
+    elif conditions["trust"] > 0 and tilt != 0:
+        moved = "towards" if tilt > 0 else "away from"
+        capped = ", capped by the weight limits" if conditions["capped"] else ""
+        forecasts = (
+            "At the latest rebalance the forecasts moved the weights: their past record is "
+            f"statistically reliable, so they shifted {abs(tilt) * 100:.0f} percentage points "
+            f"{moved} {equity}"
+            f"{capped}, to {conditions['equity']:.0%}."
+        )
+    elif conditions["gate_shut"]:
+        forecasts = (
+            "At the latest rebalance the trust gate kept the level's long-term mix: the "
+            "forecasts' past record is not yet statistically reliable, so they moved "
+            "nothing."
+        )
+    else:
+        forecasts = (
+            "At the latest rebalance the forecasts moved nothing: their record was too "
+            "short to test, so the level's long-term mix was held."
+        )
+    return [market, forecasts]
+
+
+def _performance_sentence(results: Mapping[str, object]) -> str:
+    rows = {row["metric"]: row for row in results["bases"]["net"]["comparison"]}
+    backtest = results["backtest"]
+    annual, sharpe, drawdown = rows["Annual return"], rows["Sharpe"], rows["Max drawdown"]
+    return (
+        f"After trading costs, from {_date(backtest['start'])} to {_date(backtest['end'])}, "
+        f"the portfolio returned {annual['optimised']} a year against {annual['baseline']} "
+        f"for 50/50, with a Sharpe ratio of {sharpe['optimised']} against "
+        f"{sharpe['baseline']} and a maximum drawdown of {drawdown['optimised']} against "
+        f"{drawdown['baseline']}."
+    )
+
+
+def _forecast_value_sentence(results: Mapping[str, object]) -> str:
+    level = results["settings"]["risk_level"]
+    value = results["bases"]["net"]["forecast_value"]
+    return (
+        f"Tested against the same risk level {level} with no forecasts, after costs, the "
+        f"verdict on whether the forecasts added value is: {value['label']} "
+        f"(t {value['t']})."
+    )
+
+
+def _summary(results: Mapping[str, object]) -> str:
+    return _section("Summary", f"<p>{_esc(' '.join(summary_sentences(results)))}</p>")
 
 
 def _data_quality(quality: Mapping[str, object] | None) -> str:
@@ -156,7 +289,9 @@ def _models(models: Sequence[Mapping[str, object]] | None) -> str:
 def _model(model: Mapping[str, object]) -> str:
     body = (
         f"<h3>{_esc(model['name'])}: {_esc(model['model'])}</h3>"
-        f'<p class="meta">Set active {pd.Timestamp(model["set_at"]):%d %b %Y %H:%M}.</p>'
+        f"<p>{_esc(describe(model['model']))}</p>"
+        + "".join(f"<p>{_esc(line)}</p>" for line in _research_lines(model))
+        + f'<p class="meta">Set active {pd.Timestamp(model["set_at"]):%d %b %Y %H:%M}.</p>'
         f"<p>{_esc(_gate_text(model))}</p>"
     )
     if model["terms"] is None:
@@ -181,6 +316,24 @@ def _model(model: Mapping[str, object]) -> str:
             {"s": "Signal", "v": "Mean |SHAP value|"},
         )
     return body
+
+
+def _research_lines(model: Mapping[str, object]) -> list[str]:
+    """A research model's caveat and its pre-2016 hold-out score; nothing for any other."""
+    caveat = RESEARCH_CAVEATS.get(model["model"])
+    if caveat is None:
+        return []
+    before = f"{HOLDOUT_BEFORE.day} {HOLDOUT_BEFORE:%b %Y}"
+    holdout = model.get("holdout")
+    if holdout is None:
+        score = f"Pre-2016 hold-out score (test windows ending before {before}): not saved."
+    else:
+        score = (
+            f"Pre-2016 hold-out score, over the {holdout['windows']} test windows ending "
+            f"before {before}, which its inputs' choice never looked at: Signal Rank IC "
+            f"{holdout['signal_rank_ic']:+.3f}, t {holdout['t']:.2f}."
+        )
+    return [caveat, score]
 
 
 def _gate_text(model: Mapping[str, object]) -> str:

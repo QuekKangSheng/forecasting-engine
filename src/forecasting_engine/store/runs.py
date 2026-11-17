@@ -123,6 +123,12 @@ def metrics_of(result: ModelRunResult) -> dict[str, float]:
         "crash_f1": result.crash.f1,
         "crash_tail_days": result.crash.n_true_tail_days,
     }
+    if result.holdout is not None:
+        values |= {
+            "holdout_signal_rank_ic": result.holdout.signal_rank_ic,
+            "holdout_t": result.holdout.t,
+            "holdout_windows": result.holdout.windows,
+        }
     return {name: float(value) for name, value in values.items() if value is not None}
 
 

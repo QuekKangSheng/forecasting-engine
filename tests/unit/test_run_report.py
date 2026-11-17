@@ -1,5 +1,6 @@
 """The downloadable run report: what it says, and how it says what it doesn't have."""
 
+import html
 import re
 from datetime import datetime
 
@@ -309,3 +310,161 @@ def test_a_flat_line_still_draws():
 def test_a_frame_too_short_to_draw_says_so():
     assert "too short" in line_chart_svg(_frame().iloc[:1], percent=True, title="x")
     assert "too short" in line_chart_svg(_frame().iloc[:0], percent=True, title="x")
+
+
+# --- the summary and the models in words ----------------------------------------------
+
+CONDITIONS = {
+    "level_weight": 0.62,
+    "forecast_tilt": 0.08,
+    "equity": 0.7,
+    "capped": False,
+    "trust": 0.4,
+    "gate_shut": False,
+    "target_volatility": 0.1123,
+    "volatility": {"equity": 0.1654, "bond": 0.0521},
+}
+
+
+def _summary(text: str) -> str:
+    """The summary's text, unescaped."""
+    return html_unescape(text.split("<h2>Summary</h2>")[1].split("</section>")[0])
+
+
+def test_the_summary_comes_first_and_quotes_the_runs_own_figures():
+    results = _results(conditions=CONDITIONS)
+    text = report_html(_run(results=results), BACKTEST)
+
+    assert text.index("<h2>Summary</h2>") < text.index("<h2>Data quality</h2>")
+    summary = _summary(text)
+    rows = {row["metric"]: row for row in results["bases"]["net"]["comparison"]}
+    value = results["bases"]["net"]["forecast_value"]
+    for figure in (
+        "risk level 3 of 5",
+        "11.2% a year",
+        "62% in S&P 500 before any forecast",
+        f"apply from {INDEX[-1]:%d %b %Y}",
+        "70% S&P 500 and 30% US Aggregate",
+        "every 20 trading days",
+        "S&P 500 at about 16.5% a year volatility and US Aggregate at about 5.2%",
+        "over the 504 trading days",
+        "shifted 8 percentage points towards S&P 500, to 70%",
+        f"returned {rows['Annual return']['optimised']} a year against "
+        f"{rows['Annual return']['baseline']} for 50/50",
+        f"Sharpe ratio of {rows['Sharpe']['optimised']} against {rows['Sharpe']['baseline']}",
+        f"maximum drawdown of {rows['Max drawdown']['optimised']}",
+        f"{value['label']} (t {value['t']})",
+        "it is not investment advice",
+    ):
+        assert figure in summary
+
+
+def test_the_summary_is_five_to_seven_sentences():
+    summary = _summary(report_html(_run(results=_results(conditions=CONDITIONS)), BACKTEST))
+
+    sentences = re.findall(r"[.?](?:\s|</p>)", summary)
+    assert 5 <= len(sentences) <= 7
+
+
+def test_the_summary_changes_with_the_risk_level():
+    def summary_at(level):
+        results = _results(conditions=CONDITIONS)
+        results["settings"]["risk_level"] = level
+        return _summary(report_html(_run(results=results), BACKTEST))
+
+    one, three, five = summary_at(1), summary_at(3), summary_at(5)
+
+    assert "risk level 1 of 5" in one and "the highest volatility" in one
+    assert "50% of the way from the lowest-risk to the highest-risk mix" in three
+    assert "the lowest volatility" in five
+    assert "Level 5 ignores the forecasts" in five
+    assert len({one, three, five}) == 3
+
+
+def test_the_summary_says_when_the_trust_gate_kept_the_long_term_mix():
+    gated = {**CONDITIONS, "trust": 0.0, "forecast_tilt": 0.0, "equity": 0.62, "gate_shut": True}
+    summary = _summary(report_html(_run(results=_results(conditions=gated)), BACKTEST))
+
+    assert "the trust gate kept the level's long-term mix" in summary
+    assert "not yet statistically reliable" in summary
+
+
+def test_a_run_saved_without_its_market_conditions_says_so():
+    summary = _summary(report_html(_run(), BACKTEST))
+
+    assert "were not saved for this run" in summary
+    assert "it is not investment advice" in summary
+
+
+ACTIVE_CANDIDATES = (
+    "Polynomial (derived)",
+    "Polynomial – fixed economic inputs",
+    "Polynomial – fixed carry inputs (research)",
+    "Polynomial (user-supplied)",
+    "Machine Learning",
+)
+
+
+@pytest.mark.parametrize("model", ACTIVE_CANDIDATES)
+def test_every_model_that_can_be_active_is_described(model):
+    from forecasting_engine.reporting.model_descriptions import DESCRIPTIONS
+
+    results = _results(models=[{**MODEL, "model": model}])
+    text = report_html(_run(results=results), BACKTEST)
+
+    description = DESCRIPTIONS[model]
+    assert html_escape(description) in text
+
+
+def test_every_model_on_the_models_page_has_a_description():
+    from forecasting_engine.reporting.model_descriptions import DESCRIPTIONS
+    from forecasting_engine.reporting.model_metrics import MODEL_ORDER
+
+    assert set(DESCRIPTIONS) == set(MODEL_ORDER)
+
+
+def test_the_carry_model_is_described_as_the_yield_the_bond_earns():
+    model = {**MODEL, "model": "Polynomial – fixed carry inputs (research)"}
+    text = report_html(_run(results=_results(models=[model])), BACKTEST)
+
+    assert "levels of rates, spreads and volatility" in text
+    assert "read as the yield the bond earns" in text
+
+
+def test_a_research_model_carries_its_caveat_and_its_pre_2016_hold_out():
+    holdout = {"signal_rank_ic": 0.041, "t": 1.37, "windows": 12}
+    model = {**MODEL, "model": "Polynomial – fixed economic inputs", "holdout": holdout}
+    text = report_html(_run(results=_results(models=[model])), BACKTEST)
+
+    assert "Its scores are optimistic" in text
+    assert "over the 12 test windows ending before 1 Aug 2016" in text
+    assert "Signal Rank IC +0.041, t 1.37" in text
+
+
+def test_a_research_model_saved_without_its_hold_out_says_not_saved():
+    model = {**MODEL, "model": "Polynomial – fixed carry inputs (research)"}
+    text = report_html(_run(results=_results(models=[model])), BACKTEST)
+
+    assert "Pre-2016 hold-out score (test windows ending before 1 Aug 2016): not saved." in text
+
+
+def test_a_model_that_is_not_research_has_no_hold_out_line():
+    text = report_html(_run(), BACKTEST)
+
+    assert "hold-out" not in text
+
+
+def test_the_charts_come_last():
+    text = report_html(_run(), BACKTEST)
+
+    charts = text.index("<h2>Risk over the backtest</h2>")
+    for heading in ("Backtest", "Spread t-statistics", "VaR and CVaR", "Monte Carlo"):
+        assert text.index(f"<h2>{heading}</h2>") < charts
+
+
+def html_escape(value: str) -> str:
+    return html.escape(value, quote=True)
+
+
+def html_unescape(value: str) -> str:
+    return html.unescape(value)
