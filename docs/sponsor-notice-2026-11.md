@@ -64,8 +64,10 @@ explode. The premium now blends the data's own average with a published estimate
 the weight at which it is uncertain by about ±3 points a year. Over the backtest
 the premium now stays between 4.2% and 7.9% a year and is never zero or below.
 The limitations:
-- the published estimate's bond index is long-term government bonds, so it
-  probably understates our premium by about 0.4 points a year;
+- the source's bond leg is long-term government bonds; ours is the US Aggregate,
+  which is shorter in duration and includes mortgage and corporate bonds. The two
+  premiums differ for both reasons, in opposite directions; we state the mismatch
+  and don't adjust for it;
 - by 2026 the published estimate still carries about 60% of the weight.
 
 *Question for you:* would Alpha Norm prefer its own long-run premium assumption

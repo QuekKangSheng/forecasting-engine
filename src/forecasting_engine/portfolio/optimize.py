@@ -90,8 +90,10 @@ PREMIUM_PRIOR_ANNUAL: float = 0.066
 stocks over long-term government bonds, arithmetic mean, 1926–2004 (Goetzmann &
 Ibbotson, "History and the Equity Risk Premium", Yale ICF working paper, April 2005).
 
-Its bond leg is long-term government bonds, not our bond index, so it probably
-understates our premium by about 0.4 points a year. That is stated, not adjusted."""
+The source's bond leg is long-term government bonds; ours is the US Aggregate
+(LBUSTRUU), which is shorter in duration and includes mortgage and corporate bonds. The
+two premiums differ for both reasons, in opposite directions; we state the mismatch and
+don't adjust for it."""
 
 PREMIUM_PRIOR_YEARS: int = 30
 """How many years of daily data the prior counts as. A premium's mean is known to
