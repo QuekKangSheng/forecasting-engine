@@ -837,8 +837,6 @@ def _render_report(
     merged: pd.DataFrame,
     dropped: list[str],
     targets: Mapping[TargetRole, str],
-    *,
-    gaps: pd.DataFrame | None = None,
 ) -> None:
     """The verdict and coverage figures in view, the detail in tabs under them: the
     detail is for checking, and stacked one part after another it used to fill most
@@ -855,7 +853,7 @@ def _render_report(
         if not _render_breakdown(report, label):
             st.caption("Nothing flagged.")
     with gaps_tab:
-        if not _render_gap_review(merged if gaps is None else gaps, label):
+        if not _render_gap_review(merged, label):
             st.caption("No row is missing a value.")
 
 

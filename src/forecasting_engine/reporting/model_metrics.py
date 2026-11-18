@@ -38,20 +38,6 @@ def display_model_name(model_name: str) -> str:
     return _LEGACY_MODEL_NAMES.get(model_name, model_name)
 
 
-_COLUMNS: tuple[str, ...] = (
-    "IC",
-    "Signal Rank IC",
-    "t",
-    "OOS Rank IC",
-    "RMSE",
-    "Crash Recall",
-    "Crash Precision",
-    "Crash F1",
-    "Rows scored",
-    "Constant folds",
-)
-
-
 @dataclass(frozen=True)
 class Cell:
     """One table cell. ``tone`` is "success"/"danger" only on a gated
