@@ -92,6 +92,19 @@ is reported — that is the row holding the odd value. Consecutive moves in the
 and each is a genuine observation. On the real data this collapsed 44 flags to
 41: three spike-and-revert pairs, no crash days lost.
 
+A day counts as a rebound only of the last day that was **reported**, not of the
+day before it. Until 18 Nov 2026 it was compared with the day before, flagged or
+not, so a dropped rebound could drop the day after it too. In March 2020 VIX
+rose 21.6 on the 12th, fell 17.6 on the 13th and rose 24.9 on the 16th to a new
+high. The 13th was rightly dropped as the 12th's rebound, but then the 16th,
+VIX's largest move in twenty years, was dropped as the 13th's. On the data from
+31 Aug 2006 the fix restores 8 flags at threshold 8 (272 to 280), all in crisis
+weeks: Lehman in Sep–Oct 2008, Aug 2011, and 11–18 Mar 2020, including the 16th
+for both VIX and the S&P 500. The original version, of 2 Sep 2026, meant to skip
+a pair whose first day had already been dropped, but its check looked at the
+second day instead, so it never skipped anything; the consolidation of 7 Sep
+removed that no-op line, and no test had three alternating moves in a row.
+
 ## Per-signal thresholds
 
 The live implementation applies one threshold to every column, with no

@@ -267,11 +267,19 @@ def _robust_z(values: pd.Series) -> pd.Series:
 
 
 def _drop_rebounds(flagged: pd.Series, changes: pd.Series) -> pd.Series:
-    """Collapse an anomalous value's opposite-direction rebound into its first flag."""
-    positions = list(flagged.index)
-    rebounds = set()
-    for earlier, later in zip(positions, positions[1:], strict=False):
-        adjacent = changes.index.get_loc(later) - changes.index.get_loc(earlier) == 1
-        if adjacent and changes.loc[earlier] * changes.loc[later] < 0:
-            rebounds.add(later)
-    return flagged.drop(index=list(rebounds))
+    """Collapse an anomalous value's opposite-direction rebound into its first flag.
+
+    A day is a rebound only of the last day that was reported. Compared with the
+    day before it instead, a dropped rebound passed its own status on: in March
+    2020 VIX rose 21.6, fell 17.6, then rose 24.9 to a new high, and the last
+    move, the largest in twenty years, was dropped as the rebound of a rebound."""
+    rebounds = []
+    reported = None
+    for position in flagged.index:
+        if reported is not None:
+            adjacent = changes.index.get_loc(position) - changes.index.get_loc(reported) == 1
+            if adjacent and changes.loc[reported] * changes.loc[position] < 0:
+                rebounds.append(position)
+                continue
+        reported = position
+    return flagged.drop(index=rebounds)
