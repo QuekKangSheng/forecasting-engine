@@ -80,9 +80,8 @@ Home opens on **Next step**, the first thing left to do, with a button to the pa
 it's done. The line under it gives the days of data, the signals and how many of the 2
 models are active, and ends "up to date" once every step has run; the heading then becomes
 the latest weights, with the Sharpe ratio after costs against 50/50. Beside it is the
-S&P 500 (live where the feed answers, else from the committed data), and under both every
-committed series with its change over 20 days. **Pipeline detail** has a card per step and
-opens by itself while one is left. Home only reads; it never fits or solves anything.
+S&P 500 (live where the feed answers, else from the committed data). **Pipeline detail**
+has a card per step and opens by itself while one is left. Home only reads; it never fits or solves anything.
 
 ### 1. Data: commit the exports
 

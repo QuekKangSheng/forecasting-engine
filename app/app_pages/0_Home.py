@@ -18,14 +18,13 @@ import bloomberg_extraction_panel
 import hero
 import market_chart
 import model_runs
-import model_settings
 import portfolio_summary
 import tokens
 import ui
 from forecasting_engine.extraction.bloomberg_csv import DATE_COLUMN
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest import index_feed
-from forecasting_engine.ingest.align import Transform, select_signals, transform_for
+from forecasting_engine.ingest.align import select_signals
 from forecasting_engine.reporting.factor_labels import labeller
 from forecasting_engine.reporting.model_metrics import (
     MODEL_ORDER,
@@ -211,23 +210,6 @@ def _market() -> None:
     components.html(market_chart.chart_html(bundles, name), height=market_chart.HEIGHT)
 
 
-def _tape() -> str:
-    """Both targets, then every signal, each with its change over one horizon."""
-    if merged is None:
-        return ""
-    columns = [targets[role] for role in ROLES if targets.get(role) in merged.columns]
-    columns += [c for c in _signals() if c not in columns]
-    span = model_settings.DEFAULT_HORIZON
-    items = hero.ticks(
-        merged.set_index(DATE_COLUMN),
-        columns,
-        [label(c) for c in columns],
-        [transform_for(sources.get(c)) is Transform.LOG_RETURN for c in columns],
-        span,
-    )
-    return hero.tape(items, span)
-
-
 def _plain(step_text: str) -> str:
     """A next step as a sentence of plain text: no bold, a capital first letter."""
     text = step_text.replace("**", "")
@@ -261,7 +243,7 @@ def _lead(step: tuple[str, str] | None) -> str:
 
 def _opening(step: tuple[str, str] | None) -> None:
     """The first screen: what the app is for and what it is working from, beside the
-    equity index as the committed data has it, then every committed series."""
+    equity index as the committed data has it."""
     where = None if step is None else step[1]
     words, picture = st.columns([5, 7], gap="medium", vertical_alignment="bottom")
     with words:
@@ -274,11 +256,7 @@ def _opening(step: tuple[str, str] | None) -> None:
             ui.page_link(*ALSO[where])
     with picture:
         _market()
-    strip = _tape()
-    if strip:
-        st.markdown(strip, unsafe_allow_html=True)
-    else:
-        ui.rule()
+    ui.rule()
 
 
 def _tick(ok: bool) -> str:
