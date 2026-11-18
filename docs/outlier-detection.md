@@ -25,6 +25,32 @@ alike. There is no per-signal override; *Per-signal thresholds* below explains
 why one hasn't been added. The threshold itself is on hold pending the sponsor
 (see the 17 Sep sprint plan, Section 0).
 
+## Prices in percent, everything else in points
+
+"Change" means two things, by what kind of series the column is:
+
+- a rate, a spread or a volatility gauge is scored on its change in **points**
+  (a yield going from 4.20 to 4.35 moved 0.15);
+- a price or a total-return index is scored on its **percentage** change (its log
+  change), because its move in points grows with its level.
+
+Which is which comes from the same table the models use
+(`ingest.align.TICKER_TRANSFORMS`, through `price_columns`): whatever a model reads
+as a log return is a price here. A column whose security isn't known is a price
+only when its field is a total return; otherwise it stays in points.
+
+Until 19 Nov 2026 every column was scored in points. On the ten-year file that
+hid nothing much, but on the data from 31 Aug 2006 the S&P 500 is about five
+times its 2008 level, so an ordinary day of 2025 moves it further in points than
+its worst days of 2008. At threshold 8 the total-return index had 54 flags, every
+one of them from 2020 on, and none in 2008: 13 Oct 2008, up 11.6% and its largest
+rise in the file, scored 5.2. Scored on percentage moves it has 24 flags, 15 of
+them in 2008–09 and 9 from 2020 on, and that day scores 14.7. Across the 13
+columns the count at threshold 8 goes from 280 to 245
+([evidence](evidence/2026-11-19-percent-moves.md)). The page words a flagged
+price move as a percentage ("-9.03% day-over-day change") and any other column's
+in its own units.
+
 ## Why the change, not the level
 
 A trending price series has a level distribution wide enough to swallow almost

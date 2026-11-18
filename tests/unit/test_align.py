@@ -10,6 +10,7 @@ from forecasting_engine.ingest.align import (
     Transform,
     align_and_lag,
     is_classified,
+    price_columns,
     select_signals,
     transform_for,
 )
@@ -284,6 +285,31 @@ def test_any_total_return_field_is_a_log_return():
 def test_an_unknown_ticker_is_differenced_and_reported_unclassified(source):
     assert not is_classified(source)
     assert transform_for(source) is Transform.DIFFERENCE
+
+
+def test_prices_and_total_return_indices_are_the_price_columns():
+    # What a model reads as a log return is what the extreme-move check scores on
+    # percentage moves: a rate, a gauge or an unknown series stays in its own units.
+    sources = {
+        "SPX_Index_PX_LAST": ColumnSource("SPX Index", "PX_LAST"),
+        "SPX_Index_TOT_RETURN_INDEX_GROSS_DVDS": ColumnSource(
+            "SPX Index", "TOT_RETURN_INDEX_GROSS_DVDS"
+        ),
+        "DXY_Curncy_PX_LAST": ColumnSource("DXY Curncy", "PX_LAST"),
+        "ABC_Index_TOT_RETURN_INDEX_NET_DVDS": ColumnSource(
+            "ABC Index", "TOT_RETURN_INDEX_NET_DVDS"
+        ),
+        "VIX_Index_PX_LAST": ColumnSource("VIX Index", "PX_LAST"),
+        "USGG10YR_Index_PX_LAST": ColumnSource("USGG10YR Index", "PX_LAST"),
+        "ABC_Index_PX_LAST": ColumnSource("ABC Index", "PX_LAST"),
+    }
+
+    assert price_columns(sources) == {
+        "SPX_Index_PX_LAST",
+        "SPX_Index_TOT_RETURN_INDEX_GROSS_DVDS",
+        "DXY_Curncy_PX_LAST",
+        "ABC_Index_TOT_RETURN_INDEX_NET_DVDS",
+    }
 
 
 def test_a_level_signal_is_used_as_it_is():

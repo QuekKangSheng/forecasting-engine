@@ -32,7 +32,7 @@ from forecasting_engine.extraction import bloomberg_csv, bloomberg_xlsx, validat
 from forecasting_engine.extraction.bloomberg_csv import BloombergCsvExport
 from forecasting_engine.extraction.targets import PREFERRED_FIELD, TARGET_TICKERS, TargetRole
 from forecasting_engine.extraction.validation import ValidationReport
-from forecasting_engine.ingest.align import MAX_STALENESS
+from forecasting_engine.ingest.align import MAX_STALENESS, price_columns
 from forecasting_engine.ingest.upload import (
     MAX_UPLOAD_BYTES,
     AcceptedUpload,
@@ -199,7 +199,9 @@ def _parse_and_merge(files) -> _UploadResult:
         merged, dropped = bloomberg_csv.drop_empty_columns(merged)
         result.merged = merged
         result.dropped = dropped
-        result.report = validation.validate(merged)
+        result.report = _quality_report(
+            merged, bloomberg_csv.column_sources(result.exports, merged.columns)
+        )
     return result
 
 
@@ -391,7 +393,8 @@ def render() -> None:
         if committed is not None:
             st.success(restored_notice(), icon=":material/history:")
             _render_report(
-                st.session_state.get(COMMITTED_REPORT_KEY) or validation.validate(committed),
+                st.session_state.get(COMMITTED_REPORT_KEY)
+                or _quality_report(committed, st.session_state.get(COMMITTED_SOURCES_KEY, {})),
                 committed,
                 st.session_state.get(COMMITTED_DROPPED_KEY, []),
                 st.session_state.get(COMMITTED_TARGETS_KEY, {}),
@@ -439,16 +442,11 @@ def render() -> None:
         )
     elif clicked:
         with st.spinner("Validating the cleaned dataset…"):
+            sources = _upload_sources(combined)
             st.session_state[COMMITTED_KEY] = combined
-            st.session_state[COMMITTED_REPORT_KEY] = validation.validate(combined)
+            st.session_state[COMMITTED_REPORT_KEY] = _quality_report(combined, sources)
             st.session_state[COMMITTED_TARGETS_KEY] = target_columns
-            st.session_state[COMMITTED_SOURCES_KEY] = bloomberg_csv.column_sources(
-                [
-                    *st.session_state.get(_TARGET_EXPORTS_KEY, []),
-                    *st.session_state.get(_SIGNAL_EXPORTS_KEY, []),
-                ],
-                combined.columns,
-            )
+            st.session_state[COMMITTED_SOURCES_KEY] = sources
             st.session_state[COMMITTED_DROPPED_KEY] = _dropped()
             st.session_state.pop(RESTORED_AT_KEY, None)
             _save_last_commit()
@@ -473,7 +471,7 @@ def render() -> None:
     report = (
         st.session_state[COMMITTED_REPORT_KEY]
         if just_committed and COMMITTED_REPORT_KEY in st.session_state
-        else validation.validate(combined)
+        else _quality_report(combined, _upload_sources(combined))
     )
     _render_report(report, combined, _dropped(), target_columns)
 
@@ -994,8 +992,7 @@ def _render_breakdown(report: ValidationReport, label) -> bool:
                 ui.finding_row(
                     ui.lozenge("Info", "info"),
                     _fmt(move["date"]),
-                    f"{move['change']:+,.4g} day-over-day change, "
-                    f"{move['robust_score']:.0f}x the typical move",
+                    _move_text(move),
                 )
                 for move in moves
             )
@@ -1011,6 +1008,38 @@ def _dates_row(count: int, values: tuple[str, ...]) -> str:
     if remaining > 0:
         shown += f" and {remaining} more"
     return ui.finding_row(ui.lozenge("Info", "info"), "", shown)
+
+
+def _upload_sources(combined: pd.DataFrame) -> dict[str, bloomberg_csv.ColumnSource]:
+    """The security and field behind each column of the uploads on screen."""
+    return bloomberg_csv.column_sources(
+        [
+            *st.session_state.get(_TARGET_EXPORTS_KEY, []),
+            *st.session_state.get(_SIGNAL_EXPORTS_KEY, []),
+        ],
+        combined.columns,
+    )
+
+
+def _quality_report(
+    frame: pd.DataFrame, sources: Mapping[str, bloomberg_csv.ColumnSource]
+) -> ValidationReport:
+    """The data quality report, with every price and total-return index scored on its
+    percentage move. A column whose security isn't known is taken for a price only
+    when its field says total return."""
+    total_return = {col for col in frame.columns if validation.is_positive_column(col)}
+    return validation.validate(frame, ratio_columns=price_columns(sources) | total_return)
+
+
+def _move_text(move: pd.Series) -> str:
+    """A flagged move as the page words it: a price's as a percentage, any other
+    column's in its own units."""
+    size = (
+        f"{move['change']:+,.4g}"
+        if pd.isna(move["percent_change"])
+        else f"{move['percent_change']:+.2%}"
+    )
+    return f"{size} day-over-day change, {move['robust_score']:.0f}x the typical move"
 
 
 def _by_column(big_moves: pd.DataFrame) -> list[tuple[str, list]]:

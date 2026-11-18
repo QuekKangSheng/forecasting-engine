@@ -90,8 +90,11 @@ a target is decided at ingestion, never inferred later.
   The person uploading confirms or changes both.
 - **Report, not correction.** The data quality report counts duplicate and
   weekend dates, missing values per column, and day-over-day changes whose robust
-  (median-absolute-deviation) z-score exceeds `MAD_THRESHOLD`. Nothing in it is
-  auto-corrected.
+  (median-absolute-deviation) z-score exceeds `MAD_THRESHOLD`. A price or a
+  total-return index is scored on its percentage change, since its move in points
+  grows with its level; a rate, a spread or a gauge on its change in points
+  (`ingest.align.price_columns`, [outlier detection](outlier-detection.md)).
+  Nothing in it is auto-corrected.
 - **Commit.** "Use Updated Data" commits the merged frame, the target columns and
   each column's security and field (`bloomberg_csv.column_sources`). Nothing is
   forward-filled. The button is disabled while a blocking problem above stands:

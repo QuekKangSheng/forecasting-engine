@@ -1,5 +1,6 @@
 """The extraction package's pandera schema and plain-pandas report."""
 
+import numpy as np
 import pandas as pd
 
 from forecasting_engine.extraction.bloomberg_csv import BloombergCsvExport
@@ -276,6 +277,73 @@ def test_two_bad_values_a_day_apart_are_each_reported_once():
     report = validate(data)
 
     assert list(report.big_moves["date"]) == [dates[30], dates[32]]
+
+
+# --- a price is scored on its percentage move, a rate on its move in points -----
+
+
+def _grown_index() -> np.ndarray:
+    """A price index that rises about fourfold on the same percentage wobble
+    throughout and falls 5% on its eleventh day: the S&P 500 from 2008 to 2026 in
+    miniature. In points that fall is smaller than an ordinary day at the end."""
+    returns = np.random.default_rng(0).normal(0.004, 0.005, 400)
+    returns[10] = -0.05
+    return 1000.0 * np.cumprod(1 + returns)
+
+
+def test_an_early_crash_in_a_total_return_index_is_flagged_after_the_index_has_grown():
+    dates = pd.date_range("2024-01-01", periods=400)
+    data = frame(dates, A_Index_TOT_RETURN_INDEX_GROSS_DVDS=_grown_index())
+
+    report = validate(data)
+
+    assert list(report.big_moves["date"]) == [dates[10]]
+
+
+def test_a_flagged_price_move_carries_its_percentage_change():
+    dates = pd.date_range("2024-01-01", periods=400)
+    values = _grown_index()
+    data = frame(dates, A_Index_TOT_RETURN_INDEX_GROSS_DVDS=values)
+
+    move = validate(data).big_moves.iloc[0]
+
+    assert np.isclose(move["percent_change"], -0.05)
+    assert np.isclose(move["change"], values[10] - values[9])
+
+
+def test_a_price_field_is_scored_on_percentage_moves_when_the_caller_names_it():
+    # SPX's last price carries the field every rate and gauge carries too, so only
+    # the caller, who knows the security, can say it is a price.
+    dates = pd.date_range("2024-01-01", periods=400)
+    data = frame(dates, SPX_Index_PX_LAST=_grown_index())
+
+    named = validate(data, ratio_columns={"SPX_Index_PX_LAST"})
+    unnamed = validate(data)
+
+    assert list(named.big_moves["date"]) == [dates[10]]
+    assert unnamed.big_moves.empty
+
+
+def test_a_rate_is_scored_in_points_however_low_it_falls():
+    # A yield falling from 5 to 0.3 on the same wobble in points: late on, an
+    # ordinary day is a large percentage of the yield, and none of them is news.
+    points = np.random.default_rng(0).normal(-0.015, 0.02, 300)
+    data = frame(
+        pd.date_range("2024-01-01", periods=300), USGG10YR_Index_PX_LAST=5.0 + np.cumsum(points)
+    )
+
+    in_points = validate(data)
+    in_percent = validate(data, ratio_columns={"USGG10YR_Index_PX_LAST"})
+
+    assert in_points.big_moves.empty
+    assert in_points.big_moves.columns.tolist() == [
+        "column",
+        "date",
+        "change",
+        "percent_change",
+        "robust_score",
+    ]
+    assert not in_percent.big_moves.empty
 
 
 # --- bounded messages and the PX_ field check ----------------------------------

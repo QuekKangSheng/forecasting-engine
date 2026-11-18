@@ -7,6 +7,7 @@ from datetime import date
 from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import openpyxl
 import pandas as pd
 import pytest
@@ -364,6 +365,22 @@ def test_a_statistically_unusual_move_is_flagged_as_info_and_never_blocks_the_co
     result = commit_button.click().run()
     assert not result.exception
     assert "now committed and available" in texts(result.success)
+
+
+def test_a_price_is_flagged_on_its_percentage_move_and_the_page_words_it_so(page):
+    # The S&P 500 in miniature: it rises fourfold on the same percentage wobble and
+    # falls 5% early on, which in points is less than an ordinary day at the end.
+    returns = np.random.default_rng(0).normal(0.004, 0.005, 400)
+    returns[10] = -0.05
+    values = 1000.0 * np.cumprod(1 + returns)
+    dates = pd.bdate_range("2020-01-01", periods=400)
+    rows = [f"{d.month}/{d.day}/{d.year},{v:.6f}" for d, v in zip(dates, values, strict=True)]
+
+    result = upload(page, [("spx.csv", export("SPX Index", rows), "text/csv")])
+
+    assert {m.label: m.value for m in result.metric}["Flagged"] == "1"
+    assert dates[10].strftime("%d/%m/%Y") in texts(result.markdown)
+    assert "-5.00% day-over-day change" in texts(result.markdown)
 
 
 def test_the_data_page_has_no_fama_french_section_and_only_the_merged_download(page):

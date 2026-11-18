@@ -12,6 +12,7 @@ so a human sees it before the file is used instead of it being silently dropped.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -69,7 +70,9 @@ class ValidationReport:
     """The weekend dates themselves, capped at ``MAX_NAMED_DATES``."""
     missing_pct: dict[str, float]
     big_moves: pd.DataFrame
-    """One row per (column, date) whose day-over-day change exceeded the threshold."""
+    """One row per (column, date) whose day-over-day change exceeded the threshold.
+    ``change`` is in the column's own units; ``percent_change`` is the same move as
+    a fraction of the day before, for a column scored that way, and NaN otherwise."""
     schema_errors: list[str] = field(default_factory=list)
 
     @property
@@ -189,8 +192,18 @@ def repeated_date_error(export: BloombergCsvExport) -> str | None:
     )
 
 
-def validate(frame: pd.DataFrame) -> ValidationReport:
-    """Run the schema and the plain-pandas report against ``frame``."""
+def validate(
+    frame: pd.DataFrame, *, ratio_columns: Collection[str] | None = None
+) -> ValidationReport:
+    """Run the schema and the plain-pandas report against ``frame``.
+
+    ``ratio_columns`` are the prices and total-return indices, whose day-over-day
+    move is scored as a percentage and not in points (``_big_moves``). ``None``
+    takes every total-return field, which is all the column names alone can say:
+    a caller that knows each column's security names the price fields too
+    (``ingest.align.price_columns``)."""
+    if ratio_columns is None:
+        ratio_columns = [col for col in frame.columns if is_positive_column(col)]
     dates = frame[DATE_COLUMN]
     dup_mask = dates.duplicated()
     weekend_mask = dates.dt.dayofweek.isin([5, 6])
@@ -204,7 +217,7 @@ def validate(frame: pd.DataFrame) -> ValidationReport:
             for col in frame.columns
             if col != DATE_COLUMN
         },
-        big_moves=_big_moves(frame),
+        big_moves=_big_moves(frame, frozenset(ratio_columns)),
         schema_errors=schema_errors(frame),
     )
 
@@ -233,24 +246,43 @@ def _named_dates(dates: pd.Series) -> tuple[str, ...]:
     return tuple(d.date().isoformat() for d in dates.head(MAX_NAMED_DATES))
 
 
-def _big_moves(frame: pd.DataFrame) -> pd.DataFrame:
+def _big_moves(frame: pd.DataFrame, ratio_columns: frozenset[str]) -> pd.DataFrame:
+    """Each column's day-over-day changes that stand far outside its typical one.
+
+    A rate, a spread or a volatility gauge is scored on its change in points. A
+    price or a total-return index is scored on its percentage (log) change: in
+    points, an index five times higher moves five times as far on an ordinary day,
+    so the same threshold flagged the S&P 500's ordinary days of 2025 and none of
+    its falls of 2008."""
     rows = []
     for col in frame.columns:
         if col == DATE_COLUMN:
             continue
-        changes = pd.to_numeric(frame[col], errors="coerce").diff()
-        scores = _robust_z(changes.dropna()).abs()
-        flagged = _drop_rebounds(scores[scores > MAD_THRESHOLD], changes)
+        values = pd.to_numeric(frame[col], errors="coerce")
+        changes = values.diff()
+        as_ratio = col in ratio_columns
+        scored = _log_changes(values) if as_ratio else changes
+        scores = _robust_z(scored.dropna()).abs()
+        flagged = _drop_rebounds(scores[scores > MAD_THRESHOLD], scored)
         for idx, score in flagged.items():
             rows.append(
                 {
                     "column": col,
                     "date": frame.loc[idx, DATE_COLUMN],
                     "change": changes.loc[idx],
+                    "percent_change": np.expm1(scored.loc[idx]) if as_ratio else np.nan,
                     "robust_score": score,
                 }
             )
-    return pd.DataFrame(rows, columns=["column", "date", "change", "robust_score"])
+    return pd.DataFrame(
+        rows, columns=["column", "date", "change", "percent_change", "robust_score"]
+    )
+
+
+def _log_changes(values: pd.Series) -> pd.Series:
+    """Day-over-day log changes. A value at or below zero has no log, so a move
+    onto or off one is left unscored here; the schema reports the value itself."""
+    return np.log(values.where(values > 0)).diff()
 
 
 def _robust_z(values: pd.Series) -> pd.Series:

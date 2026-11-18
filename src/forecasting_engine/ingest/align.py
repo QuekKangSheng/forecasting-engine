@@ -78,6 +78,17 @@ def transform_for(source: ColumnSource | None) -> Transform:
     return TICKER_TRANSFORMS[source.ticker]
 
 
+def price_columns(sources: Mapping[str, ColumnSource]) -> frozenset[str]:
+    """The columns that are prices or total-return indices: the ones a model reads
+    as log returns. The extreme-move check scores these on percentage moves, since
+    a price's move in points grows with its level."""
+    return frozenset(
+        column
+        for column, source in sources.items()
+        if transform_for(source) is Transform.LOG_RETURN
+    )
+
+
 def select_signals(
     columns: Sequence[str],
     target_columns: Collection[str],
