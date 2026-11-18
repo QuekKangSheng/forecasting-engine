@@ -181,6 +181,18 @@ def test_boosted_forecaster_predict_masks_rows_with_a_missing_signal():
     assert not pd.isna(predicted.iloc[1])
 
 
+def test_boosted_forecaster_predict_inputs_forecasts_from_only_the_fitted_signals():
+    panel = _panel()
+    model = BoostedForecaster("xgboost", _params("xgboost"))
+    model.fit(panel, panel.frame.index)
+    rows = panel.frame[["sig_a", "sig_b"]].copy()
+    rows["sig_c"] = 999.0  # a column the model was never fitted on
+
+    predicted = model.predict_inputs(rows)
+
+    assert np.array_equal(predicted, model._model.predict(rows[["sig_a", "sig_b"]]))
+
+
 def test_boosted_forecaster_rejects_too_few_training_rows():
     idx = pd.date_range("2024-01-01", periods=5, freq="D")
     frame = pd.DataFrame({"sig_a": range(5), "sig_b": range(5), "target": range(5)}, index=idx)

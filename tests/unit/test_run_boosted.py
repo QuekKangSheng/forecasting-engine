@@ -61,6 +61,23 @@ def test_run_boosted_result_matches_the_shared_comparison_contract():
     assert rows[0]["Model"].text == "Machine Learning"
 
 
+def test_run_boosted_reports_the_latest_folds_training_window_and_screened_signals():
+    """``TuningLog.latest`` is what a scenario refits: it must name the real last
+    fold, not some other fold or the whole panel."""
+    panel = _panel()
+    splitter = _splitter()
+    last_train, _last_test = list(splitter.split(panel))[-1]
+
+    _result, description, tuning = _run(panel, splitter)
+
+    assert tuning.latest is not None
+    assert tuning.latest.library == tuning.library
+    assert tuning.latest.signals == description.terms == ("sig_a", "sig_b")
+    assert tuning.latest.train_first == last_train[0]
+    assert tuning.latest.train_last == last_train[-1]
+    assert tuning.latest.train_rows == len(last_train)
+
+
 def test_run_boosted_runs_shap_once_not_once_per_fold(monkeypatch):
     calls = []
     real = shap.TreeExplainer
