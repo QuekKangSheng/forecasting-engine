@@ -28,7 +28,8 @@ TERMS: Mapping[str, str] = {
     "Function source": (
         "Choose one. **Derive automatically** searches a small grid of polynomial "
         "degrees and regularizers and reports the best one. Regularization pushes "
-        "weak terms to exactly zero, so the result stays short enough to read.\n\n"
+        "weak terms to exactly zero, so the result stays short enough to read. On the "
+        "Bond tab it averages 14 fits instead of picking one.\n\n"
         "**Use your own function** takes the shape you write, using placeholders "
         "such as x and y that you then point at signals, and fits only a scale "
         "and an intercept to it on each training window, so the forecast is a "
@@ -63,7 +64,8 @@ TERMS: Mapping[str, str] = {
         "The most terms the derived equation may keep. The cap works through the "
         "regularization itself: only penalty strengths whose fit keeps this many "
         "terms or fewer are considered, and the best of those by time-ordered "
-        "validation is used. No term is picked out in advance."
+        "validation is used. No term is picked out in advance. On the Bond tab it caps "
+        "each Lasso fit of the 14 that are averaged, so their average can hold more."
     ),
     "Forecast horizon": (
         "How many trading days ahead to predict: 1, 5, 10 or 20 (about a month). "

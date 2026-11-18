@@ -277,7 +277,8 @@
           Portfolio result (<a href="run-history.md">docs/run-history.md</a>).</li>
         <li><b>Model families.</b> A naive training-mean baseline, the Fama-French five-factor
           benchmark (equity only), the polynomial (user-supplied, or derived from lasso fits at
-          degrees 1 to 3 and a shrinkage fit), a research model on each target (a polynomial on
+          degrees 1 to 3 and a shrinkage fit; for bond, the mean of 14 such fits with the
+          levels of rates, spreads and volatility fitted apart), a research model on each target (a polynomial on
           fixed economic inputs for equity, one on fixed carry inputs for bond), and XGBoost and
           LightGBM. There is no PySR.</li>
         <li><b>Validation.</b> No PBO, DSR or CPCV: a model is promoted on its Signal Rank IC and

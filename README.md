@@ -75,7 +75,10 @@ following the model's signal would have earned.
   benchmark.
 - **Polynomial, derived automatically:** picks the useful signals afresh for
   every test period and fits a polynomial in them (degrees 1 to 3, including
-  terms that multiply two signals together).
+  terms that multiply two signals together). For bonds it is the average of 14
+  such fits, which fit the levels of rates, spreads and volatility apart and are
+  offered calendar counts such as month-ends; it is provisional until tested on
+  data after 12 Nov 2026.
 - **Polynomial, your own function:** type your own formula in the signals; only
   its scale and intercept are fitted.
 - **Polynomial – fixed economic inputs (research, equity):** high-yield and
@@ -247,7 +250,8 @@ hosting step is needed.
   - a naive training-mean baseline, the bar every model has to beat;
   - the Fama-French five-factor benchmark (equity only);
   - a polynomial, one at a time: derived automatically from the signals (a grid of
-    lasso fits at degrees 1 to 3 and a shrinkage fit, chosen per run),
+    lasso fits at degrees 1 to 3 and a shrinkage fit, chosen per run; for bonds the
+    mean of 14 fits with levels fitted apart, none chosen),
     or the user's own shape (placeholders pointed at signals) with only a scale and
     intercept fitted;
   - each tab's research model, run as the model research ran it, with a caption

@@ -123,8 +123,10 @@ or the trust gate kept the level's long-term mix, and each index's volatility), 
 return, Sharpe ratio and maximum drawdown against 50/50 after costs, the verdict of the
 test of whether the forecasts added value, and that the report explains past results
 and is not investment advice. Each active model then has a paragraph saying what it is
-and what it reads (`reporting/model_descriptions.py`); a research model also carries
-its "optimistic" caveat and its pre-2016 hold-out score. The tables follow, and the
+and what it reads (`reporting/model_descriptions.py`), told by its stored function's
+name where one row name has had more than one fit behind it (the bond derived
+polynomial since 18 Nov 2026); a research model also carries its "optimistic" caveat
+and its pre-2016 hold-out score. The tables follow, and the
 charts come last.
 
 Three things are saved with a run for it:

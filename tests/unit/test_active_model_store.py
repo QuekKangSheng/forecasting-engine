@@ -407,9 +407,37 @@ USER = ActiveFunction(
     ),
     {"VIX": Transform.LEVEL, "LUACOAS": Transform.LEVEL},
 )
+#: The bond derived polynomial's: inputs it builds from the committed columns, a rate's
+#: level, its longer window's copy of an input and a calendar count, stored as they are.
+BUILT = ActiveFunction(
+    Origin.DERIVED,
+    ModelDescription(
+        name="BondDerivedPolynomial",
+        terms=("USGG10YR_LEVEL", "VIX_W2520^2", "CAL_MONTH_END"),
+        coefficients=(0.002, -0.001, 0.0005),
+        intercept=0.001,
+        input_bounds={
+            "USGG10YR_LEVEL": (2.0, 6.0),
+            "VIX_W2520": (5.0, 40.0),
+            "CAL_MONTH_END": (0.0, 2.0),
+        },
+        standardisation={
+            "USGG10YR_LEVEL": (4.0, 0.5),
+            "VIX_W2520": (20.0, 6.0),
+            "CAL_MONTH_END": (0.25, 0.4),
+        },
+    ),
+    {
+        "USGG10YR_LEVEL": Transform.LEVEL,
+        "VIX_W2520": Transform.LEVEL,
+        "CAL_MONTH_END": Transform.LEVEL,
+    },
+)
 
 
-@pytest.mark.parametrize("function", [DERIVED, USER], ids=["derived", "user"])
+@pytest.mark.parametrize(
+    "function", [DERIVED, USER, BUILT], ids=["derived", "user", "built inputs"]
+)
 def test_a_function_set_with_the_model_reads_back_as_it_was_stored(db, function):
     set_active_model(
         TargetRole.EQUITY, "Polynomial", _result(), high_risk=False, function=function,

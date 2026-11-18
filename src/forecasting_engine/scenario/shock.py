@@ -17,6 +17,14 @@ The base case is the same model on the unshocked inputs: the forecast the active
 model would make for the next ``horizon`` days from the latest data, so a zero
 shock reproduces it exactly.
 
+A function may read inputs built from the committed columns (``models.hybrid``): a
+rate's level, an input under the name the bond derived polynomial's longer-window fits
+read it by, a calendar count. Each built input is worked out from the shocked frame
+exactly as the fit worked it out (``models.hybrid.inputs_panel``): a shock to a rate
+moves its change, its level and both windows' copies, and a calendar count, worked out
+from dates, is never moved. Only committed columns are offered to shock
+(``signals_read``).
+
 Before a scenario runs, every shock is validated (``validate``): it must be a
 number, a series that is always above zero (a volatility index, a spread, a
 price) must stay above zero, and the move must not exceed ``MAX_RANGE_MULTIPLE``
@@ -34,8 +42,10 @@ from enum import StrEnum
 import pandas as pd
 
 from forecasting_engine.ingest.align import FeaturePanel, Transform, align_and_lag
+from forecasting_engine.models import hybrid
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import BoostedForecaster
+from forecasting_engine.models.hybrid import inputs_panel, is_long_window, source_column
 from forecasting_engine.models.polynomial import (
     PolynomialConfigError,
     evaluate_formula,
@@ -43,7 +53,7 @@ from forecasting_engine.models.polynomial import (
 )
 from forecasting_engine.reporting.polynomial_function import Origin, from_description
 from forecasting_engine.store.active_model import ActiveFunction, ActiveML
-from forecasting_engine.validation.splitters import PurgedWalkForward
+from forecasting_engine.validation.splitters import PurgedWalkForward, capped
 
 MAX_RANGE_MULTIPLE: float = 10.0
 """A shock may move a signal by at most this many times the whole range (highest
@@ -130,6 +140,35 @@ def function_inputs(
     return tuple(dict.fromkeys(c for c in used if c in columns))
 
 
+def signals_read(model: ActiveFunction | ActiveML, columns: Collection[str]) -> tuple[str, ...]:
+    """The committed columns ``model`` reads, in the order it first reads them: what a
+    scenario can shock. A built input counts as the column it is built from, and a
+    calendar count, worked out from dates, as none."""
+    if isinstance(model, ActiveML):
+        return model.inputs
+    read = (_source(name, columns) for name in model.inputs)
+    return tuple(dict.fromkeys(column for column in read if column is not None))
+
+
+def _source(name: str, columns: Collection[str]) -> str | None:
+    try:
+        return source_column(name, columns)
+    except PolynomialConfigError as exc:
+        raise ScenarioError(
+            f"The active function can't be evaluated: {exc} Run it on the Models page and "
+            "set it active again."
+        ) from exc
+
+
+def _inputs(
+    frame: pd.DataFrame, price_col: str, transforms: Mapping[str, Transform], horizon: int
+) -> FeaturePanel:
+    """Every input in ``transforms`` on the target's calendar, as the fit read it."""
+    for name in transforms:
+        _source(name, frame.columns)
+    return inputs_panel(frame, price_col, transforms, horizon)
+
+
 def last_observed(
     frame: pd.DataFrame, signal: str, as_of: pd.Timestamp | None = None
 ) -> tuple[pd.Timestamp, float]:
@@ -205,15 +244,14 @@ def next_inputs(
     horizon: int,
 ) -> pd.Series:
     """The inputs the forecast for the trading day after ``frame``'s last price
-    reads: each signal in ``transforms`` aligned to the target's calendar,
+    reads: each input in ``transforms`` aligned to the target's calendar,
     transformed and lagged by ``ingest.align.align_and_lag`` itself, on a calendar
-    extended by that one day."""
+    extended by that one day. A built input is worked out as its fit worked it out
+    (``models.hybrid.inputs_panel``), a calendar count for that day's label window."""
     last = frame[price_col].dropna()
     following = last.index[-1] + pd.offsets.BDay(1)
     extended = pd.concat([frame, pd.DataFrame({price_col: [last.iloc[-1]]}, index=[following])])
-    panel = align_and_lag(
-        extended, list(transforms), price_col, horizon=horizon, transforms=transforms
-    )
+    panel = _inputs(extended, price_col, transforms, horizon)
     return panel.frame[list(transforms)].iloc[-1]
 
 
@@ -287,15 +325,20 @@ def training_ranges(
     splitter: PurgedWalkForward,
 ) -> dict[str, tuple[float, float]]:
     """Each input's lowest and highest value over the latest walk-forward fold's
-    training rows: the fold whose fit the stored function is."""
-    panel = align_and_lag(
-        frame, list(transforms), price_col, horizon=horizon, transforms=transforms
-    )
+    training rows: the fold whose fit the stored function is. An input of the bond
+    derived polynomial's longer window takes that window's rows (``models.hybrid``)."""
+    panel = _inputs(frame, price_col, transforms, horizon)
     folds = list(splitter.split(panel))
     if not folds:
         raise ScenarioError(splitter.too_short(panel))
     rows = panel.frame.loc[folds[-1][0], list(transforms)]
-    return {s: (float(rows[s].min()), float(rows[s].max())) for s in transforms}
+    ranges = {s: (float(rows[s].min()), float(rows[s].max())) for s in transforms}
+    longer = [s for s in transforms if is_long_window(s) and s not in frame.columns]
+    if longer:
+        train = list(capped(splitter, hybrid.LONG_TRAIN_WINDOW).split(panel))[-1][0]
+        rows = panel.frame.loc[train, longer]
+        ranges |= {s: (float(rows[s].min()), float(rows[s].max())) for s in longer}
+    return ranges
 
 
 def run_scenario(

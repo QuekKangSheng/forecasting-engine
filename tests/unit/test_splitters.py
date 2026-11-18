@@ -1,7 +1,7 @@
 import pandas as pd
 
 from forecasting_engine.ingest.align import FeaturePanel, align_and_lag
-from forecasting_engine.validation.splitters import PurgedWalkForward
+from forecasting_engine.validation.splitters import CappedExpanding, PurgedWalkForward, capped
 
 
 def _panel(n: int) -> FeaturePanel:
@@ -166,3 +166,55 @@ def test_an_expanding_window_says_so_when_the_data_is_too_short():
     message = PurgedWalkForward(train=None, test=3, embargo=2, tuning_rows=30).too_short(_panel(20))
     assert "every earlier row" in message
     assert "35" in message  # 30 tuning rows + 2 embargo + 3 test rows
+
+
+# --- a capped expanding window: the page's test windows, every earlier row up to a cap ---
+
+
+def test_a_capped_window_scores_the_same_dates_as_the_splitter_it_is_built_from():
+    panel = _gappy_panel()
+    page = PurgedWalkForward(train=12, test=4, embargo=3, tuning_rows=8)
+
+    longer = capped(page, 30)
+
+    assert isinstance(longer, CappedExpanding)
+    assert [list(t) for _, t in longer.split(panel)] == [list(t) for _, t in page.split(panel)]
+
+
+def test_a_capped_window_grows_to_its_cap_and_then_rolls():
+    panel = _panel(60)
+    folds = list(capped(PurgedWalkForward(train=10, test=5, embargo=2), 18).split(panel))
+    index = panel.frame.index
+
+    # The first test window opens where the page's does: after its 10-row train window.
+    assert folds[0][1][0] == index[12]
+    assert list(folds[0][0]) == list(index[0:10])
+    assert list(folds[1][0]) == list(index[0:15])  # every earlier row, under the cap
+    assert len(folds[3][0]) == 18  # then the latest 18
+    assert folds[3][0][-1] == index[24]
+
+
+def test_a_capped_window_contains_the_rolling_window_of_the_same_fold():
+    panel = _gappy_panel()
+    page = PurgedWalkForward(train=12, test=4, embargo=3, tuning_rows=8)
+
+    for (rolling, _), (longer, _) in zip(
+        page.split(panel), capped(page, 30).split(panel), strict=True
+    ):
+        assert rolling.isin(longer).all()
+        assert len(longer) >= len(rolling)
+
+
+def test_a_capped_window_purges_labels_that_reach_its_test_window():
+    panel = _gappy_panel()
+    for train, test in capped(PurgedWalkForward(train=12, test=4, embargo=1), 30).split(panel):
+        assert (panel.label_end.reindex(train).dropna() < test[0]).all()
+
+
+def test_a_capped_window_says_how_many_dates_its_first_fold_needs():
+    message = capped(PurgedWalkForward(train=10, test=3, embargo=2, tuning_rows=30), 50).too_short(
+        _panel(20)
+    )
+
+    assert "20 target dates" in message
+    assert "needs 35" in message

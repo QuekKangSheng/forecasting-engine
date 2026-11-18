@@ -2023,3 +2023,79 @@ def test_a_direction_check_with_a_single_call_shows_it_without_a_window_to_narro
     assert not app.exception
     assert not [s for s in app.slider if s.label == "Window"]
     assert "1 calls" in _captions(app)
+
+
+# --- the bond derived polynomial: the mean of 14 fits -------------------------------
+
+BOND_DERIVED = "BondDerivedPolynomial"
+
+
+def _run_bond_derived(app: AppTest) -> AppTest:
+    """Run the bond tab with the derived polynomial alone beside the baseline."""
+    for box in [c for c in app.checkbox if c.label in ("Machine learning", "Fama-French 5")]:
+        box.uncheck()
+    app.run()
+    (_equity_run, bond_run) = [b for b in app.button if b.label == "Run"]
+    bond_run.click().run()
+    return app
+
+
+def test_the_bond_tabs_derived_row_averages_14_fits_and_says_what_it_is(stub_ml):
+    app = _run_bond_derived(_page(bond=True))
+
+    assert not app.exception, app.exception
+    run = _stored_runs(app, BOND)[POLY]
+    assert run.description.name == BOND_DERIVED
+    assert run.inputs is not None and "VIX_Index_PX_LAST_LEVEL" in run.inputs
+    captions = _captions(app)
+    assert "Averages 14 fits and picks none" in captions
+    assert f"{POLY}: The mean of 14 fits, none picked" in captions
+    assert "provisional until tested on data after 12 Nov 2026" in captions
+    assert "At 20 days its Signal Rank IC is positive but below the significance gate" in captions
+    assert "is read by the fits on up to 2,520 dates" in captions
+    assert not stub_ml
+
+
+def test_the_equity_tabs_derived_row_is_still_the_grid_with_one_winner(stub_ml):
+    app = _press_run(_untick(_page(), "Fama-French 5", "Machine learning"))
+
+    run = _stored_runs(app)[POLY]
+    assert run.description.name != BOND_DERIVED
+    assert run.inputs is None
+    assert "Tries a Lasso fit at each degree from 1 to 3" in _captions(app)
+    assert "The mean of 14 fits" not in _captions(app)
+
+
+def test_the_bond_derived_equation_and_screening_name_its_built_inputs(stub_ml):
+    app = _run_bond_derived(_page(bond=True))
+
+    screening = next(d.value for d in app.dataframe if "Latest fold" in d.value.columns)
+    read_as = dict(zip(screening["Signal"], screening["Transform"], strict=True))
+    assert read_as["VIX_Index_PX_LAST_LEVEL"] == "level"
+    assert read_as["CAL_MONTH_END_W2520"] == "calendar count"
+    assert read_as["VIX_Index_PX_LAST_W2520"] == "difference"
+    run = _stored_runs(app, BOND)[POLY]
+    assert run.shap is not None
+    # SHAP adds the two windows' shares of one input together.
+    assert not [s for s in run.shap.terms if s.endswith("_W2520")]
+
+
+def test_setting_the_bond_derived_polynomial_active_stores_every_input_it_reads(stub_ml):
+    app = _run_bond_derived(_page(bond=True))
+    # Nothing ran on the equity tab, so the bond tab's picker is the only one.
+    (bond_select,) = [s for s in app.selectbox if s.label == "Model to set active"]
+    bond_select.set_value(POLY).run()
+    (bond_set,) = [b for b in app.button if b.label == "Set as active"]
+    bond_set.click().run()
+    if active_model.get_active_model(BOND) is None:  # failed both gates: confirm
+        next(b for b in app.button if b.label == "Set active anyway").click().run()
+
+    function = active_model.get_active_function(BOND)
+    run = _stored_runs(app, BOND)[POLY]
+    fn = from_description(
+        run.description, origin=Origin.DERIVED, target=AGG, horizon=5, columns=run.inputs
+    )
+    assert function.description.name == BOND_DERIVED
+    assert function.description.terms == run.description.terms
+    assert set(function.inputs) == {column for term in fn.terms for column, _ in term.factors}
+    assert all(function.transforms[s] == run.inputs[s] for s in function.inputs)

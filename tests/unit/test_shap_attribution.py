@@ -125,3 +125,17 @@ def test_no_surviving_terms_gives_an_empty_table():
     shap = polynomial_shap(fn, _frame(**{X: [1.0, 2.0]}))
 
     assert shap.terms == () and shap.coefficients == ()
+
+
+def test_shares_of_one_signal_under_two_names_are_added_row_by_row():
+    x = np.array([1.0, 2.0, 4.0, 3.0, 5.0])
+    copy = f"{X}_W2520"
+    fn = _fn([X, copy], [2.0, -0.5])
+
+    shap = polynomial_shap(
+        fn, _frame(**{X: x, copy: x}), attribute_to=lambda c: c.removesuffix("_W2520")
+    )
+
+    # One row for the signal: its two terms' shares added on each row, then averaged.
+    assert shap.terms == (X,)
+    assert shap.coefficients[0] == pytest.approx(np.abs(1.5 * (x - x.mean())).mean())

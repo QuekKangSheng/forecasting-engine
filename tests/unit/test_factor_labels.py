@@ -80,3 +80,36 @@ def test_a_column_the_labeller_was_not_built_with_still_gets_a_label():
 
 def test_a_bare_security_with_no_field_is_labelled():
     assert labeller(["VIX_Index"])("VIX_Index") == "VIX"
+
+
+# --- inputs the app builds from a committed column ---------------------------------
+
+
+def test_a_rates_level_is_told_from_the_rate_its_change_is_read_from():
+    label = labeller(["USGG10YR_Index_PX_LAST"])
+
+    assert label("USGG10YR_Index_PX_LAST") == "US 10y Treasury yield"
+    assert label("USGG10YR_Index_PX_LAST_LEVEL") == "US 10y Treasury yield (level)"
+
+
+def test_an_input_of_the_longer_window_says_so():
+    label = labeller(["VIX_Index_PX_LAST", "USGG10YR_Index_PX_LAST"])
+
+    assert label("VIX_Index_PX_LAST_W2520") == "VIX (2,520-day fit)"
+    assert label("USGG10YR_Index_PX_LAST_LEVEL_W2520") == (
+        "US 10y Treasury yield (level, 2,520-day fit)"
+    )
+
+
+def test_calendar_counts_read_as_what_they_count():
+    label = labeller(["VIX_Index_PX_LAST"])
+
+    assert label("CAL_MONTH_END") == "Month-ends ahead"
+    assert label("CAL_JOBS_FRIDAY_W2520") == "Jobs Fridays ahead (2,520-day fit)"
+    assert label("CAL_MON") == "Next day a Monday"
+
+
+def test_a_committed_column_named_like_a_built_input_is_labelled_as_itself():
+    label = labeller(["ODD_Index_PX_LEVEL"])
+
+    assert label("ODD_Index_PX_LEVEL") == "ODD Index (PX LEVEL)"

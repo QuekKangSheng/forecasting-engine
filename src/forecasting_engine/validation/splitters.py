@@ -1,9 +1,11 @@
-"""PurgedWalkForward: the only splitter in the codebase.
+"""PurgedWalkForward and its capped-expanding variant.
 
 Rolls a train/test window forward across a FeaturePanel's index, dropping an
 embargo gap between train and test so overlapping forward-return labels can't
 leak across the split. The train window is either a fixed number of rows or,
 with ``train=None``, every row before the embargo (an expanding window).
+``CappedExpanding`` keeps another splitter's test windows and trains each on every
+earlier row, at most a fixed number.
 """
 
 from __future__ import annotations
@@ -87,6 +89,49 @@ def expanding(splitter: PurgedWalkForward) -> PurgedWalkForward:
     dates."""
     return PurgedWalkForward(
         train=None,
+        test=splitter.test,
+        embargo=splitter.embargo,
+        tuning_rows=max(splitter.train or 0, splitter.tuning_rows),
+    )
+
+
+class CappedExpanding(PurgedWalkForward):
+    """Test windows opening after ``tuning_rows`` and the embargo, each trained on every
+    earlier row, at most the latest ``train``, purged as ``PurgedWalkForward`` purges.
+
+    Unlike ``PurgedWalkForward``, ``train`` does not delay the first test window: a fold
+    whose history is shorter than ``train`` trains on all of it. Built from another
+    splitter by ``capped``, so it scores the same dates."""
+
+    def split(self, panel: FeaturePanel) -> Iterator[tuple[pd.DatetimeIndex, pd.DatetimeIndex]]:
+        index = panel.frame.index
+        test_start = self.tuning_rows + self.embargo
+        while test_start + self.test <= len(index):
+            yield (
+                self.window_before(panel, test_start, self.train),
+                index[test_start : test_start + self.test],
+            )
+            test_start += self.test
+
+    def too_short(self, panel: FeaturePanel) -> str:
+        needed = self.tuning_rows + self.embargo + self.test
+        return (
+            f"the committed data has {len(panel.frame):,} target dates, too few for one "
+            f"walk-forward fold: the first test window needs {needed:,} (a "
+            f"{self.tuning_rows}-row tuning period, a {self.embargo}-row embargo, then "
+            f"{self.test} test rows)."
+        )
+
+
+def capped(splitter: PurgedWalkForward, rows: int) -> CappedExpanding:
+    """``splitter``'s test windows, each trained on every row before its embargo, at most
+    the latest ``rows``.
+
+    The first test window opens where ``splitter``'s does, after the longer of its train
+    window and tuning period, as ``expanding`` arranges it, so a model on this window is
+    scored on the same dates as every other model."""
+    return CappedExpanding(
+        train=rows,
         test=splitter.test,
         embargo=splitter.embargo,
         tuning_rows=max(splitter.train or 0, splitter.tuning_rows),
