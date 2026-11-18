@@ -251,6 +251,33 @@ def test_a_crash_of_consecutive_same_direction_moves_is_kept_whole():
     assert len(report.big_moves) == 3
 
 
+def test_a_new_high_after_a_rebound_is_flagged_and_not_taken_for_a_second_rebound():
+    # VIX in March 2020: up 21.6 on 12 Mar, down 17.6 on 13 Mar, up 24.9 on 16 Mar
+    # to a new high. 13 Mar is 12 Mar's rebound. 16 Mar is not 13 Mar's: 13 Mar was
+    # never reported, and 16 Mar went past where 12 Mar had been.
+    dates = pd.date_range("2024-01-01", periods=60)
+    values = [20.0 + (i % 2) * 0.5 for i in range(60)]
+    values[30:33] = [41.6, 24.0, 48.9]
+    data = frame(dates, A_Index_PX_LAST=values)
+
+    report = validate(data)
+
+    assert list(report.big_moves["date"]) == [dates[30], dates[32]]
+
+
+def test_two_bad_values_a_day_apart_are_each_reported_once():
+    # Each bad value makes a move on and a move off: four alternating flags in a
+    # row. The two rows holding a bad value are reported, their rebounds are not.
+    dates = pd.date_range("2024-01-01", periods=60)
+    values = [100.0 + i for i in range(60)]
+    values[30], values[32] = 300.0, 300.0
+    data = frame(dates, A_Index_PX_LAST=values)
+
+    report = validate(data)
+
+    assert list(report.big_moves["date"]) == [dates[30], dates[32]]
+
+
 # --- bounded messages and the PX_ field check ----------------------------------
 
 
