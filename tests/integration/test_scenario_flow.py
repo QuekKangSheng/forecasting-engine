@@ -12,8 +12,10 @@ import pytest
 
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.ingest.align import Transform, align_and_lag
+from forecasting_engine.models import hybrid
 from forecasting_engine.models.boosted import run_boosted
 from forecasting_engine.models.carry_research import CarryResearchPolynomial
+from forecasting_engine.models.hybrid import function_transforms, run_bond_derived_polynomial
 from forecasting_engine.models.polynomial import DerivedPolynomial
 from forecasting_engine.portfolio.optimize import solve_inputs_at
 from forecasting_engine.reporting.model_metrics import ModelRunResult
@@ -341,6 +343,135 @@ def test_a_shock_to_the_bond_research_models_own_signal_flows_through_to_portfol
         {EQUITY: 0.0, BOND: scenario.shocked},
         weights,
         horizon=HORIZON,
+        paths=2_000,
+    )
+
+    assert impact.weights.to_dict() == pytest.approx(weights)
+    assert impact.return_change != 0.0
+
+
+# --- the bond derived polynomial: a mean of 14 fits, not one model (FYP-64) ----------
+
+_HYBRID_RATE = "USGG10YR_Index_PX_LAST"
+_HYBRID_GAUGE = "VIX_Index_PX_LAST"
+_HYBRID_FX = "DXY_Curncy_PX_LAST"
+_HYBRID_PRICE = "LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS"
+_HYBRID_SIGNALS = (_HYBRID_FX, _HYBRID_RATE, _HYBRID_GAUGE)
+_HYBRID_TRANSFORMS = {
+    _HYBRID_FX: Transform.LOG_RETURN,
+    _HYBRID_RATE: Transform.DIFFERENCE,
+    _HYBRID_GAUGE: Transform.LEVEL,
+}
+_HYBRID_HORIZON = 5
+_HYBRID_LONG_TRAIN_WINDOW = 200  # the real 2,520 needs a decade of daily data
+
+
+def _hybrid_committed_frame(n: int = 300, seed: int = 2) -> pd.DataFrame:
+    """A bond-like price driven by a yield's level and change plus a currency flow,
+    beside a mean-reverting gauge, and SPX/VIX so the one frame can also feed
+    ``_real_solve_inputs``. Mirrors ``tests/unit/test_hybrid.py``'s own fixture, the
+    one ``run_bond_derived_polynomial`` is already proven against."""
+    rng = np.random.default_rng(seed)
+    idx = pd.bdate_range("2012-01-02", periods=n)
+    rate = 4 + np.cumsum(rng.normal(0, 0.05, n))
+    gauge = np.empty(n)
+    gauge[0] = 20.0
+    for t in range(1, n):
+        gauge[t] = 20 + 0.95 * (gauge[t - 1] - 20) + rng.normal()
+    fx = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+    move = np.r_[0.0, np.diff(rate)]
+    daily = (
+        0.0003 * rate
+        - 0.06 * move
+        + 0.2 * np.r_[0.0, np.diff(np.log(fx))]
+        + rng.normal(0, 0.002, n)
+    )
+    spx = 4000 * np.cumprod(1 + rng.normal(0.0004, 0.003, n))
+    return pd.DataFrame(
+        {
+            _HYBRID_RATE: rate,
+            _HYBRID_GAUGE: gauge,
+            _HYBRID_FX: fx,
+            _HYBRID_PRICE: 100 * np.exp(np.cumsum(daily)),
+            PRICE: spx,
+            VIX: gauge,
+        },
+        index=idx,
+    )
+
+
+def _saved_bond_derived_function(
+    db_path, monkeypatch
+) -> tuple[pd.DataFrame, ActiveFunction, PurgedWalkForward]:
+    """Fit the real bond derived polynomial - the mean of 14 fits - and store it as
+    the active bond model exactly as the Models page would, round-tripping through
+    the real DuckDB store. ``LONG_TRAIN_WINDOW`` is patched down so a fixture this
+    size can still produce the model's own longer-window fits."""
+    monkeypatch.setattr(hybrid, "LONG_TRAIN_WINDOW", _HYBRID_LONG_TRAIN_WINDOW)
+    frame = _hybrid_committed_frame()
+    splitter = PurgedWalkForward(train=120, test=20, embargo=20, tuning_rows=120)
+    result, description, panel = run_bond_derived_polynomial(
+        frame,
+        _HYBRID_SIGNALS,
+        _HYBRID_TRANSFORMS,
+        _HYBRID_PRICE,
+        _HYBRID_HORIZON,
+        splitter,
+        max_terms=10,
+    )
+    inputs = function_inputs(description, Origin.DERIVED, list(panel.signals))
+    by_name = function_transforms(panel)
+    function = ActiveFunction(Origin.DERIVED, description, {s: by_name[s] for s in inputs})
+
+    set_active_model(
+        BOND,
+        "Polynomial (derived)",
+        result,
+        high_risk=False,
+        horizon=_HYBRID_HORIZON,
+        train_window=None,
+        test_window=20,
+        dataset_fingerprint="fp-scenario-flow-bond-derived",
+        function=function,
+        db_path=db_path,
+    )
+    reloaded = get_active_function(BOND, db_path=db_path)
+    assert reloaded is not None
+    return frame, reloaded, splitter
+
+
+def test_the_bond_derived_models_mean_forecast_flows_through_to_portfolio_impact(
+    tmp_path, monkeypatch
+):
+    """The bond derived polynomial reports the mean of 14 fits as one Origin.DERIVED
+    equation (FYP-64, the November 2026 recalculation), so it should shock and
+    re-evaluate through the same generic scenario machinery the equity derived
+    polynomial and the bond research model above already cover - with no train
+    window, same as the bond research model, since its members fit on an expanding
+    or longer window by design."""
+    db = tmp_path / "active.duckdb"
+    frame, function, splitter = _saved_bond_derived_function(db, monkeypatch)
+    assert function.origin is Origin.DERIVED
+
+    levels, errors = validate([Shock(_HYBRID_RATE, ShockKind.ABSOLUTE, "6")], frame)
+    assert errors == {}
+
+    scenario = run_scenario(
+        function, frame, _HYBRID_PRICE, levels, horizon=_HYBRID_HORIZON, splitter=splitter
+    )
+    assert scenario.shocked != scenario.base
+
+    solve_inputs, prices, _ = _real_solve_inputs(frame)
+    breakdown = solve_inputs.solve()
+    weights = {EQUITY: breakdown.equity, BOND: 1 - breakdown.equity}
+    history = _daily_returns(prices)
+
+    impact = portfolio_impact(
+        history,
+        {EQUITY: 0.0, BOND: scenario.base},
+        {EQUITY: 0.0, BOND: scenario.shocked},
+        weights,
+        horizon=_HYBRID_HORIZON,
         paths=2_000,
     )
 
