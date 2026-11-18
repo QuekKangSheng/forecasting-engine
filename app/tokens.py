@@ -44,7 +44,7 @@ STATE = {
 
 # --- direction: a month that closed up and one that closed down ----------------------
 # The theme's own green and red (config.toml's greenColor and redColor), on Home's
-# candles and tape. Which way something moved is a state, not a series: no chart
+# candles. Which way something moved is a state, not a series: no chart
 # draws a candle beside the bond's line, and a candle that closed up is outlined
 # while one that closed down is filled, so the two never rest on colour alone.
 RISE = "#32A467"

@@ -448,7 +448,6 @@ def test_with_nothing_committed_and_no_feed_the_opening_says_so_and_draws_nothin
     app = _page()
 
     assert ">waiting for data: upload exports on the Data page</span>" in _markdown(app)
-    assert '<div class="fe-tape"' not in _markdown(app)
     assert not _frames(app)
     assert "no S&P 500 is committed to draw" in _captions(app)
 
@@ -486,17 +485,11 @@ def test_without_the_feed_the_committed_s_and_p_is_drawn_and_said_to_be():
     assert not data["1M"]["live"]
 
 
-def test_the_tape_shows_both_targets_then_each_signal_with_its_change_over_a_horizon():
+def test_no_scrolling_banner_is_drawn_under_the_opening():
     markdown = _markdown(_page(_long_committed()))
 
-    tape = markdown[markdown.index('<div class="fe-tape"') :]
-    run = tape[: tape.index('<span class="fe-tape-run" aria-hidden="true">')]
-    names = ["S&amp;P 500", "US Aggregate Bond", "US IG credit spread", "VIX"]
-    places = [run.index(f"<b>{name}</b>") for name in names]
-    assert places == sorted(places)
-    assert "change over 20 trading days" in tape
-    # The index rose a point a day from 4,199 to 4,219 over the last twenty.
-    assert "▲ 0.5%" in run
+    assert "fe-tape" not in markdown
+    assert "fe-tick" not in markdown
 
 
 def test_a_model_fitted_on_other_data_is_not_counted_as_active():

@@ -6,73 +6,17 @@ Each piece is a function that returns HTML for ``st.markdown``:
   like a screen powering up, then where things stand (the latest weights, or the
   next step).
 - ``typed``: one line of status, typed out once in the monospace face.
-- ``tape``: the latest value of every committed series and its change over one
-  horizon, moving slowly like a ticker and stopping under the pointer.
 
-``CSS`` styles these. Motion runs once (the tape excepted) and is switched off for
-a viewer who asked for less.
+``CSS`` styles these. Motion runs once and is switched off for a viewer who asked
+for less.
 """
 
 from __future__ import annotations
 
 import hashlib
 import html
-from collections.abc import Sequence
-from dataclasses import dataclass
-
-import pandas as pd
 
 import tokens
-
-#: Days of history in each tape sparkline, and the points it is drawn from.
-SPARK_DAYS: int = 120
-SPARK_POINTS: int = 40
-
-
-@dataclass(frozen=True)
-class Tick:
-    """One series on the tape."""
-
-    name: str
-    last: str
-    change: float
-    change_text: str
-    spark: tuple[float, ...]
-
-
-def ticks(
-    frame: pd.DataFrame,
-    columns: Sequence[str],
-    names: Sequence[str],
-    as_return: Sequence[bool],
-    span: int,
-) -> tuple[Tick, ...]:
-    """A tick per column of ``frame`` (indexed by date) that has ``span`` rows of
-    history: its last value and its change over the last ``span`` of its own rows.
-
-    A price's change is a percentage (``as_return``); a rate's, a spread's or a
-    gauge's is in its own units, since a yield moving from 4.0 to 4.4 is 0.4
-    points, not 10%.
-    """
-    out = []
-    for column, name, returns in zip(columns, names, as_return, strict=True):
-        series = frame[column].dropna()
-        if len(series) <= span:
-            continue
-        last, before = float(series.iloc[-1]), float(series.iloc[-1 - span])
-        if returns and before != 0:
-            change = last / before - 1
-            text = f"{change:+.1%}"
-        else:
-            change = last - before
-            text = f"{change:+.2f}"
-        recent = series.iloc[-SPARK_DAYS:]
-        step = max(len(recent) // SPARK_POINTS, 1)
-        # Thinned from the newest value backwards, so the line always ends on it.
-        spark = tuple(float(v) for v in recent.iloc[::-1].iloc[::step].iloc[::-1])
-        out.append(Tick(name, f"{last:,.2f}", change, text, spark))
-    return tuple(out)
-
 
 # ── The words ────────────────────────────────────────────────────────────────
 
@@ -165,59 +109,6 @@ def flicker(name: str) -> tuple[str, str]:
             f"{html.escape(letter)}</span>"
         )
     return "".join(frames), "".join(spans)
-
-
-# ── The tape ─────────────────────────────────────────────────────────────────
-
-
-def _spark(values: Sequence[float], colour: str) -> str:
-    if len(values) < 2:
-        return ""
-    low, high = min(values), max(values)
-    spread = (high - low) or 1.0
-    step = 56 / (len(values) - 1)
-    points = " ".join(
-        f"{i * step:.1f},{15 - 13 * (value - low) / spread:.1f}" for i, value in enumerate(values)
-    )
-    return (
-        '<svg class="fe-tick-spark" viewBox="0 0 56 16" aria-hidden="true">'
-        f'<polyline points="{points}" fill="none" stroke="{colour}" stroke-width="1.2" '
-        'stroke-linejoin="round"/></svg>'
-    )
-
-
-def _tick(tick: Tick) -> str:
-    if tick.change > 0:
-        kind, arrow, colour = "fe-tick-up", "▲", tokens.RISE
-    elif tick.change < 0:
-        kind, arrow, colour = "fe-tick-down", "▼", tokens.FALL
-    else:
-        kind, arrow, colour = "fe-tick-flat", "■", tokens.MUTED
-    return (
-        f'<span class="fe-tick"><b>{html.escape(tick.name)}</b>'
-        f'<span class="fe-tick-last">{html.escape(tick.last)}</span>'
-        f'<span class="{kind}">{arrow} {html.escape(tick.change_text.lstrip("+-"))}</span>'
-        f"{_spark(tick.spark, colour)}</span>"
-    )
-
-
-def tape(items: Sequence[Tick], span: int) -> str:
-    """The committed series as a ticker. The items are written twice so the strip can
-    loop without a gap; the second copy is hidden from a screen reader."""
-    if not items:
-        return ""
-    cells = "".join(_tick(item) for item in items)
-    # About five seconds a series: slow enough to read a figure as it passes.
-    seconds = max(len(items) * 5, 30)
-    return (
-        f'<div class="fe-tape" role="group" aria-label="Latest value of each committed '
-        f'series and its change over {span} trading days">'
-        f'<div class="fe-tape-head">Latest · {span}-day change</div>'
-        f'<div class="fe-tape-window"><div class="fe-tape-track" '
-        f'style="animation-duration:{seconds}s">'
-        f'<span class="fe-tape-run">{cells}</span>'
-        f'<span class="fe-tape-run" aria-hidden="true">{cells}</span></div></div></div>'
-    )
 
 
 CSS = f"""
@@ -345,69 +236,6 @@ CSS = f"""
     border-color: #fff;
   }}
 
-  /* ---- The tape ----------------------------------------------------------------------
-     From the sidebar's edge to the window's, like the rules. */
-  [data-testid="stElementContainer"]:has(.fe-tape) {{
-    margin: 0 calc(-1 * var(--fe-gutter));
-    width: calc(100% + 2 * var(--fe-gutter));
-    max-width: none;
-  }}
-  .fe-tape {{
-    display: flex;
-    align-items: stretch;
-    border-top: 1px solid var(--fe-border);
-    border-bottom: 1px solid var(--fe-border);
-    background: rgba(7, 9, 12, 0.55);
-    margin-bottom: 1.4rem;
-    font-family: var(--fe-mono);
-    font-size: 11.5px;
-    line-height: 2.6rem;
-    white-space: nowrap;
-  }}
-  .fe-tape-head {{
-    flex: none;
-    padding: 0 1.1rem 0 var(--fe-gutter);
-    border-right: 1px solid var(--fe-border);
-    font-size: 10.5px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--fe-muted);
-  }}
-  .fe-tape-window {{
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    mask-image: linear-gradient(
-      90deg, transparent, #000 2.5rem, #000 calc(100% - 4rem), transparent
-    );
-  }}
-  .fe-tape-track {{
-    display: inline-flex;
-    animation: fe-tape linear infinite;
-  }}
-  .fe-tape:hover .fe-tape-track {{ animation-play-state: paused; }}
-  @keyframes fe-tape {{ to {{ transform: translateX(-50%); }} }}
-  .fe-tape-run {{ display: inline-flex; }}
-  .fe-tick {{
-    display: inline-flex;
-    align-items: center;
-    gap: 0.7rem;
-    padding: 0 1.25rem;
-    border-right: 1px solid var(--fe-border);
-  }}
-  .fe-tick b {{
-    font-size: 10.5px;
-    font-weight: 500;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--fe-text-2);
-  }}
-  .fe-tick-last {{ color: var(--fe-text); font-variant-numeric: tabular-nums; }}
-  .fe-tick-up {{ color: var(--fe-success-fg); }}
-  .fe-tick-down {{ color: var(--fe-danger-fg); }}
-  .fe-tick-flat {{ color: var(--fe-muted); }}
-  .fe-tick-spark {{ width: 56px; height: 16px; flex: none; }}
-
   /* Where the words' column is too narrow to hold the status on one line it is set
      as ordinary text, wrapping, with nothing typed. */
   @media (max-width: 1180px) {{
@@ -427,7 +255,6 @@ CSS = f"""
   }}
   @media (max-width: 900px) {{
     .fe-hero-copy {{ padding-top: 1.6rem; }}
-    .fe-tape-head {{ display: none; }}
   }}
 
   @media (prefers-reduced-motion: reduce) {{
@@ -435,9 +262,6 @@ CSS = f"""
     .fe-hero-letters span {{ animation: none !important; }}
     .fe-typed-text {{ animation: none; clip-path: none; }}
     .fe-typed-caret {{ animation: none; transform: translateX(calc(var(--n) * 1ch)); }}
-    .fe-tape-window {{ overflow-x: auto; }}
-    .fe-tape-track {{ animation: none; }}
-    .fe-tape-run[aria-hidden="true"] {{ display: none; }}
   }}
 </style>
 """
