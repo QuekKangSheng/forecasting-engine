@@ -14,6 +14,12 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 
+from forecasting_engine.models.hybrid import (
+    LEVEL_SUFFIX,
+    LONG_TRAIN_WINDOW,
+    LONG_WINDOW_SUFFIX,
+)
+
 #: Ticker, as it appears in an export's ``Security`` metadata, to its label.
 SECURITY_LABELS: Mapping[str, str] = {
     "SPX Index": "S&P 500",
@@ -40,6 +46,24 @@ FIELD_LABELS: Mapping[str, str] = {
     "TOT_RETURN_INDEX_GROSS_DVDS": "total return",
 }
 
+#: Columns the app builds itself rather than reads from an export: calendar counts over a
+#: forecast's label window (``models/calendar_inputs``).
+BUILT_LABELS: Mapping[str, str] = {
+    "CAL_MONTH_END": "Month-ends ahead",
+    "CAL_MONTH_START": "Month starts ahead",
+    "CAL_JOBS_FRIDAY": "Jobs Fridays ahead",
+    "CAL_MON": "Next day a Monday",
+    "CAL_TUE": "Next day a Tuesday",
+    "CAL_WED": "Next day a Wednesday",
+    "CAL_THU": "Next day a Thursday",
+}
+
+#: How an input built from a committed column is told from the column itself: a rate's
+#: level beside its daily change, and an input as the bond derived polynomial's fits on
+#: its longer train window read it (``models/hybrid``).
+LEVEL_NOTE: str = "level"
+LONG_WINDOW_NOTE: str = f"{LONG_TRAIN_WINDOW:,}-day fit"
+
 #: Bloomberg's market-sector "yellow keys". A ticker ends in one, so the first of
 #: them in a column name marks where the security ends and the field begins.
 #: Matched by case: Bloomberg writes ``Index``, and the ``INDEX`` inside
@@ -52,16 +76,26 @@ def labeller(columns: Iterable[str]) -> Callable[[str], str]:
 
     It needs the whole set because a field is only worth naming when two columns
     share a security: "S&P 500 (last price)" beside "S&P 500 (bid)", but just
-    "VIX" when VIX is the only VIX column.
+    "VIX" when VIX is the only VIX column. It also tells a committed column from an
+    input built from one, which no committed column is named like: "US 10y Treasury
+    yield (level)" for a rate's level, "Month-ends ahead" for a calendar count, and
+    "(2,520-day fit)" after an input of the bond derived polynomial's longer window.
     """
+    columns = list(columns)
+    committed = frozenset(columns)
     shared = Counter(
         security for security, _ in (_split(column) for column in columns) if security is not None
     )
 
     def label(column: str) -> str:
+        if column not in committed:
+            built = _built(column)
+            if built is not None:
+                base, notes = built
+                return f"{label(base)} ({', '.join(notes)})" if notes else label(base)
         security, field = _split(column)
         if security is None:
-            return column.replace("_", " ")
+            return BUILT_LABELS.get(column, column.replace("_", " "))
         known = SECURITY_LABELS.get(security)
         if known is None:
             return f"{security} ({_field_label(field)})" if field else security
@@ -70,6 +104,20 @@ def labeller(columns: Iterable[str]) -> Callable[[str], str]:
         return known
 
     return label
+
+
+def _built(column: str) -> tuple[str, list[str]] | None:
+    """``column`` as ``(the name it is built from, what was done to it)``, or ``None``
+    if it is not named as a built input."""
+    notes = []
+    base = column
+    if base.endswith(LONG_WINDOW_SUFFIX):
+        base = base.removesuffix(LONG_WINDOW_SUFFIX)
+        notes.append(LONG_WINDOW_NOTE)
+    if base.endswith(LEVEL_SUFFIX) and base != LEVEL_SUFFIX:
+        base = base.removesuffix(LEVEL_SUFFIX)
+        notes.insert(0, LEVEL_NOTE)
+    return (base, notes) if notes else None
 
 
 def _split(column: str) -> tuple[str | None, str]:

@@ -136,11 +136,24 @@ def _listed(names: list[str]) -> str:
     return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} or {names[-1]}"
 
 
+# What can be shocked: the committed columns each model reads. An input a model builds
+# from one (a rate's level, a calendar count) moves with that column or, for a calendar
+# count, not at all.
+reads: dict[TargetRole, tuple[str, ...]] = {}
+for role in list(models):
+    try:
+        reads[role] = shock.signals_read(models[role], frame.columns)
+    except shock.ScenarioError as exc:
+        unavailable[role] = str(exc)
+        del models[role], records[role]
+if not models:
+    st.info(" ".join(unavailable.values()), icon=":material/info:")
+    st.stop()
 # A signal's "last observed" value is its last observation on or before the earliest
 # last price among the indices evaluated: after that, no model reads anything.
 as_of = min(frame[target_columns[role]].dropna().index[-1] for role in models)
-inputs = list(dict.fromkeys(s for m in models.values() for s in m.inputs))
-read_by = {s: [_role_name(r) for r in models if s in models[r].inputs] for s in inputs}
+inputs = list(dict.fromkeys(s for role in models for s in reads[role]))
+read_by = {s: [_role_name(r) for r in models if s in reads[r]] for s in inputs}
 
 st.markdown(
     ui.eyebrow("Signals to shock", glossary.term("Signal shock")), unsafe_allow_html=True
@@ -285,7 +298,7 @@ header = (
 def _unread(role: TargetRole) -> str | None:
     """Why the shocks can't move ``role``'s forecast, if its model reads none of the
     signals shocked: a bare 0.00 would read as the shock having no effect."""
-    read = models[role].inputs
+    read = reads[role]
     if set(read) & set(levels):
         return None
     name = label(target_columns[role])

@@ -15,6 +15,7 @@ from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 
 from forecasting_engine.extraction.targets import TargetRole
+from forecasting_engine.ingest.align import Transform
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import TuningLog
 from forecasting_engine.models.famafrench import FactorCoverage
@@ -39,6 +40,12 @@ class ModelRun:
     """Shown with the result, e.g. that an older saved factor file was used."""
     tuning: TuningLog | None = None
     """Which tune each fold used, for the machine-learning run only."""
+    inputs: Mapping[str, Transform] | None = None
+    """Every input the fitted function may read -> the transform it is read under, for a
+    polynomial whose inputs are not only the committed columns as the page reads them:
+    the bond derived polynomial's rate levels, its longer window's inputs and its
+    calendar counts (``models.hybrid.function_transforms``). ``None``: the page's own
+    transform map applies."""
 
 
 @dataclass

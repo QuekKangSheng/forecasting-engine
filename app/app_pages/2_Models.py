@@ -45,6 +45,7 @@ from forecasting_engine.ingest.fama_french import FactorFetchError
 from forecasting_engine.ingest.upload import frame_sha256
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.models.boosted import BoostedConfigError, fits_tuning_period, run_boosted
+from forecasting_engine.models.calendar_inputs import CALENDAR_NAMES
 from forecasting_engine.models.carry_research import VERSION as CARRY_RESEARCH_VERSION
 from forecasting_engine.models.carry_research import (
     CarryResearchInputsError,
@@ -58,6 +59,14 @@ from forecasting_engine.models.famafrench import (
     merge_factors,
     run_famafrench,
 )
+from forecasting_engine.models.hybrid import (
+    LONG_TRAIN_WINDOW,
+    MEMBERS,
+    base_input,
+    function_transforms,
+    run_bond_derived_polynomial,
+)
+from forecasting_engine.models.hybrid import NAME as BOND_DERIVED_FIT
 from forecasting_engine.models.naive import NaiveDataError, run_naive
 from forecasting_engine.models.polynomial import (
     CANDIDATE_CONFIGS,
@@ -153,6 +162,17 @@ RESEARCH_CAPTIONS = {
     "Sep 2026 upload (Aug 2016 – Sep 2026).",
 }
 
+#: Shown under the bond derived polynomial's row wherever its score is, and in its
+#: expander: what it is, what it was tested on, and how far that goes.
+BOND_DERIVED_CAPTION = (
+    f"The mean of {len(MEMBERS)} fits, none picked: each fits the levels (gauges, spreads "
+    "and each rate's level) by the bond research model's reduced-bias method and the rest "
+    "by one of the derived grid's four fits, some with calendar counts offered, on the "
+    f"latest {TRAIN_WINDOW} dates or up to {LONG_TRAIN_WINDOW:,}. Validated on 2008–2026 "
+    "and on public data for 1992–2006; provisional until tested on data after 12 Nov 2026. "
+    "At 20 days its Signal Rank IC is positive but below the significance gate."
+)
+
 #: The polynomial's two sources; exactly one runs.
 DERIVE_OPTION, OWN_OPTION = "Derive automatically", "Use your own function"
 
@@ -199,8 +219,9 @@ GATE_NAMES = {"signal_rank_ic": "Signal Rank IC", "t": "t"}
 #: but the naive baseline is gated on Signal Rank IC and t. 6: every model's Signal
 #: Rank IC and baseline are measured against its own level, and the standard error
 #: for overlapping labels counts every lag in full. 7: the research models' results
-#: carry their pre-2016 hold-out.
-RESULT_VERSION = 7
+#: carry their pre-2016 hold-out. 8: the bond derived polynomial is the mean of 14 fits,
+#: each fitting levels apart.
+RESULT_VERSION = 8
 
 st.set_page_config(
     page_title="Models · Forecasting Engine", page_icon=":material/functions:", layout="wide"
@@ -349,12 +370,14 @@ def _keep(widget_key: str, value: object) -> None:
 
 
 def _polynomial_settings(
-    key: str, panel: FeaturePanel, run_poly: bool
+    key: str, panel: FeaturePanel, run_poly: bool, *, equity: bool
 ) -> tuple[str | None, dict[str, object]]:
     """Which polynomial runs, if any, and each polynomial row's own setting.
 
     Only the chosen source's input is shown. Each row depends only on its own
-    setting, so switching source or unticking clears nothing."""
+    setting, so switching source or unticking clears nothing. The derived polynomial
+    is a grid with one winner on the Equity tab and the mean of 14 fits on the Bond
+    tab (``models/hybrid``)."""
     terms_key, formula_key = f"terms_{key}", f"formula_{key}"
     settings: dict[str, object] = {
         DERIVED: int(_kept(terms_key, DEFAULT_MAX_TERMS)),
@@ -381,10 +404,19 @@ def _polynomial_settings(
         )
         _keep(terms_key, int(max_terms))
         settings[DERIVED] = int(max_terms)
-        st.caption(
-            f"Tries a Lasso fit at each degree from 1 to 3 (of up to {MAX_DEGREE} allowed) "
-            "and a shrinkage fit, and reports the one with the best Signal Rank IC."
-        )
+        if equity:
+            st.caption(
+                f"Tries a Lasso fit at each degree from 1 to 3 (of up to {MAX_DEGREE} "
+                "allowed) and a shrinkage fit, and reports the one with the best Signal "
+                "Rank IC."
+            )
+        else:
+            st.caption(
+                f"Averages {len(MEMBERS)} fits and picks none: a Lasso fit at each degree "
+                "from 1 to 3 and a shrinkage fit, with and without calendar counts, on the "
+                f"latest {TRAIN_WINDOW} dates and on up to {LONG_TRAIN_WINDOW:,}, each "
+                "fitting the levels apart. The cap applies to each Lasso fit."
+            )
         return DERIVED, settings
     formula = st.text_input(
         "Function — write its shape with placeholders, then pick each one's signal",
@@ -501,6 +533,36 @@ def _run_derived(
     return model_runs.ModelRun(result, description, function=fn, shap=shap)
 
 
+def _run_bond_derived(
+    max_terms: int,
+    frame: pd.DataFrame,
+    signals: tuple[str, ...],
+    read_as: Mapping[str, Transform],
+    price_col: str,
+    horizon: int,
+    splitter: PurgedWalkForward,
+) -> model_runs.ModelRun:
+    """The bond derived polynomial: the mean of 14 fits on the page's signals, each
+    rate's level and the calendar counts, on the page's train window and a longer one.
+    Its equation names each input of the longer window apart; SHAP adds the two
+    windows' shares of an input together, over the latest fold's page-window rows."""
+    result, description, panel = run_bond_derived_polynomial(
+        frame, signals, read_as, price_col, horizon, splitter, max_terms=max_terms
+    )
+    fn = from_description(
+        description,
+        origin=Origin.DERIVED,
+        target=price_col,
+        horizon=horizon,
+        columns=panel.signals,
+    )
+    training = panel.frame.loc[last_fold_train_window(panel, splitter)]
+    shap = polynomial_shap(fn, training, description.input_bounds, attribute_to=base_input)
+    return model_runs.ModelRun(
+        result, description, function=fn, shap=shap, inputs=function_transforms(panel)
+    )
+
+
 def _run_research(
     signs: Mapping[str, int],
     frame: pd.DataFrame,
@@ -563,7 +625,8 @@ def _research_inputs(role: TargetRole) -> tuple[object | None, str | None]:
 def _active_function(name: str, run: model_runs.ModelRun) -> active_model.ActiveFunction | None:
     """The fitted function a scenario evaluates again (FYP-32), for the polynomial
     models only: their latest fold's fit, with each input's transform. The research
-    model reads its inputs as levels whatever the transform map says."""
+    model reads its inputs as levels whatever the transform map says, and the bond
+    derived polynomial reads inputs of its own (``ModelRun.inputs``)."""
     origin = {
         DERIVED: Origin.DERIVED,
         RESEARCH: Origin.DERIVED,
@@ -572,6 +635,11 @@ def _active_function(name: str, run: model_runs.ModelRun) -> active_model.Active
     }
     if name not in origin:
         return None
+    if run.inputs is not None:
+        inputs = function_inputs(run.description, origin[name], run.inputs)
+        return active_model.ActiveFunction(
+            origin[name], run.description, {s: run.inputs[s] for s in inputs}
+        )
     inputs = function_inputs(run.description, origin[name], numeric_cols)
     return active_model.ActiveFunction(
         origin[name],
@@ -883,10 +951,14 @@ def _outcome(result: ModelRunResult) -> ValidationOutcome:
 
 
 def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> None:
-    """Shared by the derived polynomial and ML: both screen the same panel on the
-    same folds, so their screening is the same and shown once."""
+    """Shared by the derived polynomial and ML: both screen the page's signals on the
+    same folds, so their screening of them is the same and shown once. The bond derived
+    polynomial also screens the inputs it builds, and those of its longer window on
+    that window's rows, so its table is the longer one."""
     screenings = [runs[n].result.screening for n in (DERIVED, ML) if n in runs]
     screening = next((s for s in screenings if s is not None), None)
+    built = runs[DERIVED].inputs if DERIVED in runs else None
+    read_as = {**transforms, **(built or {})}
     with st.expander(f"Signal screening · {target_name}"):
         if screening is None:
             st.caption(
@@ -904,7 +976,7 @@ def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> N
             [
                 {
                     "Signal": signal,
-                    "Transform": str(transforms[signal]) if signal in transforms else "—",
+                    "Transform": _read_as(signal, read_as),
                     "Latest fold": "In" if signal in screening.latest_included else "Out",
                     "Latest-fold IC": ics.get(signal, float("nan")),
                     "Included in": f"{used} of {screening.folds} folds",
@@ -916,6 +988,13 @@ def _show_screening(runs: dict[str, model_runs.ModelRun], target_name: str) -> N
             column_config={"Latest-fold IC": st.column_config.NumberColumn(format="%.4f")},
         )
         _show_no_signal_folds(screening)
+
+
+def _read_as(signal: str, read_as: Mapping[str, Transform]) -> str:
+    """How a screened input enters: its transform, or that it is a calendar count."""
+    if signal not in transforms and base_input(signal) in CALENDAR_NAMES:
+        return "calendar count"
+    return str(read_as[signal]) if signal in read_as else "—"
 
 
 def _show_no_signal_folds(screening: ScreeningSummary | None) -> None:
@@ -1029,6 +1108,13 @@ def _show_polynomial_expander(
                 "each one's unexpected move over the horizon taken out. Each fold trains "
                 f"on every date before its test window, not the latest {TRAIN_WINDOW}, as "
                 "the research did. " + RESEARCH_CAPTIONS[BOND_RESEARCH]
+            )
+        elif run.description.name == BOND_DERIVED_FIT:
+            st.caption(
+                BOND_DERIVED_CAPTION + " The equation is the latest fold's mean of the "
+                f"{len(MEMBERS)}: an input marked ({LONG_TRAIN_WINDOW:,}-day fit) is read by "
+                f"the fits on up to {LONG_TRAIN_WINDOW:,} dates, with its own clip range and "
+                "standardisation."
             )
         _show_polynomial(run)
 
@@ -1448,7 +1534,7 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     panel = align_and_lag(indexed, signal_cols, price_col, horizon=horizon, transforms=transforms)
     _show_alignment(panel, target_name)
 
-    polynomial, settings = _polynomial_settings(key, panel, run_poly)
+    polynomial, settings = _polynomial_settings(key, panel, run_poly, equity=equity)
     research_inputs, unavailable = _research_inputs(role)
     if research_ticked and not research_inputs:
         st.caption(f"No research model for this target: {unavailable}")
@@ -1475,7 +1561,20 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
     if (clicked or run_all) and not nothing_to_run and not running:
         runners = {
             NAIVE: functools.partial(_run_naive, panel, splitter),
-            DERIVED: functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter),
+            DERIVED: (
+                functools.partial(_run_derived, settings[DERIVED], panel, price_col, splitter)
+                if equity
+                else functools.partial(
+                    _run_bond_derived,
+                    settings[DERIVED],
+                    indexed,
+                    tuple(signal_cols),
+                    dict(transforms),
+                    price_col,
+                    horizon,
+                    splitter,
+                )
+            ),
             RESEARCH: functools.partial(
                 _run_research, research_inputs, indexed, price_col, horizon, splitter
             ),
@@ -1520,6 +1619,8 @@ def _render_tab(role: TargetRole, price_col: str) -> None:
         if name in runs:
             st.markdown(_gate_line(name, runs[name].result))
     _show_table({name: run.result for name, run in runs.items()})
+    if DERIVED in runs and runs[DERIVED].description.name == BOND_DERIVED_FIT:
+        st.caption(f"{DERIVED}: {BOND_DERIVED_CAPTION}")
     for name in RESEARCH_MODELS:
         if name in runs:
             st.caption(f"{name}: {RESEARCH_CAPTIONS[name]}")

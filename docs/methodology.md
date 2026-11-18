@@ -221,7 +221,10 @@ every row, with no terms and that mean as its intercept
 (`validation/harness.evaluate`). Fitting on the signals that just failed the gate
 would let them back in. The Models page shows each signal's transform, its
 latest-fold in/out and IC, and how many folds kept it, and says under each
-screening model how many folds had no signal pass.
+screening model how many folds had no signal pass. The Bond tab's derived
+polynomial (§9.4) also screens the inputs it builds (each rate's level and the
+calendar counts), and the inputs of its longer window on that window's own rows, so
+its table lists those too.
 
 ## 9. Model families
 
@@ -284,7 +287,9 @@ a run may use (default at most `DEFAULT_MAX_WORKERS`; 1 runs everything in turn)
   raises a plain number to a power too large for a float, such as
   `10 ** 1000000000`, which is told from the number's digits before it is worked
   out (§18).
-- **Derived polynomial** (`models/polynomial.run_derived_polynomial`). The grid is
+- **Derived polynomial** (`models/polynomial.run_derived_polynomial`), Equity tab.
+  The Bond tab's derived polynomial has been the mean of 14 fits since 18 Nov 2026
+  (§9.4); what follows is equity's, and the fits the bond one averages. The grid is
   a Lasso fit (`CANDIDATE_REGULARIZERS`, an L1 share of 1 in `_REGULARIZERS`) at
   every degree in `CANDIDATE_DEGREES`, `models/polynomial.DerivedPolynomial`, plus
   one shrinkage candidate (`SHRINKAGE`, below): four setups. `MAX_DEGREE` still
@@ -599,6 +604,10 @@ has no terms to attribute to a signal (a user formula that divides by a
 signal, or expands past 50 terms). `tests/unit/test_shap_attribution.py`
 checks the degree-1 case against the closed form directly and the interaction
 case's conservation property (the two signals' shares sum to the term's own).
+The bond derived polynomial (§9.4) reads an input under two names, one per train
+window; its two names' shares are added row by row into one row for the input
+(`attribute_to`), over the latest fold's page-window training rows. No term of that
+model multiplies the two names together, so the sum is the input's Shapley value.
 
 For a degree-1 term, mean |SHAP value| equals |coefficient| × the mean absolute
 deviation of the input over the fold's training rows, the input being as the
@@ -613,6 +622,142 @@ models in one table.
 SHAP explains the last fold's fitted function over that fold's training rows
 (the test window is too short to average over), the same convention the ML SHAP
 uses (`models.boosted._explain_last_fold`).
+
+### 9.4 Polynomial (derived), Bond tab: the mean of 14 fits
+
+`models/hybrid.run_bond_derived_polynomial`, the Bond tab's "Polynomial (derived)"
+row since 18 Nov 2026; equity's derived polynomial (§9) is unchanged. It is candidate
+`A-K3` of the November 2026 research round that scored a hold-out nobody had looked
+at (`s18-holdout-and-structure`): registered with ten others before any of them was
+run, and the one that qualified ([evidence](evidence/2026-11-18-bond-holdout.md)).
+It is built here as registered; nothing in it was tuned afterwards.
+
+**What it is.** The mean of 14 polynomials (`MEMBERS`), each fitted per fold on the
+inputs its fold's screening kept (§8):
+
+1. **Inputs**, by kind of series, never by ticker (`bond_derived_inputs`): the page's
+   signals with §4's transforms; for every signal §4 reads as a difference (a rate),
+   its level, lagged a row like every signal (named `<column>` + `LEVEL_SUFFIX`); and
+   calendar counts over each row's label window (`models/calendar_inputs`): how many
+   of the next `h` trading days are a month's last trading day, a month's first, and
+   a Friday in a month's first seven days (`CALENDAR_INPUTS`), and at `h` = 1 which
+   weekday the next one is (`WEEKDAY_INPUTS`). Trading calendars are published years
+   ahead, so the counts are not lagged. Past the data's last date the coming trading
+   days come from `HOLIDAY_CALENDAR`, so the latest rows have counts, and a forecast.
+2. **Levels and flows.** An input is a level if it is read as a level: a gauge or
+   spread (§4), or a rate's level. Every other input (rate changes, price returns,
+   calendar counts) is a flow.
+3. **A member.** Its levels go to the bond research model's fit as it is (§9.2,
+   `CarryResearchPolynomial`: each level's label-window innovation from a
+   bias-corrected AR(1) is taken out unpenalised; a lasso on the levels, its penalty
+   chosen by time-ordered validation with a gap of `h`), its flows to one of
+   `FLOW_FITS`: the derived grid's lasso at degree 1, 2 or 3, under the page's term
+   cap, or its shrinkage fit, as they are. `forecast = level part + flow part − the
+   flow part's mean in-sample forecast`; with only one part, that part; with neither,
+   the training-mean target. A part whose fold has too few complete rows is left out
+   of that fold.
+4. **The 14**: the four flow fits × with and without the calendar counts × two train
+   windows, the page's (the latest `TRAIN_WINDOW` rows) and every earlier row up to
+   `LONG_TRAIN_WINDOW` (`splitters.capped`: the same test windows, embargo and purge),
+   less lasso degree 3 with the calendar counts, which the research did not run.
+5. **The model.** On each test row, the plain mean of the 14 forecasts; per fold, its
+   own level (§10) is the mean of the 14 own levels, so its signal is the mean of the
+   14 signals. Its in-sample forecasts, which crash diagnostics read, are over the
+   page's train window, which every longer-window fold's contains. Nothing is
+   selected (§11).
+
+**Why the levels are fitted apart.** The derived grid gives a persistent level (a gauge,
+a spread) to the same regression as the daily changes. For a level whose own moves drive the
+return, that slope is biased in a short sample (Stambaugh 1999), with the sign of the
+level's same-day correlation with the return rather than of anything it predicts; the
+reduced-bias fit of §9.2 is built for that case (Amihud & Hurvich 2004). In the
+research, with the same columns, windows and averaging and only the way levels are
+fitted changed, the level part raised the Signal Rank IC at 10 and 20 days in both
+samples and at every horizon on the hold-out (there +0.049, +0.048, +0.046, +0.049
+against +0.002, +0.018, −0.029, +0.017 at h = 1, 5, 10, 20); at 1 and 5 days on the
+data from 2006 it cost about 0.01. The calendar counts carry the short horizons on
+the data from 2006; the level part carries the long ones.
+
+**Why it averages instead of picking.** A per-window pick takes the configuration with
+the best record so far, and among a few hundred most of that record is luck; the
+forecasting literature's answer is to combine (Bates & Granger 1969; Timmermann 2006).
+Here it mattered for the train window most: the one that scored best swapped between
+the samples. On 2008–2026 the 504-row half scored +0.042, +0.072, +0.071, +0.098 at
+h = 1, 5, 10, 20 and the 2,520-row half +0.019, +0.005, −0.033, +0.012; on the hold-out
+the 2,520-row half scored +0.076, +0.078, +0.044, +0.027 and the 504-row half +0.037,
++0.031, +0.032, +0.012. No rule picking a window would have been right in both. The
+same 14 fits picked per window instead passed on 2008–2026 and failed the hold-out.
+Leaving out any one of the 14 moves the mean by at most 0.013 at any horizon in any
+sample, so no one fit carries it.
+
+**The evidence.** Signal Rank IC (§10). "Today's grid" is the derived grid this row ran
+before, with its per-window pick made from earlier windows only, the honest version of
+what the page did:
+
+| | h = 1 | h = 5 | h = 10 | h = 20 |
+|---|---|---|---|---|
+| Data from 2006 (tests Oct 2008 – Nov 2026): this model | +0.045, t 2.9 | +0.037 | +0.019 | +0.065 |
+| Data from 2006: today's grid | +0.029 | +0.032 | −0.022 | −0.054 |
+| Public hold-out (tests Jan 1992 – Aug 2006): this model | +0.050 | +0.058 | +0.055 | +0.048 |
+| Public hold-out: today's grid | +0.020 | +0.012 | +0.016 | −0.033 |
+
+It is above today's grid at every horizon in both, and above zero in both decades of
+the data from 2006 at all four horizons. On the data from 2006 it passes the gate
+(§12) only at h = 1; at the page's default of 20 days it is +0.065 with t 1.1,
+positive in both decades and on the hold-out, where today's grid is negative, but not
+significant. The hold-out figures are means over five copies of the hold-out with the
+target fund's rounding broken at random (below); it passed on each.
+
+**One polynomial.** Within one train window the members share each input's clip range
+and standardisation (the same rows and the same mean and standard deviation), so their
+mean is one polynomial in those inputs. Across the two windows an input has two of
+each, so the longer window's fits read their inputs under the input's own name with
+`LONG_WINDOW_SUFFIX` (`long_window_input`), held as columns of their own in the
+model's panel: one polynomial in which each input name has one range and one
+standardisation. Its terms are the members' summed and divided by 14, a term whose mean
+is zero dropped; its intercept is the mean of the members' intercepts, each member's
+being its level part's plus its flow part's less the flow part's mean in-sample
+forecast. `tests/unit/test_hybrid.py` checks that it reproduces the forecast to 1e-9,
+on rows driven past every clip bound too. The page shows it like any derived equation,
+an input of the longer window labelled "(2,520-day fit)" and a rate's level
+"(level)"; set active, it is stored with each input's transform (a calendar count's as
+a level) and no change to the store's tables, and a scenario rebuilds each input from
+the committed columns (`models/hybrid.source_column`, §18).
+
+**Run time.** Each window's level part is the same fit for all seven members on that
+window (the same inputs on the same rows, each screened on its own), so it is fitted
+once per window (`member_folds(..., share_level_part=True)`); `tests/unit/test_hybrid.py`
+checks the result equals fitting each member whole to 1e-12. That makes 16 walk-forwards
+in place of the grid's four, run in separate processes like the grid's. On synthetic
+data shaped like the bond tab's, once the longer window is full, they took 2.8 times the
+grid's processor time.
+
+**Limits, said plainly.**
+
+- **Provisional.** Over 2,000 bond configurations have been tried on 2008–2026. The
+  model was designed knowing that carry and the turn of the month held there, so those
+  years are not blind for it; the hold-out is the part that was. It is provisional until
+  tested on data after 12 Nov 2026.
+- **The bar is not the gate.** One of 11 candidates qualified, against a bar fixed before
+  any run; it clears the gate only at h = 1 on the data from 2006 (and at h = 1 and 5 on
+  the hold-out). The hold-out's later half (1999 – Aug 2006) is thin at 5 days and
+  longer (+0.00 to +0.03).
+- **The hold-out is a stand-in**: a bond fund for the index, a Baa-less-Treasury spread
+  for the index's own, six of the nine signals, from public sources.
+- **The fund's rounding.** Its price is to the cent, so on a fifth of days it does not
+  move and the day's return is its income alone; a rank score then credits any forecast
+  that reads a yield level with skill it does not have at one day. The research
+  re-tested on five copies with the rounding broken at random, decided before they were
+  run, and this model passed on all five.
+- **Not tested: whether a portfolio earns it.** Forecasts this small have not paid after
+  costs (§20).
+- **Two departures from the research's runs**, both on design grounds and decided before
+  any app run: the latest rows' calendar counts come from the holiday calendar, where
+  the research's had none; and the forecast on a row where some member lacks an input is
+  missing, where the research averaged the members it had, since only the full mean is
+  the one polynomial above. The first touches only the last few scored rows; the
+  second only a test row on which an input is missing, which the data from 2006 has
+  almost none of (§7.1).
 
 ## 10. Metrics
 
@@ -677,9 +822,10 @@ values end to end, then computes once:
 
 ## 11. Selection
 
-Where a family has several setups (the derived polynomial's grid; tuned XGBoost
-vs. tuned LightGBM), `validation/harness.select_best_candidate` reports the setup
-with the best Signal Rank IC.
+Where a family has several setups (the derived polynomial's grid on the Equity
+tab; tuned XGBoost vs. tuned LightGBM), `validation/harness.select_best_candidate`
+reports the setup with the best Signal Rank IC. The Bond tab's derived polynomial
+selects nothing: it is the mean of its 14 fits (§9.4).
 
 There is no probability of backtest overfitting (PBO) any more. On the Sep 2026
 data it was not stable enough to gate on: machine learning's, comparing two
@@ -1164,7 +1310,13 @@ prices is added.
    forecast's inputs are the last day's values after alignment, the transform and
    the one-day lag, exactly as a fold reads a real day (`next_inputs`). A
    differenced input moves by the shock less the day before's level; a log-return
-   input reads the shock against the day before.
+   input reads the shock against the day before. An input the bond derived
+   polynomial builds (§9.4) is worked out from the shocked frame as its fit worked
+   it out (`models/hybrid.inputs_panel`): a shock to a rate moves its change, its
+   level and the longer window's copy of each, and a calendar count, worked out
+   from dates, never moves. Only committed columns are offered to shock
+   (`signals_read`); an input of the longer window is ranged over that window's
+   latest training rows (step 7).
 6. **Evaluation** (`evaluate`). Each input is clipped and standardised with the
    stored bounds and statistics, then the terms applied: for every stored model
    this reproduces its own `predict` on the same row. The base case is the same
@@ -1342,7 +1494,9 @@ current results.
 | Bond | Machine learning | +0.019, t 1.30 | +0.013, t 0.54 | −0.017, t −0.46 | +0.045, t 0.88 |
 
 No bond model passes at any horizon, and at the default 20-day horizon no model
-passes for either index. Both research models score near zero on their pre-2016
+passes for either index. The bond derived row is the grid the page ran then; the
+mean of 14 fits that replaced it on 18 Nov 2026 is scored in §9.4, from its
+research, until the page is rerun. Both research models score near zero on their pre-2016
 hold-out at every horizon (t −0.44 to +0.65; §9.2 has the 20-day figures).
 
 **Portfolio.** The main result uses the team's Sprint 4 default pair, the derived
@@ -1434,6 +1588,13 @@ Values are Python literals as the code holds them.
 | `CARRY_INPUTS` | `forecasting_engine.models.carry_research` | `{"bond": ("USGG10YR", "USGGBE10", "USYC2Y10", "LF98OAS", "LUACOAS", "VIX", "JPMVXYGL")}` |
 | `RHO_CAP` | `forecasting_engine.models.carry_research` | `0.9999` |
 | `_MIN_TRAINING_ROWS` | `forecasting_engine.models.carry_research` | `30` |
+| `LONG_TRAIN_WINDOW` | `forecasting_engine.models.hybrid` | `2520` |
+| `FLOW_FITS` | `forecasting_engine.models.hybrid` | `("lasso1", "lasso2", "lasso3", "shrinkage")` |
+| `LEVEL_SUFFIX` | `forecasting_engine.models.hybrid` | `"_LEVEL"` |
+| `LONG_WINDOW_SUFFIX` | `forecasting_engine.models.hybrid` | `"_W2520"` |
+| `CALENDAR_INPUTS` | `forecasting_engine.models.calendar_inputs` | `("CAL_MONTH_END", "CAL_MONTH_START", "CAL_JOBS_FRIDAY")` |
+| `WEEKDAY_INPUTS` | `forecasting_engine.models.calendar_inputs` | `("CAL_MON", "CAL_TUE", "CAL_WED", "CAL_THU")` |
+| `HOLIDAY_CALENDAR` | `forecasting_engine.models.calendar_inputs` | `"SIFMA_US"` |
 | `CANDIDATE_REGULARIZERS` | `forecasting_engine.models.polynomial` | `("lasso",)` |
 | `CLIP_SD` | `forecasting_engine.models.polynomial` | `4.0` |
 | `INNER_CV_SPLITS` | `forecasting_engine.models.polynomial` | `5` |
@@ -1504,3 +1665,8 @@ them is [docs/evidence/2026-10-12-verify.py](evidence/2026-10-12-verify.py).
 The bond derived grid was left as it is after 124 bond runs on 16 Nov 2026 varied the
 columns offered, the fit, the train window, the horizon and machine learning's search
 space, and none beat the page's grid beyond what chance gives ([evidence](evidence/2026-11-16-bond-grids.md)).
+
+On 18 Nov 2026 the bond derived polynomial became the mean of 14 fits that fit levels
+apart (§9.4): the one of 11 candidates registered before a hold-out on public data for
+1992–2006, which no earlier configuration had been scored on, that beat the page's grid
+there and on the data from 2006 ([evidence](evidence/2026-11-18-bond-holdout.md)).

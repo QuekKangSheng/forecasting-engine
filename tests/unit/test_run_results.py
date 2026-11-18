@@ -17,6 +17,7 @@ from forecasting_engine.reporting.portfolio_comparison import (
 )
 from forecasting_engine.reporting.run_results import (
     market_conditions,
+    model_summary,
     run_results,
     simulation_results,
     tail_with_simulation,
@@ -178,3 +179,50 @@ def test_the_latest_rebalances_market_conditions_are_annualised_from_its_covaria
     assert conditions["gate_shut"] is True and conditions["trust"] == 0.0
     assert conditions["level_weight"] == 0.5 and conditions["capped"] is False
     json.dumps(conditions)  # saved as JSON with the run
+
+
+def test_a_bond_derived_function_reads_its_built_inputs_and_names_its_fit():
+    from datetime import datetime
+
+    from forecasting_engine.ingest.align import Transform
+    from forecasting_engine.models.base import ModelDescription
+    from forecasting_engine.reporting.factor_labels import labeller
+    from forecasting_engine.reporting.polynomial_function import Origin
+    from forecasting_engine.store.active_model import ActiveFunction, ActiveModelRecord
+
+    rate = "USGG10YR_Index_PX_LAST"
+    level, longer = f"{rate}_LEVEL", f"{rate}_W2520"
+    description = ModelDescription(
+        "BondDerivedPolynomial",
+        (level, f"{longer}^2"),
+        (0.002, -0.001),
+        0.001,
+        {level: (2.0, 6.0), longer: (-0.2, 0.2)},
+        {level: (4.0, 0.5), longer: (0.0, 0.05)},
+    )
+    function = ActiveFunction(
+        Origin.DERIVED, description, {level: Transform.LEVEL, longer: Transform.DIFFERENCE}
+    )
+    record = ActiveModelRecord(
+        BOND, "Polynomial (derived)", 0.0, 0.0, 0.0, False, datetime(2026, 11, 18), 20, 504, 20, ""
+    )
+
+    summary = model_summary(
+        "US Aggregate Bond",
+        record,
+        display_name="Polynomial (derived)",
+        signal_t=1.0,
+        function=function,
+        attribution=None,
+        label=labeller([rate]),
+        target="LBUSTRUU_Index_TOT_RETURN_INDEX_GROSS_DVDS",
+        columns=[rate],
+    )
+
+    assert summary["fit"] == "BondDerivedPolynomial"
+    terms = [row for row in summary["terms"] if row["Factor"] != "(intercept)"]
+    assert [row["Factor"] for row in terms] == [
+        "z(US 10y Treasury yield (level))",
+        "z(US 10y Treasury yield (2,520-day fit))",
+    ]
+    assert [row["Exponent"] for row in terms] == ["1", "2"]

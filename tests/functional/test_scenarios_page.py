@@ -739,3 +739,68 @@ def test_an_ml_shock_beyond_its_training_range_says_trees_cant_extrapolate():
     warnings = " ".join(w.value for w in app.warning)
     assert "Extrapolation: VIX enters the Global Aggregate Bond model" in warnings
     assert "Trees can't extrapolate: beyond" in warnings
+
+
+# --- a bond derived polynomial: inputs built from the committed columns ------------
+
+#: A bond function in the rate's change under both windows, its level and a calendar
+#: count, as the bond derived polynomial stores one.
+BUILT = active_model.ActiveFunction(
+    Origin.DERIVED,
+    ModelDescription(
+        name="BondDerivedPolynomial",
+        terms=(RATE, f"{RATE}_W2520", f"{RATE}_LEVEL", "CAL_MONTH_END"),
+        coefficients=(0.001, -0.002, 0.003, 0.0005),
+        intercept=0.001,
+        input_bounds={
+            RATE: (-0.2, 0.2),
+            f"{RATE}_W2520": (-0.25, 0.25),
+            f"{RATE}_LEVEL": (2.0, 6.0),
+            "CAL_MONTH_END": (0.0, 2.0),
+        },
+        standardisation={
+            RATE: (0.0, 0.05),
+            f"{RATE}_W2520": (0.0, 0.06),
+            f"{RATE}_LEVEL": (4.0, 0.5),
+            "CAL_MONTH_END": (0.25, 0.4),
+        },
+    ),
+    {
+        RATE: Transform.DIFFERENCE,
+        f"{RATE}_W2520": Transform.DIFFERENCE,
+        f"{RATE}_LEVEL": Transform.LEVEL,
+        "CAL_MONTH_END": Transform.LEVEL,
+    },
+)
+
+
+def test_a_bond_derived_function_offers_only_the_committed_column_its_inputs_come_from():
+    _set_active(EQUITY, function=LINEAR)
+    _set_active(BOND, function=BUILT)
+    app = _page()
+
+    label = labeller([c for c in _committed().columns if c != "Date"])
+    assert not app.exception
+    assert app.multiselect[0].options == [
+        f"{label(VIX)} (read by: Equity)",
+        f"{label(RATE)} (read by: Bond)",
+    ]
+
+
+def test_shocking_the_rate_moves_each_input_built_from_it_and_never_the_calendar_count():
+    _set_active(BOND, function=BUILT)
+    app = _page()
+    label = labeller([c for c in _committed().columns if c != "Date"])
+    last = float(_committed()[RATE].iloc[-1])
+
+    _run(_shock(app, RATE, round(last + 0.5, 4)))
+
+    assert _table(app) is not None
+    detail = next(d.value for d in app.dataframe if "Read as" in d.value.columns)
+    assert sorted(detail["Signal"]) == sorted(
+        [label(RATE), label(f"{RATE}_W2520"), label(f"{RATE}_LEVEL")]
+    )
+    assert "Month-ends ahead" not in set(detail["Signal"])
+    assert dict(zip(detail["Signal"], detail["Read as"], strict=True))[label(f"{RATE}_LEVEL")] == (
+        "level"
+    )

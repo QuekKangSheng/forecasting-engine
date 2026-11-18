@@ -431,6 +431,29 @@ def test_the_carry_model_is_described_as_the_yield_the_bond_earns():
     assert "read as the yield the bond earns" in text
 
 
+def test_the_bond_derived_fit_is_described_as_the_average_it_is():
+    from forecasting_engine.reporting.model_descriptions import DESCRIPTIONS, FIT_DESCRIPTIONS
+
+    model = {**MODEL, "model": "Polynomial (derived)", "fit": "BondDerivedPolynomial"}
+    text = report_html(_run(results=_results(models=[model])), BACKTEST)
+
+    assert html_escape(FIT_DESCRIPTIONS["BondDerivedPolynomial"]) in text
+    assert "average of 14 formulas" in text and "provisional" in text
+    assert html_escape(DESCRIPTIONS["Polynomial (derived)"]) not in text
+
+
+def test_any_other_derived_fit_and_one_saved_before_fits_were_named_keep_the_grids_words():
+    from forecasting_engine.reporting.model_descriptions import DESCRIPTIONS
+
+    for model in (
+        {**MODEL, "model": "Polynomial (derived)", "fit": "ShrinkagePolynomial"},
+        {**MODEL, "model": "Polynomial (derived)"},
+    ):
+        text = report_html(_run(results=_results(models=[model])), BACKTEST)
+
+        assert html_escape(DESCRIPTIONS["Polynomial (derived)"]) in text
+
+
 def test_a_research_model_carries_its_caveat_and_its_pre_2016_hold_out():
     holdout = {"signal_rank_ic": 0.041, "t": 1.37, "windows": 12}
     model = {**MODEL, "model": "Polynomial – fixed economic inputs", "holdout": holdout}

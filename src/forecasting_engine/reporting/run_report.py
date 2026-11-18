@@ -289,7 +289,7 @@ def _models(models: Sequence[Mapping[str, object]] | None) -> str:
 def _model(model: Mapping[str, object]) -> str:
     body = (
         f"<h3>{_esc(model['name'])}: {_esc(model['model'])}</h3>"
-        f"<p>{_esc(describe(model['model']))}</p>"
+        f"<p>{_esc(describe(model['model'], model.get('fit')))}</p>"
         + "".join(f"<p>{_esc(line)}</p>" for line in _research_lines(model))
         + f'<p class="meta">Set active {pd.Timestamp(model["set_at"]):%d %b %Y %H:%M}.</p>'
         f"<p>{_esc(_gate_text(model))}</p>"

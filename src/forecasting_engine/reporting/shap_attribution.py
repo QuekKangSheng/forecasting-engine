@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -23,6 +23,7 @@ def polynomial_shap(
     fn: PolynomialFunction,
     training: pd.DataFrame,
     input_bounds: Mapping[str, tuple[float, float]] | None = None,
+    attribute_to: Callable[[str], str] | None = None,
 ) -> ModelDescription | None:
     """Mean |SHAP value| per signal over ``training``'s rows, in ML's
     terms/coefficients table shape. ``None`` if ``fn`` has no terms (a
@@ -33,14 +34,23 @@ def polynomial_shap(
     training mean); a square attributes wholly to its one signal; an
     interaction splits between its two signals, summing back to the term's
     own contribution.
+
+    ``attribute_to`` names the signal each input's share is reported under, where
+    one signal enters under several names: the bond derived polynomial's fits on
+    its longer window read each input under a name of its own. Each row's shares of
+    one signal are added before the mean of their size is taken, which is that
+    signal's Shapley value whenever no term multiplies two of its names together,
+    as none of that model's does.
     """
     if fn.formula is not None:
         return None
+    named = attribute_to or (lambda column: column)
     needed = dict.fromkeys(column for term in fn.terms for column, _ in term.factors)
     clean = training[list(needed)].dropna() if needed else training.iloc[:0]
     totals: dict[str, np.ndarray] = {}
     for term in fn.terms:
-        for signal, share in _term_shapley(term, fn.standardisation, input_bounds, clean).items():
+        for column, share in _term_shapley(term, fn.standardisation, input_bounds, clean).items():
+            signal = named(column)
             totals[signal] = totals.get(signal, 0.0) + share
     return ModelDescription(
         name=fn.origin,

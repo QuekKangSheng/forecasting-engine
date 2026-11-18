@@ -155,6 +155,11 @@ def model_summary(
     if it is one, its per-signal SHAP if that was saved, and a research model's pre-2016
     hold-out (``signal_rank_ic``, ``t``, ``windows``) if its run recorded one. ``None`` for what the
     model doesn't have or an older record didn't keep, so nothing is passed off as zero.
+    Its ``fit`` is the stored function's own name, which tells one fit of a model from
+    another under the same row name (``reporting.model_descriptions``).
+
+    A function's terms may read inputs built from ``columns`` (a rate's level, an input
+    of the bond derived polynomial's longer window), which it names among its own inputs.
     """
     fn = (
         None
@@ -164,7 +169,7 @@ def model_summary(
             origin=function.origin,
             target=target,
             horizon=record.horizon,
-            columns=columns,
+            columns=[*columns, *function.inputs],
         )
     )
     known = record.signal_rank_ic is not None and signal_t is not None
@@ -179,6 +184,7 @@ def model_summary(
         "gate_met": None if outcome is None else outcome.promoted,
         "gates_failed": [] if outcome is None else list(outcome.failed_gates),
         "origin": None if function is None else function.origin.value,
+        "fit": None if function is None else function.description.name,
         "formula": None if fn is None else fn.shape or fn.formula,
         "terms": None if fn is None else term_rows(fn, label),
         "standardisation": [] if fn is None else standardisation_lines(fn, label),

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from forecasting_engine.models.hybrid import NAME as BOND_DERIVED_FIT
 from forecasting_engine.reporting.model_metrics import MODEL_ORDER
 
 NAIVE, FF5, DERIVED, RESEARCH, BOND_RESEARCH, USER, ML = MODEL_ORDER
@@ -59,6 +60,24 @@ DESCRIPTIONS: Mapping[str, str] = {
     ),
 }
 
+FIT_DESCRIPTIONS: Mapping[str, str] = {
+    BOND_DERIVED_FIT: (
+        "The bond index's derived polynomial: the average of 14 formulas fitted to the "
+        "data, none of them picked over the others. Each fits the levels of rates, credit "
+        "spreads and volatility (where a bond's carry shows) by a method that corrects for "
+        "how a level's own moves flatter it in a short sample, and fits the daily changes, "
+        "returns and, in some, how many month-ends and similar days the forecast window "
+        "holds, by one of the four fits the equity polynomial chooses between. Half use "
+        "the latest 504 trading days, half up to the latest 2,520. It held up on 2008–2026 "
+        "and on public data for 1992–2006, which no earlier bond model had been tested on, "
+        "but it is provisional until tested on data after 12 Nov 2026, and at the 20-day "
+        "horizon its signal is positive but not statistically significant."
+    ),
+}
+"""For a model whose row name has had more than one fit behind it, keyed by the stored
+function's own name (``ModelDescription.name``): the bond derived polynomial is not the
+grid its row name ran before 18 Nov 2026, nor equity's."""
+
 RESEARCH_CAVEATS: Mapping[str, str] = {
     RESEARCH: (
         "Its scores are optimistic: its inputs were chosen by looking at results over "
@@ -71,7 +90,10 @@ RESEARCH_CAVEATS: Mapping[str, str] = {
 }
 
 
-def describe(model: str) -> str:
-    """``model``'s description, or a plain note that there is none for a name this
-    module doesn't know (an old run's model since renamed beyond recognition)."""
+def describe(model: str, fit: str | None = None) -> str:
+    """``model``'s description, that of its stored function ``fit`` where that has its
+    own (``FIT_DESCRIPTIONS``), or a plain note that there is none for a name this module
+    doesn't know (an old run's model since renamed beyond recognition)."""
+    if fit in FIT_DESCRIPTIONS:
+        return FIT_DESCRIPTIONS[fit]
     return DESCRIPTIONS.get(model, f"No description is kept for {model}.")
