@@ -1636,9 +1636,10 @@ LEVEL = 0.02
 
 
 def _directional_page(**kwargs) -> AppTest:
-    """Every raw forecast is above zero, but the signal, the forecast less the
-    model's level, alternates and is right every time."""
-    forecast = _oos([LEVEL + 0.01, LEVEL - 0.01] * 50)
+    """The raw forecast alternates and is right every time. Its level is above every
+    forecast, so the signal, the forecast less the level, is never above zero: a
+    strategy that followed it would sit in cash throughout."""
+    forecast = _oos([0.01, -0.01] * 50)
     realised = _oos([0.02, -0.03] * 50)
     baseline = _oos([LEVEL] * 100)
     run = _with_forecast(forecast, realised, baseline, **kwargs)
@@ -1654,9 +1655,8 @@ def test_the_directional_check_shows_strategy_buy_and_hold_hit_rate_and_days_inv
 
     assert not app.exception
     assert "Would the forecast's direction have paid?" in _markdown(app)
-    # Calls alternate rise/fall and the signal is right every time: in on each of
-    # the 10 rises (+2%), out on each of the 10 falls (-3%). The raw forecast, always
-    # above zero, would have been buy and hold.
+    # Calls alternate rise/fall and the forecast is right every time: in on each of
+    # the 10 rises (+2%), out on each of the 10 falls (-3%).
     assert _metric(app, "Hit rate") == "100%"
     assert _metric(app, "Days invested") == "50%"
     assert _metric(app, "Long/cash strategy") == f"{1.02**10 - 1:+.2%}"
@@ -1724,10 +1724,11 @@ def test_the_directional_check_defaults_to_the_active_model():
     assert picker.value == "Machine Learning"
 
 
-def test_the_directional_check_says_it_reads_the_signal_and_dates_returns_by_their_end():
+def test_the_directional_check_says_it_reads_the_forecast_and_dates_returns_by_their_end():
     captions = _captions(_directional_page())
 
-    assert "when the model's signal (its forecast less its own average forecast)" in captions
+    assert "holds the index when the model's forecast is above zero" in captions
+    assert "its own average forecast" not in captions
     assert "Each return is plotted at the end of its holding period" in captions
 
 
@@ -1735,18 +1736,32 @@ def test_the_directional_check_says_a_flat_line_is_time_in_cash():
     assert "the strategy's line is flat wherever it sat in cash" in _captions(_directional_page())
 
 
-def test_a_model_with_no_signal_says_there_is_nothing_to_test():
-    """A forecast that is always the model's own level (Naive) would sit in cash
-    throughout, with a hit rate that only counts the steps the index fell."""
+def test_the_naive_baseline_is_a_reference_row_that_holds_on_its_training_mean():
+    """Its forecast is its own level, so it has no signal, but a positive training
+    mean is still a direction: it holds the index on every call."""
     forecast = _oos([LEVEL] * 100)
     realised = _oos([0.02, -0.03] * 50)
     run = _with_forecast(forecast, realised, _oos([LEVEL] * 100))
 
-    app = _page({EQUITY: {POLY: _polynomial_run(run)}})
+    app = _page({EQUITY: {NAIVE: model_runs.ModelRun(run, ModelDescription("Naive", (), ()))}})
 
     assert not app.exception
-    assert any("has no signal to test" in i.value for i in app.info)
-    assert not [m for m in app.metric if m.label in ("Hit rate", "Long/cash strategy")]
+    (picker,) = [s for s in app.selectbox if s.label == "Forecasts from"]
+    assert picker.value == NAIVE
+    assert not [i for i in app.info if "no signal" in i.value]
+    assert _metric(app, "Days invested") == "100%"
+    assert _metric(app, "Long/cash strategy") == _metric(app, "Buy and hold")
+    # Every call is a rise forecast, so it is a hit exactly on the 10 rises of 20.
+    assert _metric(app, "Hit rate") == "50%"
+
+
+def test_a_forecast_positive_on_every_call_is_buy_and_hold():
+    run = _with_forecast(_oos([0.001] * 100), _oos([0.02, -0.03] * 50), _oos([0.05] * 100))
+
+    app = _page({EQUITY: {POLY: _polynomial_run(run)}})
+
+    assert _metric(app, "Days invested") == "100%"
+    assert _metric(app, "Long/cash strategy") == _metric(app, "Buy and hold")
 
 
 def test_a_result_saved_without_its_levels_asks_for_a_rerun():

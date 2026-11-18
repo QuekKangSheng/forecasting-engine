@@ -18,8 +18,7 @@ The changes behind these passages are:
 5. **Long-run premium:** π̄ is now blended with a published prior.
 6. **No-trade band:** removed.
 7. **Optimiser audit fixes:**
-   - directional P&L follows the signal;
-   - returns are dated by the end of their holding period;
+   - directional P&L returns are dated by the end of their holding period;
    - the "signal" and "forecast" labels are separated.
 
 The current figures are in `docs/methodology.md` §20 and
@@ -50,7 +49,7 @@ The current figures are in `docs/methodology.md` §20 and
 | 10, "On the Sep 2026 export (Appendix A.3)…" | Premium 0.32%–1.38% per 20 days; "The trust gate was open at 26 of 99 rebalances" | "On the data from 2006, π̄ stays between 4.19% and 7.86% a year (lowest on 9 Mar 2009). The trust gate is open at 3 of 226 rebalances at h = 20 and 137 of 904 at h = 5. With machine learning for bond, as at UAT 3, it opens at 92 of 226: the bond model, not the longer history, explains most of the difference from UAT 3." Add the four points of methodology §17 "Reading the weights": forecasts set the direction and the bounds set the size; strong signals put every level on the same bound; level 5 is the 20% floor by design; the latest weights trail the data by up to about 7 weeks. (4, 5, 7) |
 | 10, "What the page shows" | "the drifted weight, the band and whether it held, and the share of rebalances the band held" | "the weight that gives before and after the bounds, and why the signals were not used where the gate is shut" (6) |
 | 11. Portfolio evaluation, Backtest | "the same schedule with β̂ = 0 and the same no-trade band" | "the same schedule with β̂ = 0" (6) |
-| 11, Directional P&L | "fully invested when the forecast is positive" | "fully invested when the model's signal (its forecast less its own average forecast) is positive… each h-day return plotted at the end of its holding period" (7) |
+| 11, Directional P&L | "fully invested when the forecast is positive" | Keep, and add "… each h-day return plotted at the end of its holding period" (7) |
 | 11, Deflated Sharpe ratio | "Any equity–bond mix over 2018–2026 clears that" | "Any equity–bond mix over 2008–2026 clears that" (4) |
 | 13. Rigour checklist, "Overstated certainty" | "Two Newey-West standard errors; the gate uses the wider" | "Hansen-Hodrick over h−1 lags (never below Newey-West) and Newey-West over test-window lags; the gate uses the wider" (2) |
 | 13, "Forecast level artefacts" | "Gate on the Signal Rank IC" | "Gate on the Signal Rank IC, against each model's own level" (1) |
@@ -75,7 +74,7 @@ The current figures are in `docs/methodology.md` §20 and
 
 | Section | Out of date | Suggested wording |
 |---|---|---|
-| Version history | Ends at v5 | Add v6: Signal Rank IC against each model's own level; Hansen-Hodrick standard errors; bond research model and the pre-2016 hold-out; data from 31 Aug 2006; long-run premium prior; no-trade band removed; directional P&L on the signal. Evidence: System Design Specification, Appendix D. |
+| Version history | Ends at v5 | Add v6: Signal Rank IC against each model's own level; Hansen-Hodrick standard errors; bond research model and the pre-2016 hold-out; data from 31 Aug 2006; long-run premium prior; no-trade band removed. Evidence: System Design Specification, Appendix D. |
 | 3. Gates, targets and diagnostics, "Forecast trust gate" | "has a Newey-West t-statistic above 2" | "has a t-statistic above 2 (Hansen-Hodrick over h − 1 lags, never below Newey-West). Because it is re-checked at every rebalance, a no-skill model opens it at some point more often than 2.3% (11–35% in simulation)." (2, 7) |
 | 4. Evaluation setup, Data period | "currently 31 Aug 2016 to 30 Sep 2026 (2,534 S&P 500 and 2,554 bond trading days)… reported results cover 1 Oct 2018 onwards" | "currently 31 Aug 2006 to 11–12 Nov 2026 (5,081 S&P 500 and 5,089 bond trading days)… reported results cover 1 Oct 2008 onwards" (4) |
 | 4, Validation scheme | "(100 folds for equity, 101 for bond)… the research-derived equity model alone trains on every earlier day" | "(227 folds for equity, 228 for bond)… the two research models alone train on every earlier day" (3, 4) |
@@ -83,22 +82,21 @@ The current figures are in `docs/methodology.md` §20 and
 | 4, Reference baselines | "forecast trust set to zero, same no-trade band" | "forecast trust set to zero" (6) |
 | 4, Allocation | "rebalanced every h days through a cost-aware no-trade band… risk aversion is implied from the long-run equity-minus-bond premium… Newey-West t-statistic (h − 1 lags)" | "rebalanced every h days, each rebalance trading straight to its target… implied from a long-run premium that blends the data with a published 6.6% a year worth 30 years… t-statistic (Hansen-Hodrick, h − 1 lags)" (2, 5, 6) |
 | 5. Tier 1, Signal Rank IC | "(forecast − that fold's training-mean return)… what a model adds to the naive forecast"; "two Newey-West standard errors (h−1 lags; test-window lags)" | "(forecast − the model's own average in-sample forecast)… what a model's signals add beyond its own average forecast"; "two standard errors (Hansen-Hodrick over h−1 lags, never below Newey-West; Newey-West over test-window lags)" (1, 2) |
-| 5. Tier 1, Directional P&L | "100% invested on days the forecast is positive" | "100% invested on steps where the model's signal (forecast less its own average forecast) is positive; each h-day return plotted at the end of its holding period" (7) |
+| 5. Tier 1, Directional P&L | "100% invested on days the forecast is positive" | "100% invested on steps where the forecast is positive; each h-day return plotted at the end of its holding period" (7) |
 | 5. Tier 2, t-statistic | "How many Newey-West standard errors…"; "standard error is about 0.07" | "How many standard errors (the larger of Hansen-Hodrick over h−1 lags and Newey-West over test-window lags)…"; "about 0.07 on the 2016–2026 export" (2) |
 | 5. Tier 3, Forecast trust | "Newey-West t-statistic (h − 1 lags) is above 2" | "t-statistic (Hansen-Hodrick, h − 1 lags) is above 2. Re-checked at every rebalance; the chance a no-skill model opens it at some point is disclosed (System Design Specification, Section 17)." (2, 7) |
 | 5. Tier 3, Turnover | "used to compute net-of-cost performance and to sanity-check allocation stability" | Add: "every rebalance trades to its target; cost drag is at most 0.06% a year with the derived polynomial for both indices and 0.13% with the Sprint 4 pair, on the data from 2006" (6) |
 | Appendix A, Signal Rank IC | "what the model adds to the naive forecast (its forecast minus the average return of its training window)" | "what the model's signals add beyond its own average forecast (its forecast minus that average)" (1) |
 | Appendix A, t-statistic | "with only about 100 independent 20-day periods in the data" | "with only about 225 independent 20-day periods in the data from 2006" (4) |
-| Appendix A, Directional P&L | "held the index only on days the model said it would rise" | "held the index only when the model's signal pointed up" (7) |
 | Appendix A, Forecast trust | "(t above 2)" | Add: "Checked again at every rebalance, so an unskilled model can pass it at some point by chance; the documents say how often." (7) |
 
 ## Finlytics_CTQ_v5.docx
 
 | Section | Out of date | Suggested wording |
 |---|---|---|
-| Document Control, Version History | Ends at v5 | Add v6. Module 2: Signal Rank IC against each model's own level; bond research model, with each research model's pre-2016 hold-out shown; directional P&L follows the signal. Module 3: no-trade band removed (every rebalance trades to its target, costs charged on what it trades); long-run premium blended with a published prior; Data page warns of an upload whose first rebalance precedes May 2005. Evidence: System Design Specification, Appendix D. |
+| Document Control, Version History | Ends at v5 | Add v6. Module 2: Signal Rank IC against each model's own level; bond research model, with each research model's pre-2016 hold-out shown. Module 3: no-trade band removed (every rebalance trades to its target, costs charged on what it trades); long-run premium blended with a published prior; Data page warns of an upload whose first rebalance precedes May 2005. Evidence: System Design Specification, Appendix D. |
 | Module 2, "All model families…" | "(FF5 for the equity target, the user-supplied and derived polynomial, the research-derived equity model, the ML comparators)" | "(FF5 for the equity target, the user-supplied and derived polynomial, the research equity and bond models, the ML comparators)" (3) |
-| Module 2, directional P&L | "100% invested when the forecast is positive and in cash otherwise" | "100% invested when the model's signal (forecast less its own average forecast) is positive and in cash otherwise… each return shown at the end of its holding period" (7) |
+| Module 2, directional P&L | "100% invested when the forecast is positive and in cash otherwise" | Keep, and add "… each return shown at the end of its holding period" (7) |
 | Module 2, promotion gate | "(Signal Rank IC and its Newey-West t-statistic)" | "(Signal Rank IC and its t-statistic)", the standard error being defined in the Validation Metrics doc (2) |
 | Module 2, research model | "The research-derived equity model is shown as its own row, labelled as optimistic… and can be selected as the optimiser's equity model." | "Each research model (equity and bond) is shown as its own row, labelled as optimistic because its inputs were chosen on data overlapping the test period, with its score on the pre-2016 hold-out shown beneath, and can be selected as the optimiser's model for its index." (3, 4) |
 | Module 3, optimisation | "the risk aversion at each level is implied from the long-run equity premium… held through a cost-aware no-trade band" | "…implied from a long-run equity premium that blends the data with a published long-run estimate… Every rebalance trades straight to its target, with costs charged on what it trades." (5, 6) |

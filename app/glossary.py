@@ -232,10 +232,12 @@ TERMS: Mapping[str, str] = {
         "one extreme, and it sets the range of mixes the risk levels are spaced across."
     ),
     "Directional P&L": (
-        "What you would have earned by holding this index only when the model "
-        "forecast a rise, and sitting in cash otherwise, compared with simply "
+        "What you would have earned by holding this index only when the model's "
+        "forecast was above zero, and sitting in cash otherwise, compared with simply "
         "holding it. Only the forecast's direction is used, never its size, so "
-        "it is a plain check of whether the up/down call is worth acting on. "
+        "it is a plain check of whether trading on the up/down call would have paid. "
+        "Whether the forecasts rank good days above bad ones is the Signal Rank IC's "
+        "question, not this one's. "
         "Every day the model was graded on is replayed, never a day it trained "
         "on, so the result is what following it live would have looked like."
     ),
@@ -246,10 +248,10 @@ TERMS: Mapping[str, str] = {
     ),
     "Long/cash strategy": (
         "Compounded return of holding the index on every call where the "
-        "model's signal was above zero and holding cash on every other. The "
-        "signal is the forecast less the model's own average forecast, so a model "
-        "that always forecasts a rise is not simply buy and hold. Before "
-        "transaction costs, and cash earns nothing."
+        "model's forecast was above zero and holding cash on every other: what "
+        "a long/cash investor would do, since cash earns nothing. A model that "
+        "forecasts a rise on almost every call is close to buy and hold. Before "
+        "transaction costs."
     ),
     "Buy and hold": (
         "Compounded return of holding the index over the whole out-of-sample "
@@ -257,10 +259,10 @@ TERMS: Mapping[str, str] = {
         "the forecast's direction to have been worth following."
     ),
     "Hit rate": (
-        "How often the signal's direction matched what the index actually "
-        "did: a signal above zero followed by a rise, or one at or below zero "
+        "How often the forecast's direction matched what the index actually "
+        "did: a forecast above zero followed by a rise, or one at or below zero "
         "followed by a fall. It is not a coin toss's 50%: an index that rises "
-        "most of the time scores well above 50% on a signal that is always "
+        "most of the time scores well above 50% on a forecast that is always "
         "above zero."
     ),
     "Days invested": (

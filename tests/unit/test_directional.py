@@ -1,5 +1,5 @@
-"""FYP-162: holding an index only when its signal is positive, against holding it
-throughout — checked on small signals and returns whose answers are known."""
+"""FYP-162: holding an index only when its forecast is positive, against holding it
+throughout — checked on small forecasts and returns whose answers are known."""
 
 import math
 
@@ -88,6 +88,7 @@ def test_a_forecast_that_is_always_positive_matches_buy_and_hold():
     pd.testing.assert_series_equal(
         result.strategy_cumulative, result.buy_and_hold_cumulative, check_names=False
     )
+    assert result.share_invested == 1.0
 
 
 def test_a_forecast_that_sidesteps_the_falls_beats_buy_and_hold():
@@ -101,7 +102,7 @@ def test_a_forecast_that_sidesteps_the_falls_beats_buy_and_hold():
 # --- hit rate and share invested (FYP-186) ----------------------------------------
 
 
-def test_hit_rate_counts_steps_whose_direction_matched():
+def test_hit_rate_compares_the_forecasts_sign_with_the_realised_returns():
     forecast = _series([0.01, -0.01, 0.01, -0.01])
     realised = _series([0.02, -0.02, -0.02, 0.02])
 
@@ -200,10 +201,10 @@ def test_a_window_is_replayed_as_if_it_were_the_whole_period():
 
 def test_each_steps_return_is_dated_by_the_end_of_its_holding_period():
     dates = pd.bdate_range("2024-01-01", periods=20)
-    signal = pd.Series(1.0, index=dates)
+    forecast = pd.Series(1.0, index=dates)
     realised = pd.Series(0.01, index=dates)
 
-    result = directional_pnl(signal, realised, horizon=5)
+    result = directional_pnl(forecast, realised, horizon=5)
 
     assert list(result.held_until) == [
         dates[5],
