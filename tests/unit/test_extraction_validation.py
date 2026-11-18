@@ -252,6 +252,28 @@ def test_a_crash_of_consecutive_same_direction_moves_is_kept_whole():
     assert len(report.big_moves) == 3
 
 
+# --- bounded messages and the PX_ field check ----------------------------------
+
+
+def test_a_column_failing_on_every_row_gives_one_short_message_with_a_count():
+    dates = pd.date_range("2024-01-01", periods=2_000)
+    data = frame(dates, A_Index_SPREAD=[50_000.0 + i for i in range(2_000)])
+
+    (message,) = schema_errors(data)
+
+    assert message.startswith("A_Index_SPREAD: ")
+    assert "50000.0" in message
+    assert "2,000 values in all" in message
+    assert len(message) < 200
+
+
+def test_a_column_whose_security_merely_contains_px_is_still_range_checked():
+    # SPX_ contains "PX_", but this column's field is CUR_MKT_CAP, not a PX_ field.
+    data = frame(["2024-01-01", "2024-01-02"], SPX_Index_CUR_MKT_CAP=[5.1e7, 5.2e7])
+
+    assert any("SPX_Index_CUR_MKT_CAP" in e for e in schema_errors(data))
+
+
 # --- prices are scored on their percent change ----------------------------
 
 
@@ -319,25 +341,3 @@ def test_a_price_column_with_a_value_at_or_below_zero_falls_back_to_its_change_i
     report = validate(frame(dates, SPX_Index_PX_LAST=values))
 
     assert list(report.big_moves["date"]) == [dates[30]]
-
-
-# --- bounded messages and the PX_ field check ----------------------------------
-
-
-def test_a_column_failing_on_every_row_gives_one_short_message_with_a_count():
-    dates = pd.date_range("2024-01-01", periods=2_000)
-    data = frame(dates, A_Index_SPREAD=[50_000.0 + i for i in range(2_000)])
-
-    (message,) = schema_errors(data)
-
-    assert message.startswith("A_Index_SPREAD: ")
-    assert "50000.0" in message
-    assert "2,000 values in all" in message
-    assert len(message) < 200
-
-
-def test_a_column_whose_security_merely_contains_px_is_still_range_checked():
-    # SPX_ contains "PX_", but this column's field is CUR_MKT_CAP, not a PX_ field.
-    data = frame(["2024-01-01", "2024-01-02"], SPX_Index_CUR_MKT_CAP=[5.1e7, 5.2e7])
-
-    assert any("SPX_Index_CUR_MKT_CAP" in e for e in schema_errors(data))
