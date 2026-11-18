@@ -1,5 +1,6 @@
 """The extraction package's pandera schema and plain-pandas report."""
 
+import numpy as np
 import pandas as pd
 
 from forecasting_engine.extraction.bloomberg_csv import BloombergCsvExport
@@ -249,6 +250,75 @@ def test_a_crash_of_consecutive_same_direction_moves_is_kept_whole():
     report = validate(data)
 
     assert len(report.big_moves) == 3
+
+
+# --- prices are scored on their percent change ----------------------------
+
+
+def _rising_index(crash_at: int, crash_pct: float, late_pct: float) -> list[float]:
+    # An index that rises about sixfold over 400 days, with ordinary days of
+    # about 1%, a crash early on while it is low and a smaller move on its last
+    # day, once it is high.
+    daily = np.random.default_rng(0).normal(0.0045, 0.01, 400)
+    daily[crash_at], daily[-1] = np.log1p(crash_pct), np.log1p(late_pct)
+    return list(1_000.0 * np.exp(daily.cumsum()))
+
+
+def test_a_crash_while_a_price_index_was_low_is_flagged_over_an_ordinary_day_once_it_is_high():
+    # The S&P 500 rose about five times between 2008 and 2026. In points, its
+    # +11.6% on 13 Oct 2008 scored 5.9 and an ordinary -1.8% day in Oct 2026
+    # scored 8.1, so the crash went unflagged and the ordinary day was flagged.
+    values = _rising_index(crash_at=50, crash_pct=0.116, late_pct=-0.04)
+    dates = pd.bdate_range("2008-01-01", periods=len(values))
+    assert values[-1] / values[0] > 5
+
+    report = validate(frame(dates, SPX_Index_PX_LAST=values))
+
+    assert list(report.big_moves["date"]) == [dates[50]]
+
+
+def test_a_total_return_index_is_scored_on_its_percent_change_whatever_its_ticker():
+    values = _rising_index(crash_at=50, crash_pct=0.116, late_pct=-0.04)
+    dates = pd.bdate_range("2008-01-01", periods=len(values))
+
+    report = validate(frame(dates, NEW_Index_TOT_RETURN_INDEX_GROSS_DVDS=values))
+
+    assert list(report.big_moves["date"]) == [dates[50]]
+
+
+def test_a_flagged_price_move_is_still_reported_in_points():
+    # The analyst checks a flag against the file, which holds points.
+    values = _rising_index(crash_at=50, crash_pct=0.116, late_pct=-0.04)
+    dates = pd.bdate_range("2008-01-01", periods=len(values))
+
+    report = validate(frame(dates, SPX_Index_PX_LAST=values))
+
+    assert report.big_moves.iloc[0]["change"] == values[50] - values[49]
+
+
+def test_a_rate_near_zero_is_still_scored_on_its_change_in_points():
+    # A 10-year yield falling from 5% to 0.3%, moving a few hundredths a day.
+    # Near the end those moves are several percent of the yield, so scored on a
+    # percent change the late days would flag. Rates keep the plain change.
+    steps = np.random.default_rng(0).normal(0, 0.02, 400)
+    values = list(np.linspace(5.0, 0.3, 400) + steps)
+    dates = pd.bdate_range("2019-01-01", periods=len(values))
+    assert min(values) > 0
+
+    report = validate(frame(dates, USGG10YR_Index_PX_LAST=values))
+
+    assert report.big_moves.empty
+
+
+def test_a_price_column_with_a_value_at_or_below_zero_falls_back_to_its_change_in_points():
+    # A log change is undefined there; scoring the plain change still flags it.
+    values = [100.0 + (i % 2) for i in range(60)]
+    values[30] = -100.0
+    dates = pd.bdate_range("2020-01-01", periods=len(values))
+
+    report = validate(frame(dates, SPX_Index_PX_LAST=values))
+
+    assert list(report.big_moves["date"]) == [dates[30]]
 
 
 # --- bounded messages and the PX_ field check ----------------------------------
