@@ -164,8 +164,10 @@ date of the price each label reaches, which the splitter uses to purge.
 - **Windows.** Test windows of `DEFAULT_TEST_WINDOW` rows roll forward by that
   many rows. Each training window is the `TRAIN_WINDOW` rows ending `embargo` rows
   before its test window, and may reach back into the tuning period. Both windows
-  are the same for every model on both targets (the research models, §9.1 and
-  §9.2, alone train on every earlier row, on the same test windows), and fixed rather than settings:
+  are the same for every model on both targets, with two exceptions on the same
+  test windows: the research models (§9.1 and §9.2) train on every earlier row, and
+  half the fits the bond derived polynomial averages (§9.4) on every earlier row up
+  to `LONG_TRAIN_WINDOW`. They are fixed rather than settings:
   trying windows until one scores well is overfitting that no single run can see.
   Every row of the results table is therefore scored on the same dates, and both
   targets forecast the same rebalance days.
@@ -1236,7 +1238,9 @@ in it (findings 2, 3, 5 and 6 of the 12 Nov optimiser audit):
   team's Sprint 4 pair (machine learning for bond) the forecasts do no better, and
   at h = 5 they cost significantly at levels 1 and 2 (§20). Costs are
   not the reason: they are at most 0.06 points a year with the derived pair and
-  0.13 points with the Sprint 4 pair. The optimiser is sound as a
+  0.13 points with the Sprint 4 pair. (The derived pair here used the bond derived
+  grid from before 18 Nov 2026; no portfolio has been run on the mean of 14 fits
+  that replaced it, §9.4.) The optimiser is sound as a
   risk-level allocator; on this data the forecasts it tilts on have not earned
   their place.
 - **The trust gate is checked again at every rebalance**, on an expanding sample,
@@ -1519,6 +1523,9 @@ limitations):
 | 20 | 92 of 226; −1.44 to −0.15 | 3 of 226; +0.01 to +0.05 |
 
 At h = 5 the Sprint 4 pair's forecasts cost significantly at levels 1 and 2.
+"Derived for both" used the bond derived grid as the page ran it on 16 Nov; the
+portfolio has not been rerun with the mean of 14 fits that replaced it on 18 Nov
+2026 (§9.4).
 
 With the trust gate ignored (a diagnostic only: `β̂` used whatever its t), none
 did significantly better than without forecasts (t above 2); the best is +1.56. Many are significantly

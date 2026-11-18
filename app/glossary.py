@@ -87,8 +87,10 @@ TERMS: Mapping[str, str] = {
         "a setting: every model on both targets studies the latest 504 days (about "
         "two years), long enough to span more than one market episode but short "
         "enough to follow a change in how the markets behave. Trying windows until "
-        "one scores well would itself be a way to overfit. The research model is "
-        "the one exception: it trains on every earlier date, as its research did."
+        "one scores well would itself be a way to overfit. Two exceptions: the "
+        "research models train on every earlier date, as their research did, and half "
+        "the fits the Bond tab's derived polynomial averages train on up to 2,520 days "
+        "(about ten years)."
     ),
     "Walk-forward test window (days)": (
         "The days right after each training block, used only for grading: 20 "

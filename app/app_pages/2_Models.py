@@ -284,8 +284,9 @@ with st.expander("Settings"):
     test = DEFAULT_TEST_WINDOW
     st.caption(
         f"The train window is fixed: every model on both targets trains on the latest "
-        f"{TRAIN_WINDOW} dates. The research models alone train on every earlier date, "
-        "as their research did.",
+        f"{TRAIN_WINDOW} dates. The research models train on every earlier date, as "
+        "their research did, and half the fits the Bond tab's derived polynomial averages "
+        f"on up to {LONG_TRAIN_WINDOW:,}.",
         help=glossary.term("Walk-forward train window (days)"),
     )
     st.caption(
