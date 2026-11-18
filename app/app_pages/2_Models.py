@@ -1199,7 +1199,7 @@ def _show_active_status(
         )
         return
     tone = "danger" if current.high_risk else "success"
-    note = " · set despite failing both gates" if current.high_risk else ""
+    note = " · set despite failing the promotion gate" if current.high_risk else ""
     # Escaped: the target's name comes from a column in the uploaded file.
     st.markdown(
         ui.status_row(
@@ -1226,7 +1226,7 @@ def _confirm_high_risk(
     failed_text = " and ".join(GATE_NAMES[g] for g in failed)
     pending_key = f"pending_active_{role.value}"
     st.warning(
-        f"{model_name} failed both promotion gates ({failed_text}) for {target_name}. "
+        f"{model_name} failed the promotion gate on {failed_text} for {target_name}. "
         "Setting it active anyway means portfolio evaluation will use a model that "
         "hasn't cleared validation.",
         icon=":material/warning:",

@@ -849,8 +849,10 @@ A NaN fails its gate. Every model but the naive baseline is gated the same way:
 FF5 (still labelled a benchmark), a user polynomial, the derived polynomial and
 machine learning. The second gate is there because at a standard error near 0.07
 a model with no skill clears the first alone about 39% of the time, and the
-sponsor asked for a t-statistic above 2. A model that fails both is high risk
-(`is_high_risk`): it can still be set active, after a confirmation. The plain OOS
+sponsor asked for a t-statistic above 2. A model that fails either gate, or both,
+is high risk (`is_high_risk`): it can still be set active, after a confirmation
+that names the gate or gates it failed, and is flagged as set despite failing the
+promotion gate. The plain OOS
 Rank IC and Constant folds are shown beside the gate but never enter it.
 
 **Known limit: short histories.** Both standard errors are estimated from the

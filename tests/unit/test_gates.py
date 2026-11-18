@@ -49,9 +49,12 @@ def test_high_risk_when_both_gates_fail():
     assert is_high_risk(evaluate_candidate(signal_rank_ic=0.01, t=1.5)) is True
 
 
-def test_not_high_risk_when_only_one_gate_fails():
-    assert is_high_risk(evaluate_candidate(signal_rank_ic=0.01, t=2.5)) is False
-    assert is_high_risk(evaluate_candidate(signal_rank_ic=0.03, t=1.5)) is False
+def test_high_risk_when_only_the_ic_gate_fails():
+    assert is_high_risk(evaluate_candidate(signal_rank_ic=0.01, t=2.5)) is True
+
+
+def test_high_risk_when_only_the_t_gate_fails():
+    assert is_high_risk(evaluate_candidate(signal_rank_ic=0.03, t=1.5)) is True
 
 
 def test_not_high_risk_when_promoted():
