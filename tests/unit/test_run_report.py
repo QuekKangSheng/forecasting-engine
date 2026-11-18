@@ -188,7 +188,7 @@ def test_a_failed_gate_says_which_and_that_the_model_was_set_anyway():
     text = report_html(_run(results=_results(models=[failed])), BACKTEST)
 
     assert "Gate failed on Signal Rank IC and t." in text
-    assert "Set active despite failing both gates." in text
+    assert "Set active despite failing the promotion gate." in text
 
 
 def test_a_model_that_is_not_a_polynomial_says_so_rather_than_showing_an_empty_table():

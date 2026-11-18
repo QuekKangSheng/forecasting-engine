@@ -349,7 +349,7 @@ def _gate_text(model: Mapping[str, object]) -> str:
     else:
         failed = " and ".join(_GATE_NAMES[g] for g in model["gates_failed"])
         verdict = f"Gate failed on {failed}."
-    high_risk = " Set active despite failing both gates." if model["high_risk"] else ""
+    high_risk = " Set active despite failing the promotion gate." if model["high_risk"] else ""
     return f"{verdict} {figures}{high_risk}"
 
 

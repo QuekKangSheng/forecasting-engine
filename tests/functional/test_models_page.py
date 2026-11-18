@@ -693,26 +693,44 @@ def test_with_no_forecasting_model_run_the_picker_shows_a_caption_instead():
     assert "No forecasting model (Polynomial or ML) has run yet for S&P 500." in _captions(app)
 
 
-def test_a_high_risk_model_asks_for_confirmation_before_being_set_active():
-    failing = _result(oos_rank_ic=0.01)
-    app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
+#: A result failing each gate in turn: the IC alone (t is 10), t alone (the IC is
+#: 0.04, t about 1.3), and both (the IC is 0.01, t is 1).
+FAILING = {
+    "Signal Rank IC": _result(oos_rank_ic=0.01, se=0.001),
+    "t": _result(oos_rank_ic=0.04, se=0.03),
+    "Signal Rank IC and t": _result(oos_rank_ic=0.01),
+}
+
+
+@pytest.mark.parametrize("failed", list(FAILING))
+def test_a_model_that_failed_either_gate_asks_for_confirmation_naming_it(failed):
+    app = _page({EQUITY: {POLY: _polynomial_run(FAILING[failed])}})
     next(b for b in app.button if b.label == "Set as active").click().run()
 
     assert not app.exception
-    assert any("failed both promotion gates" in w.value for w in app.warning)
+    warning = f"{POLY} failed the promotion gate on {failed} for S&P 500."
+    assert any(warning in w.value for w in app.warning)
     assert any(b.label == "Set active anyway" for b in app.button)
     assert active_model.get_active_model(EQUITY) is None
 
 
+def test_the_warning_for_one_failed_gate_names_only_that_gate():
+    app = _page({EQUITY: {POLY: _polynomial_run(FAILING["t"])}})
+    next(b for b in app.button if b.label == "Set as active").click().run()
+
+    (warning,) = [w.value for w in app.warning if "promotion gate" in w.value]
+    assert "Signal Rank IC" not in warning
+
+
 def test_confirming_a_high_risk_model_sets_it_active():
-    failing = _result(oos_rank_ic=0.01)
-    app = _page({EQUITY: {POLY: _polynomial_run(failing)}})
+    app = _page({EQUITY: {POLY: _polynomial_run(FAILING["t"])}})
     next(b for b in app.button if b.label == "Set as active").click().run()
     next(b for b in app.button if b.label == "Set active anyway").click().run()
 
     assert not app.exception
     active = active_model.get_active_model(EQUITY)
     assert active is not None and active.model_name == POLY and active.high_risk
+    assert "set despite failing the promotion gate" in _markdown(app)
 
 
 def test_cancelling_a_high_risk_model_leaves_nothing_active():
@@ -722,17 +740,19 @@ def test_cancelling_a_high_risk_model_leaves_nothing_active():
     next(b for b in app.button if b.label == "Cancel").click().run()
 
     assert active_model.get_active_model(EQUITY) is None
-    assert not any("failed both promotion gates" in w.value for w in app.warning)
+    assert not any("failed the promotion gate" in w.value for w in app.warning)
 
 
-def test_a_model_that_only_fails_one_gate_is_not_treated_as_high_risk():
-    one_gate_failing = _result(oos_rank_ic=0.01, se=0.001)  # t is 10; the IC fails
-    app = _page({EQUITY: {POLY: _polynomial_run(one_gate_failing)}})
+def test_a_model_that_passed_both_gates_is_set_active_straight_away():
+    app = _page({EQUITY: {POLY: _polynomial_run()}})
     next(b for b in app.button if b.label == "Set as active").click().run()
 
     assert not app.exception
-    assert not any("promotion gates" in w.value for w in app.warning)
-    assert active_model.get_active_model(EQUITY).model_name == POLY
+    assert not any("promotion gate" in w.value for w in app.warning)
+    assert not any(b.label == "Set active anyway" for b in app.button)
+    active = active_model.get_active_model(EQUITY)
+    assert active.model_name == POLY and not active.high_risk
+    assert "set despite failing" not in _markdown(app)
 
 
 # --- signal screening -------------------------------------------------------------
@@ -1211,7 +1231,7 @@ def test_every_fit_a_run_makes_is_recorded_in_the_run_history_failures_included(
 def test_an_active_model_points_to_the_run_that_fitted_it(stub_ml):
     app = _run_equity(_untick(_page(), "Fama-French 5"))
     next(b for b in app.button if b.label == "Set as active").click().run()
-    if active_model.get_active_model(EQUITY) is None:  # failed both gates: confirm
+    if active_model.get_active_model(EQUITY) is None:  # failed the promotion gate: confirm
         next(b for b in app.button if b.label == "Set active anyway").click().run()
 
     active = active_model.get_active_model(EQUITY)
@@ -2087,7 +2107,7 @@ def test_setting_the_bond_derived_polynomial_active_stores_every_input_it_reads(
     bond_select.set_value(POLY).run()
     (bond_set,) = [b for b in app.button if b.label == "Set as active"]
     bond_set.click().run()
-    if active_model.get_active_model(BOND) is None:  # failed both gates: confirm
+    if active_model.get_active_model(BOND) is None:  # failed the promotion gate: confirm
         next(b for b in app.button if b.label == "Set active anyway").click().run()
 
     function = active_model.get_active_function(BOND)

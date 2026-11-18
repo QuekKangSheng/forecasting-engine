@@ -140,9 +140,9 @@ One tab per target: **Equity · S&P 500 (total return)** and **Bond · US Aggreg
    throughout (**Long/cash strategy**, **Buy and hold**, **Hit rate**, **Days invested**),
    gross of costs. **Window** narrows the period.
 7. **Set one active.** Under **Set active model**, choose a model and click **Set as
-   active**. The naive baseline and Fama-French 5 are not offered. A model that failed both
-   gates asks first (**Confirm high-risk model**, **Set active anyway**); one that failed
-   one gate is set without asking. Do this on both tabs, at the same horizon.
+   active**. The naive baseline and Fama-French 5 are not offered. A model that failed either
+   gate asks first, naming the gate it failed (**Confirm high-risk model**, **Set active
+   anyway**); one that passed both is set straight away. Do this on both tabs, at the same horizon.
 
 Then **Next · 03 Portfolio Optimizer**.
 

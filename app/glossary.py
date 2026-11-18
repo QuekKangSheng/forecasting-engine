@@ -213,8 +213,9 @@ TERMS: Mapping[str, str] = {
     "Active model": (
         "Which model's forecast feeds portfolio evaluation for this target, "
         "set independently for equity and bond. Setting a new one replaces "
-        "the prior one immediately. A model that failed both promotion gates "
-        "can still be set active, but asks for confirmation first."
+        "the prior one immediately. A model that failed the promotion gate, on "
+        "either test or both, can still be set active, but asks for confirmation "
+        "first."
     ),
     "Risk level": (
         "The volatility the allocation aims for, on a scale of 1 (risk-loving) to 5 "

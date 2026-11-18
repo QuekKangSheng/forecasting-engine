@@ -39,5 +39,7 @@ def evaluate_candidate(signal_rank_ic: float, t: float) -> ValidationOutcome:
 
 
 def is_high_risk(outcome: ValidationOutcome) -> bool:
-    """Working default, not sponsor-confirmed: high risk means both gates failed."""
-    return len(outcome.failed_gates) == 2
+    """High risk means not promoted: either gate, or both, failed. Such a model can
+    still be set active, but only after a confirmation, and is flagged as set
+    despite failing the promotion gate."""
+    return not outcome.promoted
