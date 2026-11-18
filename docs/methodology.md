@@ -967,15 +967,21 @@ FYP-52).
 
 ## 15. Directional P&L
 
-`portfolio/directional.directional_pnl` asks whether a model's signals point the
-right way, per index, for one model's run (FYP-162). It uses the run's pooled
-out-of-sample signals, each forecast less its fold's level
-(`ModelRunResult.forecast` less `.baseline`, the figure the Signal Rank IC scores,
-§10), and the realised forward returns they were scored against (`.realised`), so
-every day replayed is one the model never trained on. The raw forecast is not
-used: its level is mostly the training window's mean return, so a model with a
-positive level would hold the index on almost every step whatever its signals
-said. A result saved before levels were kept asks to be run again.
+`portfolio/directional.directional_pnl` asks whether trading on a model's
+forecasts would have paid, per index, for one model's run (FYP-162). It uses the
+run's pooled out-of-sample forecasts (`ModelRunResult.forecast`), level included,
+and the realised forward returns they were scored against (`.realised`), so every
+day replayed is one the model never trained on. This is the trading question: a
+long/cash investor holds the index whenever its expected return is above zero,
+because cash earns nothing. Whether the forecasts rank good days above bad ones
+is the ranking question, and the Signal Rank IC on the forecast less the model's
+own level answers it (§10). An earlier version followed that signal here too; it
+kept a model in cash about two-thirds of the time and set that against a fully
+invested buy-and-hold, which is not a trade anyone would make. A model whose
+forecast is positive on almost every step reads close to buy-and-hold, and
+**share invested** says so. The naive baseline's forecast is its training mean,
+so its row shows what holding on the average alone does. A result saved before
+levels were kept asks to be run again.
 
 1. **Period.** Every out-of-sample date the run produced that has a realised
    return; a run's last `h` dates have none yet. A slider narrows this to a
@@ -987,13 +993,13 @@ said. A result saved before levels were kept asks to be run again.
    stepped every `h` dates from the first, so each step's `h`-day return ends
    where the next begins and compounding never counts a day twice. Each horizon is reported
    separately; the page shows the one its results were run under.
-3. **Strategy.** Fully invested in the index on a step whose signal is above
+3. **Strategy.** Fully invested in the index on a step whose forecast is above
    zero, in cash otherwise, earning that step's realised return or nothing. The
-   signal's size is never used. A step with no forecast (an input missing) is
+   forecast's size is never used. A step with no forecast (an input missing) is
    held in cash.
 4. **Buy and hold.** The realised return on every step.
-5. **Hit rate** is the share of steps with a signal whose direction matched the
-   realised return's (a signal at or below zero counts as a fall); **share
+5. **Hit rate** is the share of steps with a forecast whose sign matched the
+   realised return's (a forecast at or below zero counts as a fall); **share
    invested** is the share of steps in the index.
 6. **Dates.** Each step's return is plotted at the end of its holding period,
    `h` of the run's dates after the call, when it was earned, and both lines start

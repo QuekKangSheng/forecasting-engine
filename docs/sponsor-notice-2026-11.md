@@ -91,9 +91,6 @@ less equity than a safer one. Toby confirmed the removal after seeing these
 results; nothing was changed because of them.
 
 **7. Fixes from the optimiser audit.**
-- **Directional P&L:** the long/cash comparison and its hit rate now follow each
-  model's signal rather than its raw forecast. A model whose average forecast is
-  positive used to stay invested almost every day, whatever its signal said.
 - **Charts:** each multi-day return is now plotted when it was earned, at the end
   of its holding period.
 - **Labels:** the Portfolio page now distinguishes the signals the weights were

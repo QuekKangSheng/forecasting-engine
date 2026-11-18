@@ -136,7 +136,7 @@ One tab per target: **Equity · S&P 500 (total return)** and **Bond · US Aggreg
    **Fama-French 5** and **Machine learning** (with its tuning log) have their own.
    **Signal screening** shows which signals each fold kept.
 6. **Would the forecast's direction have paid?** Pick a model in **Forecasts from** to see
-   what holding the index only while its signal is above zero earned against holding it
+   what holding the index only while its forecast is above zero earned against holding it
    throughout (**Long/cash strategy**, **Buy and hold**, **Hit rate**, **Days invested**),
    gross of costs. **Window** narrows the period.
 7. **Set one active.** Under **Set active model**, choose a model and click **Set as
