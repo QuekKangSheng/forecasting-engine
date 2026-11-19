@@ -25,6 +25,7 @@ from forecasting_engine.extraction.bloomberg_csv import (
     BloombergCsvExport,
     named_dates,
 )
+from forecasting_engine.ingest.align import TICKER_TRANSFORMS, Transform
 
 #: Bloomberg field mnemonics that name a total-return index level, which must
 #: be positive. This is a rough classifier by field name, not a real
@@ -238,9 +239,11 @@ def _big_moves(frame: pd.DataFrame) -> pd.DataFrame:
     for col in frame.columns:
         if col == DATE_COLUMN:
             continue
-        changes = pd.to_numeric(frame[col], errors="coerce").diff()
-        scores = _robust_z(changes.dropna()).abs()
-        flagged = _drop_rebounds(scores[scores > MAD_THRESHOLD], changes)
+        values = pd.to_numeric(frame[col], errors="coerce")
+        changes = values.diff()
+        scored = _scored_changes(col, values)
+        scores = _robust_z(scored.dropna()).abs()
+        flagged = _drop_rebounds(scores[scores > MAD_THRESHOLD], scored)
         for idx, score in flagged.items():
             rows.append(
                 {
@@ -251,6 +254,38 @@ def _big_moves(frame: pd.DataFrame) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows, columns=["column", "date", "change", "robust_score"])
+
+
+def _compounds(name: str) -> bool:
+    """Whether column ``name`` is a price or total-return index, whose moves grow
+    with its level.
+
+    The same series the models take as log returns (``ingest.align``): any
+    total-return index field, and the price of a ticker classified as one. A
+    column is "{label}_{field}" and a label starts with its ticker, so "SPX_"
+    starts every SPX column. Rates, curve points, spreads and volatility are
+    not, and keep their plain change.
+    """
+    return any(marker in name for marker in POSITIVE_FIELD_MARKERS) or any(
+        name.startswith(f"{ticker}_")
+        for ticker, transform in TICKER_TRANSFORMS.items()
+        if transform is Transform.LOG_RETURN
+    )
+
+
+def _scored_changes(name: str, values: pd.Series) -> pd.Series:
+    """The day-over-day changes column ``name`` is scored on.
+
+    A price that rose fivefold moves five times as many points on an ordinary
+    day, so scored in points its early crashes look small and its late ordinary
+    days look extreme. A compounding series is scored on its log change instead,
+    the size of a move relative to where it was. A column with a value at or
+    below zero cannot be, and falls back to its plain change so a bad value is
+    still scored.
+    """
+    if _compounds(name) and (values.dropna() > 0).all():
+        return np.log(values).diff()
+    return values.diff()
 
 
 def _robust_z(values: pd.Series) -> pd.Series:

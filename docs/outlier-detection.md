@@ -40,6 +40,26 @@ At any threshold high enough to be useful, level-based detection misses both.
 Worse, it misses them silently: across the real data, level-based detection
 flagged **zero** points in `spx_close` and `agg_close` by every method tried.
 
+### Prices: the change in percent, not in points
+
+A price or total-return index compounds, so its ordinary day grows with its
+level. Over twenty years the S&P 500 rose about fivefold, and scored in points
+its +11.6% on 13 Oct 2008 came to 5.9 and was not flagged, while an ordinary
+−1.8% on 30 Oct 2026 came to 8.1 and was. On the data from 31 Aug 2006 the S&P
+had no flag in 2008 and six in 2026.
+
+So the series the models take as log returns (any total-return index field, and
+the price of a ticker `ingest.align` classifies as one: SPX, DXY and the bond
+indices) are scored on their log change. Rates, curve points, spreads and
+volatility keep their plain change: a yield near zero would turn a move of a few
+hundredths into tens of percent. A column with a value at or below zero falls
+back to its plain change, so a bad value is still scored. The report still gives
+each flagged move in points, as the file holds it.
+
+On the twenty-year data, with the rebound rule of 18 Nov, this takes the flags
+at threshold 8 from 280 to 245 and at 3 from 3,333 to 2,938. The S&P's flags move
+to 2008 (12) and 2020 (7), and the misplaced decimal above still stands out.
+
 ## Why median absolute deviation, not standard deviation
 
 Standard deviation is inflated by the very moves being looked for. On real
