@@ -46,7 +46,7 @@ opens in October 2008. No window rule changed. It also gave both research models
 a test on years their inputs were not chosen on (before Aug 2016), and both score
 about zero there. On the longer history:
 - the derived equity polynomial passes the gate at the 1-, 5- and 10-day horizons;
-- at the default 20-day horizon it narrowly fails. Its Signal Rank IC went:
+- at the 20-day horizon, the default until 19 Nov 2026, it narrowly fails. Its Signal Rank IC went:
   - +0.156 (t 2.31) with the UAT 3 code on the Sep 2026 upload;
   - +0.166 (t 2.25) with today's code on the same upload;
   - +0.103 (t 1.98) with today's code on the data from 2006;
@@ -107,7 +107,7 @@ the Sprint 4 pair after both had been run, and the evidence says so.
 On the longer history, net of your costs, the risk levels behave as designed: net
 Sharpe rises from 0.74–0.80 at level 1 to 1.03–1.05 at level 5, against
 0.88 for 50/50. But neither pair's forecasts add value at any horizon. At the
-default 20-day horizon, against the same risk level without forecasts, t is
+20-day horizon, against the same risk level without forecasts, t is
 between −1.44 and −0.15 for the Sprint 4 pair and between +0.01 and +0.05 for the
 other. At 5 days the Sprint 4 pair's forecasts cost significantly at the two
 riskiest levels (t −3.10 and −2.84).

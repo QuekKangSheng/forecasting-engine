@@ -10,6 +10,7 @@ from streamlit.testing.v1 import AppTest
 
 import glossary
 import model_runs
+import model_settings
 from forecasting_engine.extraction.targets import TargetRole
 from forecasting_engine.models.base import ModelDescription
 from forecasting_engine.reporting.model_metrics import ModelRunResult, ScreeningSummary
@@ -64,7 +65,12 @@ def models_page() -> AppTest:
     )
     committed = _committed()
     fn = from_description(description, origin=Origin.DERIVED, target="SPX_Index_PX_LAST", horizon=5)
-    stored = model_runs.StoredRuns((dataset_fingerprint(committed), 20, 504, 20))
+    settings = (
+        model_settings.DEFAULT_HORIZON,
+        model_settings.TRAIN_WINDOW,
+        model_settings.DEFAULT_TEST_WINDOW,
+    )
+    stored = model_runs.StoredRuns((dataset_fingerprint(committed), *settings))
     stored.tabs[TargetRole.EQUITY] = model_runs.TabRuns(
         {"Polynomial (derived)": 10, "Polynomial (user-supplied)": ("", ())},
         {"Polynomial (derived)": model_runs.ModelRun(_result(), description, function=fn)},

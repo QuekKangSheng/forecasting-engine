@@ -170,7 +170,8 @@ BOND_DERIVED_CAPTION = (
     "by one of the derived grid's four fits, some with calendar counts offered, on the "
     f"latest {TRAIN_WINDOW} dates or up to {LONG_TRAIN_WINDOW:,}. Validated on 2008–2026 "
     "and on public data for 1992–2006; provisional until tested on data after 12 Nov 2026. "
-    "At 20 days its Signal Rank IC is positive but below the significance gate."
+    "On 2008–2026 it passes the significance gate at 1 day only; at 5, 10 and 20 days its "
+    "Signal Rank IC is positive but below the gate."
 )
 
 #: The polynomial's two sources; exactly one runs.
