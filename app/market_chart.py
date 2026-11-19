@@ -51,8 +51,10 @@ REFRESH_SECONDS = 300
 #: chart and the line under it.
 HEIGHT = 470
 
-#: Where the browser loads the chart library from: the app's own static files.
-LIBRARY = "/app/static/lightweight-charts.standalone.production.js"
+#: Where the browser loads the chart library from: the app's own static files, by a
+#: relative path like the fonts in .streamlit/config.toml, so it still resolves when the
+#: app is served under a sub-path, as on Streamlit Community Cloud.
+LIBRARY = "app/static/lightweight-charts.standalone.production.js"
 
 #: How a candle's period is written, by the period it covers.
 _PERIOD_TEXT = {"D": "day", "W": "week", "M": "month", "Q": "quarter"}
