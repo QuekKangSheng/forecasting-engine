@@ -158,8 +158,8 @@ now; otherwise it says what is missing and stops.
 3. **Allocation** shows the latest weights, the headline figures (Sharpe after costs and
    1-day VaR 95% against 50/50, forecast value after costs) and a line starting **How this
    was set**: the level's target, the two signals and the tilt they gave. The weights are
-   the last rebalance's, up to 38 trading days behind the latest prices at 20 days; the
-   page says how far.
+   the last rebalance's, up to 23 trading days behind the latest prices at the 5-day
+   default; the page says how far.
 4. The links under the status bar jump to **Performance** (the backtest against the
    equal-weight benchmark, beside the same level with no forecasts, then cumulative
    return, drawdown and rolling Sharpe), **Significance** (**Is the outperformance
@@ -286,25 +286,27 @@ that figure over the larger of its two standard errors, which allow for overlapp
 
 ### Results on the data from 2006
 
-On the 11 Bloomberg exports from 31 Aug 2006 to 11–12 Nov 2026, at the page's defaults:
+On the 11 Bloomberg exports from 31 Aug 2006 to 11–12 Nov 2026, at the page's defaults
+(a 5-day horizon since 19 Nov 2026; methodology §20,
+[evidence](docs/evidence/2026-11-19-default-horizon.md)):
 
-- **Equity:** the derived polynomial passes at 1, 5 and 10 days and misses at 20 (+0.103,
-  t 1.98); machine learning passes at 5 and 10; Fama-French 5 fails at every horizon
-  (methodology §20, [evidence](docs/evidence/2026-11-16-full-history.md)).
-- **Bond:** no bond row the page ran on 16 Nov passed at any horizon. The derived
-  polynomial that replaced the bond grid on 18 Nov passes only at 1 day (+0.045, t 2.9);
-  at 20 days it is +0.065, t 1.1, positive in both decades and on a public 1992–2006
-  hold-out but not significant (methodology §9.4,
-  [evidence](docs/evidence/2026-11-18-bond-holdout.md)).
-- **At 20 days no model passes for either index**, and both research models score near
-  zero on their pre-2016 hold-out.
-- **Portfolio:** the optimiser works as a risk-level allocator (net Sharpe 0.74–0.80 at
-  level 1 to 1.03–1.05 at level 5, against 0.88 for 50/50), but for both pairs tested
-  (derived equity with machine-learning bond; derived for both, with the pre-18 Nov bond
-  grid) the forecasts added no value after costs at any horizon, and with machine learning
-  for bond cost significantly at 5 days, levels 1 and 2. Run again on 19 Nov 2026 with the new
-  bond derived polynomial for both indices, the forecasts again added nothing at any
-  horizon ([evidence](docs/evidence/2026-11-19-default-horizon.md)).
+- **Equity:** at 5 days three models pass the gate: the derived polynomial (+0.083,
+  t 3.20), the research model (t 2.10, optimistic) and machine learning (t 2.34).
+  Fama-French 5 fails (t 1.27). The derived polynomial also passes at 1 and 10 days and
+  misses at 20 (+0.103, t 1.98).
+- **Bond:** no bond model passes at 5 days. The derived polynomial, the mean of 14 fits
+  since 18 Nov, passes only at 1 day (+0.045, t 2.86); at 5 days it is +0.037 (t 1.29)
+  and at 20 days +0.065 (t 1.08). It is positive in both decades and on a public 1992 to
+  2006 hold-out (methodology §9.4, [evidence](docs/evidence/2026-11-18-bond-holdout.md)).
+- **At 20 days, the default until 19 Nov, no model passes for either index**, and both
+  research models score near zero on their pre-2016 hold-out.
+- **Portfolio:** with the derived polynomial for both indices at 5 days, level 3 earns
+  8.67% a year after costs against 8.32% for 50/50 (t 2.06), and 8.69% with no forecasts
+  (t −0.11). So the risk level's mix beats 50/50 and the forecasts add nothing: they were
+  trusted at 112 of 904 rebalances. Net Sharpe runs from 0.78 at level 1 to 1.03 at
+  level 5, against 0.88 for 50/50. The forecasts added no value at any horizon, and an
+  earlier run with machine learning for bond cost significantly at 5 days, levels 1 and 2
+  ([evidence](docs/evidence/2026-11-16-full-history.md)).
 
 ## For developers
 
