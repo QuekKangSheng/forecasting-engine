@@ -190,8 +190,8 @@ date of the price each label reaches, which the splitter uses to purge.
 Every window rule counts rows, not dates, and nothing in `src/` sets a start date,
 so the Bloomberg history from 31 Aug 2006 (to 11–12 Nov 2026; the full history
 available) moves every start earlier with no rule changed. Confirmed from the code
-and that data at the page's defaults (`h` = 20, 504-row train window, 20-row test
-window, 20-row embargo) by `docs/evidence/2026-11-15-history-2006.py`
+and that data at `h` = 20 (the page's default then), a 504-row train window, a 20-row
+test window and a 20-row embargo, by `docs/evidence/2026-11-15-history-2006.py`
 ([evidence](evidence/2026-11-15-history-2006.md)):
 
 | Part | Rule (unchanged) | Starts on the data from 31 Aug 2006 |
@@ -705,7 +705,7 @@ what the page did:
 
 It is above today's grid at every horizon in both, and above zero in both decades of
 the data from 2006 at all four horizons. On the data from 2006 it passes the gate
-(§12) only at h = 1; at the page's default of 20 days it is +0.065 with t 1.1,
+(§12) only at h = 1; at 20 days, the page's default then, it is +0.065 with t 1.1,
 positive in both decades and on the hold-out, where today's grid is negative, but not
 significant. The hold-out figures are means over five copies of the hold-out with the
 target fund's rounding broken at random (below); it passed on each.
@@ -1495,7 +1495,7 @@ current results.
 
 **Models.** Signal Rank IC and t (§10), and whether each passes the gate (§12):
 
-| Target | Model | h = 1 | h = 5 | h = 10 | h = 20 (default) |
+| Target | Model | h = 1 | h = 5 (default) | h = 10 | h = 20 |
 |---|---|---|---|---|---|
 | Equity | Polynomial (derived) | +0.033, t 2.10, passes | +0.083, t 3.20, passes | +0.104, t 2.84, passes | +0.103, t 1.98, fails on t |
 | Equity | Polynomial – fixed economic inputs | +0.033, t 2.11, passes | +0.068, t 2.10, passes | +0.050, t 1.09 | +0.071, t 1.10 |
@@ -1505,10 +1505,14 @@ current results.
 | Bond | Polynomial – fixed carry inputs (`VERSION` 2) | +0.004, t 0.26 | +0.021, t 0.62 | +0.039, t 0.79 | +0.063, t 0.94 |
 | Bond | Machine learning | +0.019, t 1.30 | +0.013, t 0.54 | −0.017, t −0.46 | +0.045, t 0.88 |
 
-No bond model passes at any horizon, and at the default 20-day horizon no model
-passes for either index. The bond derived row is the grid the page ran then; the
-mean of 14 fits that replaced it on 18 Nov 2026 is scored in §9.4, from its
-research, until the page is rerun. Both research models score near zero on their pre-2016
+No bond model in this table passes at any horizon. At 5 days, the page's default since
+19 Nov 2026, three of the four equity models pass. At 20 days, the default until then, no
+model passes for either index. The bond derived row is the grid the page ran then. The
+mean of 14 fits that replaced it on 18 Nov 2026 is scored in §9.4 from its research; the
+page itself, rerun on 19 Nov 2026
+([evidence](evidence/2026-11-19-default-horizon.md)), scores it +0.045 (t 2.86, passes),
++0.037 (t 1.29), +0.019 (t 0.46) and +0.065 (t 1.08) at h = 1, 5, 10 and 20. Both
+research models score near zero on their pre-2016
 hold-out at every horizon (t −0.44 to +0.65; §9.2 has the 20-day figures).
 
 **Portfolio.** The main result uses the team's Sprint 4 default pair, the derived
@@ -1531,9 +1535,13 @@ limitations):
 | 20 | 92 of 226; −1.44 to −0.15 | 3 of 226; +0.01 to +0.05 |
 
 At h = 5 the Sprint 4 pair's forecasts cost significantly at levels 1 and 2.
-"Derived for both" used the bond derived grid as the page ran it on 16 Nov; the
-portfolio has not been rerun with the mean of 14 fits that replaced it on 18 Nov
-2026 (§9.4).
+"Derived for both" used the bond derived grid as the page ran it on 16 Nov. The
+page was rerun on 19 Nov 2026 with the mean of 14 fits that replaced it (§9.4;
+[evidence](evidence/2026-11-19-default-horizon.md)). The trust gate then opens at 112
+of 904 rebalances at h = 5 and 7 of 226 at h = 20, and never at h = 1 or 10, and the
+forecasts still add nothing: t against no forecasts runs from −0.77 to −0.04. At h = 5,
+the default, level 3 earns 8.67% a year against 8.32% for 50/50 (t 2.06) and 8.69% with
+no forecasts.
 
 With the trust gate ignored (a diagnostic only: `β̂` used whatever its t), none
 did significantly better than without forecasts (t above 2); the best is +1.56. Many are significantly
@@ -1573,7 +1581,7 @@ Values are Python literals as the code holds them.
 | `_PRICE_FIELD` | `forecasting_engine.ingest.align` | `"PX_LAST"` |
 | `_QUOTE_FIELDS` | `forecasting_engine.ingest.align` | `frozenset({"PX_BID", "PX_ASK"})` |
 | `HORIZONS` | `model_settings` | `(1, 5, 10, 20)` |
-| `DEFAULT_HORIZON` | `model_settings` | `20` |
+| `DEFAULT_HORIZON` | `model_settings` | `5` |
 | `EMBARGO_DAYS` | `model_settings` | `20` |
 | `TRAIN_WINDOW` | `model_settings` | `504` |
 | `DEFAULT_TEST_WINDOW` | `model_settings` | `20` |

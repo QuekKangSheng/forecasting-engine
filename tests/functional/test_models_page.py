@@ -268,7 +268,7 @@ def test_settings_hold_the_horizon_windows_and_embargo():
     (settings,) = [e for e in app.expander if e.label == "Settings"]
     (horizon,) = settings.segmented_control
     assert list(horizon.options) == ["1 day", "5 days", "10 days", "20 days"]
-    assert horizon.value == 20
+    assert horizon.value == 5
     assert not settings.number_input
     assert any(c.value.startswith("Embargo is fixed") for c in settings.caption)
 
@@ -2086,7 +2086,7 @@ def test_the_bond_tabs_derived_row_averages_14_fits_and_says_what_it_is(stub_ml)
     assert "Averages 14 fits and picks none" in captions
     assert f"{POLY}: The mean of 14 fits, none picked" in captions
     assert "provisional until tested on data after 12 Nov 2026" in captions
-    assert "At 20 days its Signal Rank IC is positive but below the significance gate" in captions
+    assert "at 5, 10 and 20 days its Signal Rank IC is positive but below the gate" in captions
     assert "is read by the fits on up to 2,520 dates" in captions
     assert not stub_ml
 

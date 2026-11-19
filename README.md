@@ -110,7 +110,7 @@ One tab per target: **Equity · S&P 500 (total return)** and **Bond · US Aggreg
 (total return)**.
 
 1. **Choose the horizon first.** In **Settings**, pick the **Forecast horizon**: 1, 5, 10 or
-   20 trading days (20 by default); changing it later clears the results. The rest is
+   20 trading days (5 by default); changing it later clears the results. The rest is
    fixed: models train on the latest 504 dates (the research models on every earlier
    date, half the Bond derived fits on up to 2,520) and are scored on the next 20, with a
    20-day embargo between; signals are lagged one day; the first 504 dates are kept for

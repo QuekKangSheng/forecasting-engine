@@ -15,11 +15,13 @@ HORIZONS: tuple[int, ...] = (1, 5, 10, 20)
 #: one per horizon. Picking h=1 used to drop the embargo to 1 as well.
 EMBARGO_DAYS: int = max(HORIZONS)
 
-#: Working default, not sponsor-confirmed. On the Sep 2026 Bloomberg data, at the
-#: default windows, the equity signal held up best over 20 days (Signal Rank IC
-#: +0.075; +0.034 at 5 days, about zero at 10), and the optimiser rebalances every
-#: horizon days, so a 20-day forecast is held for its own 20 days.
-DEFAULT_HORIZON: int = 20
+#: Working default, not sponsor-confirmed. On the Bloomberg data from 31 Aug 2006
+#: the equity signal is strongest over 5 days: the derived polynomial's Signal Rank
+#: IC is +0.083 with t 3.20, and the research model and machine learning pass the
+#: gate there too. At 20 days, the default until 19 Nov 2026, the derived polynomial
+#: scores +0.103 with t 1.98 and no model passes. The optimiser rebalances every
+#: horizon days, so a 5-day forecast is held for its own 5 days.
+DEFAULT_HORIZON: int = 5
 #: Every model's train window on both targets, fixed rather than a setting: trying
 #: windows until one scores well is overfitting no single run can see. About two
 #: years. On the Sep 2026 data it scored best for the equity derived polynomial

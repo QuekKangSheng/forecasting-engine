@@ -22,7 +22,7 @@
 > - *Open item 3 (Fama-French in percent):* still open. `ingest/fama_french.py`
 >   reads the factors as published.
 > - *Settings and pages:* the review ran at a 120-row train window and 5-day
->   labels; the defaults are now a fixed 504-row train window and a 20-day horizon
+>   labels; the defaults are now a fixed 504-row train window and a 5-day horizon
 >   (methodology §7). The Model Metrics page was merged into the Models page.
 
 > **Status, 1 Oct 2026.** Several findings below have since been acted on; read
