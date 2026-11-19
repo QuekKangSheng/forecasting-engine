@@ -16,8 +16,8 @@ The level tables are computed from the stored runs by `run_levels` and `level_ro
 at level 3. The browser scripts that drove the page are not in this repository.
 
 **The default was chosen after these scores were seen.** 5 days is where the equity derived
-polynomial scores best on this data, so its t of 3.20 is the best of four horizons and was
-not a test set aside in advance. Data after 12 Nov 2026 is the clean test.
+polynomial's t is highest on this data (its Signal Rank IC is higher at 10 and 20 days), so
+that t of 3.20 is the best of four horizons and was not a test set aside in advance. Data after 12 Nov 2026 is the clean test.
 
 ## Models
 

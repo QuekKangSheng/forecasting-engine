@@ -70,8 +70,8 @@ FIT_DESCRIPTIONS: Mapping[str, str] = {
         "holds, by one of the four fits the equity polynomial chooses between. Half use "
         "the latest 504 trading days, half up to the latest 2,520. It held up on 2008–2026 "
         "and on public data for 1992–2006, which no earlier bond model had been tested on, "
-        "but it is provisional until tested on data after 12 Nov 2026, and at the 20-day "
-        "horizon its signal is positive but not statistically significant."
+        "but it is provisional until tested on data after 12 Nov 2026, and at the 5-, "
+        "10- and 20-day horizons its signal is positive but not statistically significant."
     ),
 }
 """For a model whose row name has had more than one fit behind it, keyed by the stored

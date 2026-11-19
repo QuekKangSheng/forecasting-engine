@@ -1527,7 +1527,7 @@ level 5, against 0.88 for 50/50, and their t against 50/50 mostly reflects equit
 weight. Neither pair's forecasts add value at any horizon (§17, known
 limitations):
 
-| h | Sprint 4 pair: gate open, t vs no forecasts (levels 1–4) | Derived for both |
+| h | Sprint 4 pair: gate open, t vs no forecasts (levels 1–4) | Derived for both, bond grid of 16 Nov |
 |---|---|---|
 | 1 | never; identical paths | never; identical paths |
 | 5 | 184 of 904; −3.10, −2.84, −1.81, −1.03 | 137 of 904; −1.10 to −1.38 |

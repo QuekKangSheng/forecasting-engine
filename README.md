@@ -302,8 +302,9 @@ On the 11 Bloomberg exports from 31 Aug 2006 to 11–12 Nov 2026, at the page's 
   level 1 to 1.03–1.05 at level 5, against 0.88 for 50/50), but for both pairs tested
   (derived equity with machine-learning bond; derived for both, with the pre-18 Nov bond
   grid) the forecasts added no value after costs at any horizon, and with machine learning
-  for bond cost significantly at 5 days, levels 1 and 2. No portfolio has yet been run on
-  the new bond derived polynomial.
+  for bond cost significantly at 5 days, levels 1 and 2. Run again on 19 Nov 2026 with the new
+  bond derived polynomial for both indices, the forecasts again added nothing at any
+  horizon ([evidence](docs/evidence/2026-11-19-default-horizon.md)).
 
 ## For developers
 
